@@ -8,6 +8,10 @@ members = [
     "pc/server",
     "tools/latency-probe",
 ]
+# Android JNI core 单独编译(cargo-ndk),不加入默认 workspace 以避免 host 平台编译冲突
+exclude = [
+    "android/rust-core",
+]
 
 [workspace.package]
 version = "0.1.0"

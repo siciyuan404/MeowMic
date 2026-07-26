@@ -1,0 +1,10 @@
+# Android build artifacts
+.gradle/
+build/
+local.properties
+*.iml
+.idea/
+.cxx/
+
+# Rust
+rust-core/target/
