@@ -37,7 +37,7 @@ impl Default for AppConfig {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ServiceStatus {
     pub running: bool,
     pub uptime_secs: u64,
@@ -70,7 +70,9 @@ impl ServiceManager {
     }
 
     pub fn is_running(&self) -> bool {
-        self.process.as_ref().map_or(false, |p| p.try_wait().map_or(true, |s| s.is_ok() && s.is_none()))
+        self.process.as_ref().map_or(false, |p| {
+            matches!(p.try_wait(), Ok(None))
+        })
     }
 
     pub fn status(&mut self) -> &ServiceStatus {
@@ -165,6 +167,8 @@ fn find_server_executable() -> Result<PathBuf, String> {
         candidates.push(cwd.join("pc").join("console").join("bin").join("meowmic-server"));
     }
 
+    let search_paths: Vec<String> = candidates.iter().map(|p| format!("  {}", p.display())).collect();
+
     for candidate in candidates {
         if candidate.exists() {
             return Ok(candidate);
@@ -173,20 +177,15 @@ fn find_server_executable() -> Result<PathBuf, String> {
 
     Err(format!(
         "找不到 meowmic-server.exe,请确认服务端已编译并放置在正确位置。\n搜索路径:\n{}",
-        candidates
-            .iter()
-            .map(|p| format!("  {}", p.display()))
-            .collect::<Vec<_>>()
-            .join("\n")
+        search_paths.join("\n")
     ))
 }
 
 fn config_path() -> PathBuf {
     let exe_dir = env::current_exe()
-        .unwrap_or_else(|_| PathBuf::from("."))
-        .parent()
-        .unwrap_or_else(|_| PathBuf::from("."))
-        .to_path_buf();
+        .ok()
+        .and_then(|p| p.parent().map(|d| d.to_path_buf()))
+        .unwrap_or_else(|| PathBuf::from("."));
     exe_dir.join(CONFIG_FILE)
 }
 
