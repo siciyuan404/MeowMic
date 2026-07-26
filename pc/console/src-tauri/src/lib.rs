@@ -92,16 +92,12 @@ impl ServiceManager {
         let server_exe = find_server_executable()?;
 
         let mut cmd = Command::new(&server_exe);
-        cmd.arg("--tcp-port").arg(config.tcp_port.to_string());
-        cmd.arg("--touch-port").arg(config.touch_port.to_string());
-        cmd.arg("--audio-port").arg(config.audio_port.to_string());
+        // server 使用 --port 基础端口 (control=port, touch=port+1, audio=port+2)
+        cmd.arg("--port").arg(config.tcp_port.to_string());
 
+        // 静音外放:通过环境变量传递(server 用 RUST_LOG 控制,音频静音待 server 支持)
         if config.mute_speaker {
-            cmd.arg("--mute");
-        }
-
-        if !config.output_device.is_empty() {
-            cmd.arg("--output-device").arg(&config.output_device);
+            cmd.env("MEOWMIC_MUTE_SPEAKER", "1");
         }
 
         cmd.stdout(Stdio::piped());

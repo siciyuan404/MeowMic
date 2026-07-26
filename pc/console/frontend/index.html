@@ -198,21 +198,11 @@
         <div class="settings-card">
             <div class="settings-title">⚙️ 基础设置</div>
             <div class="form-row">
-                <label class="form-label">端口配置</label>
-                <div class="port-group">
-                    <div>
-                        <input type="number" id="tcpPort" class="form-input" placeholder="TCP">
-                        <div style="font-size:10px;color:#94a3b8;margin-top:2px">TCP 控制</div>
-                    </div>
-                    <div>
-                        <input type="number" id="touchPort" class="form-input" placeholder="Touch">
-                        <div style="font-size:10px;color:#94a3b8;margin-top:2px">触控 UDP</div>
-                    </div>
-                    <div>
-                        <input type="number" id="audioPort" class="form-input" placeholder="Audio">
-                        <div style="font-size:10px;color:#94a3b8;margin-top:2px">音频 UDP</div>
-                    </div>
-                </div>
+                <label class="form-label">基础端口 (TCP=端口, 触控=端口+1, 音频=端口+2)</label>
+                <input type="number" id="tcpPort" class="form-input" placeholder="28900">
+            </div>
+            <div style="font-size:11px;color:#64748b;margin-top:-8px;margin-bottom:12px">
+                默认: 28900(TCP) / 28901(触控) / 28902(音频)
             </div>
             <div class="form-row">
                 <label class="form-label">音频输出设备</label>
@@ -285,8 +275,8 @@
         function getConfigFromUI() {
             return {
                 tcp_port: parseInt(document.getElementById('tcpPort').value) || 28900,
-                touch_port: parseInt(document.getElementById('touchPort').value) || 28901,
-                audio_port: parseInt(document.getElementById('audioPort').value) || 28902,
+                touch_port: (parseInt(document.getElementById('tcpPort').value) || 28900) + 1,
+                audio_port: (parseInt(document.getElementById('tcpPort').value) || 28900) + 2,
                 output_device: document.getElementById('outputDevice').value,
                 mute_speaker: document.getElementById('muteSpeaker').checked,
                 auto_start: document.getElementById('autoStart').checked,
