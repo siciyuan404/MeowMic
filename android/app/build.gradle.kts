@@ -19,9 +19,6 @@ android {
         ndk {
             abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86_64")
         }
-
-        // APK 压缩
-        setProperty("android.enableR8.fullMode", true)
     }
 
     buildTypes {
