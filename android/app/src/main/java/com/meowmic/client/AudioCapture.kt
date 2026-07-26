@@ -47,24 +47,16 @@ class AudioCapture(
         val bufferBytes = maxOf(minBuf * 2, frameBytes * 4)
 
         try {
-            val builder = AudioRecord.Builder()
-                .setAudioSource(MediaRecorder.AudioSource.VOICE_RECOGNITION)
-                .setAudioFormat(
-                    AudioFormat.Builder()
-                        .setEncoding(format)
-                        .setSampleRate(sampleRate)
-                        .setChannelMask(channelConfig)
-                        .build()
-                )
-                .setBufferSizeInBytes(bufferBytes)
-
-            // Android 10+ 低延迟模式
-            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
-                builder.setPerformanceMode(AudioRecord.PERFORMANCE_MODE_LOW_LATENCY)
-            }
-
+            // P0: 用构造函数方式,兼容性最好
+            // 后续 P3 优化:切到 AAudio (NDK) + EXCLUSIVE 模式,延迟 <10ms
             @Suppress("MissingPermission")
-            record = builder.build()
+            record = AudioRecord(
+                MediaRecorder.AudioSource.VOICE_RECOGNITION,
+                sampleRate,
+                channelConfig,
+                format,
+                bufferBytes,
+            )
         } catch (e: Exception) {
             Log.e(TAG, "AudioRecord 初始化失败", e)
             return false
