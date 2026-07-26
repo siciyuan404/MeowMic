@@ -69,18 +69,19 @@ impl ServiceManager {
         }
     }
 
-    pub fn is_running(&self) -> bool {
-        self.process.as_ref().map_or(false, |p| {
-            matches!(p.try_wait(), Ok(None))
-        })
+    pub fn is_running(&mut self) -> bool {
+        match &mut self.process {
+            Some(p) => matches!(p.try_wait(), Ok(None)),
+            None => false,
+        }
     }
 
-    pub fn status(&mut self) -> &ServiceStatus {
+    pub fn status(&mut self) -> ServiceStatus {
         if let Some(started) = self.started_at {
             self.status.uptime_secs = started.elapsed().as_secs();
         }
         self.status.running = self.is_running();
-        &self.status
+        self.status.clone()
     }
 
     pub fn start(&mut self, config: &AppConfig) -> Result<(), String> {
@@ -237,7 +238,7 @@ fn stop_service(state: State<AppState>) -> Result<(), String> {
 #[tauri::command]
 fn get_status(state: State<AppState>) -> ServiceStatus {
     let mut svc = state.service.lock().unwrap();
-    svc.status().clone()
+    svc.status()
 }
 
 #[tauri::command]
