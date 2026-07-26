@@ -118,12 +118,13 @@ jobs:
         shell: bash
         run: |
           mkdir -p artifacts
+          # Tauri 构建产物在 workspace 根的 target 目录下
           # NSIS installer
-          cp pc/console/src-tauri/target/${{ matrix.target }}/release/bundle/nsis/*.exe artifacts/ 2>/dev/null || true
+          cp target/${{ matrix.target }}/release/bundle/nsis/*.exe artifacts/ 2>/dev/null || true
           # MSI installer
-          cp pc/console/src-tauri/target/${{ matrix.target }}/release/bundle/msi/*.msi artifacts/ 2>/dev/null || true
+          cp target/${{ matrix.target }}/release/bundle/msi/*.msi artifacts/ 2>/dev/null || true
           # Raw exe
-          cp pc/console/src-tauri/target/${{ matrix.target }}/release/meowmic-console.exe artifacts/ 2>/dev/null || true
+          cp target/${{ matrix.target }}/release/meowmic-console.exe artifacts/ 2>/dev/null || true
           ls -lh artifacts/
 
       - name: Rename artifacts with tag
