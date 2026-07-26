@@ -2,8 +2,8 @@
   "build": {
     "beforeDevCommand": "",
     "beforeBuildCommand": "",
-    "devPath": "../../frontend",
-    "distDir": "../../frontend",
+    "devPath": "../frontend",
+    "distDir": "../frontend",
     "withGlobalTauri": false
   },
   "package": {

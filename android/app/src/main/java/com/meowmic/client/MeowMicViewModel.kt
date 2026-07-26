@@ -139,7 +139,7 @@ class MeowMicViewModel : ViewModel() {
     }
 
     fun setScreenRotation(rotation: Int) {
-        touchHandler?.screenRotation = rotation
+        touchHandler?.let { it.screenRotation = rotation }
     }
 
     fun setMicEnabled(enabled: Boolean) {
