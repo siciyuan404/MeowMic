@@ -45,11 +45,12 @@ jobs:
 
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
-        with:
-          packages: |
-            platforms;android-34
-            build-tools;34.0.0
-            ndk;26.3.11579264
+
+      - name: Install Android SDK packages
+        run: |
+          yes | sdkmanager --licenses > /dev/null 2>&1 || true
+          sdkmanager --update
+          sdkmanager "platforms;android-34" "build-tools;34.0.0" "ndk;26.3.11579264"
 
       - name: Cache Cargo registry
         uses: actions/cache@v4
