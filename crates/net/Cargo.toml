@@ -1,0 +1,13 @@
+[package]
+name = "meowmic-net"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+meowmic-protocol = { path = "../protocol" }
+tokio = { workspace = true }
+bytes = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+anyhow = { workspace = true }

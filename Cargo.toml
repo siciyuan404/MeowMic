@@ -1,0 +1,39 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/protocol",
+    "crates/net",
+    "crates/audio",
+    "crates/touch",
+    "pc/server",
+    "tools/latency-probe",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+authors = ["MeowMic"]
+
+[workspace.dependencies]
+# 共享依赖版本统一
+bytes = "1"
+thiserror = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tokio = { version = "1", features = ["full"] }
+zerocopy = { version = "0.7", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+bincode = "1"
+anyhow = "1"
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+
+[profile.bench]
+opt-level = 3
+lto = "thin"
+codegen-units = 1

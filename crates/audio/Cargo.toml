@@ -1,0 +1,20 @@
+[package]
+name = "meowmic-audio"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+meowmic-protocol = { path = "../protocol" }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+# Opus 编解码(默认启用,需要系统 libopus;Windows 推荐用 vcpkg: vcpkg install opus)
+opus = { version = "0.3", optional = true }
+
+[features]
+default = ["pcm-passthrough"]
+# 真实 Opus 编解码(需要 libopus;Windows 推荐 vcpkg install opus)
+opus-codec = ["dep:opus"]
+# PCM 直通(P0 管线验证用,无编码,带宽大但无需 libopus)
+pcm-passthrough = []
