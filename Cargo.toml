@@ -6,6 +6,7 @@ members = [
     "crates/audio",
     "crates/touch",
     "pc/server",
+    "pc/console/src-tauri",
     "tools/latency-probe",
     "tools/integration-test",
 ]

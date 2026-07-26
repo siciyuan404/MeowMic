@@ -1,0 +1,57 @@
+{
+  "build": {
+    "beforeDevCommand": "",
+    "beforeBuildCommand": "",
+    "devPath": "../../frontend",
+    "distDir": "../../frontend",
+    "withGlobalTauri": false
+  },
+  "package": {
+    "productName": "MeowMic Console",
+    "version": "0.1.0"
+  },
+  "tauri": {
+    "allowlist": {
+      "all": false,
+      "dialog": {
+        "all": true
+      },
+      "shell": {
+        "all": false,
+        "open": true
+      },
+      "path": {
+        "all": true
+      },
+      "fs": {
+        "all": true
+      }
+    },
+    "bundle": {
+      "active": true,
+      "targets": "all",
+      "icon": [
+        "icons/32x32.png",
+        "icons/128x128.png",
+        "icons/icon.icns",
+        "icons/icon.ico"
+      ],
+      "identifier": "com.meowmic.console",
+      "resources": [
+        "bin/*"
+      ]
+    },
+    "security": {
+      "csp": null
+    },
+    "windows": [
+      {
+        "title": "MeowMic 控制台",
+        "width": 480,
+        "height": 600,
+        "resizable": true,
+        "fullscreen": false
+      }
+    ]
+  }
+}

@@ -11,6 +11,9 @@ on:
       - 'v*'
   pull_request:
     branches: [main, master]
+    paths:
+      - 'android/**'
+      - 'crates/**'
   workflow_dispatch:
 
 env:

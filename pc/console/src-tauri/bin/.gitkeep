@@ -1,0 +1,2 @@
+# This directory holds the meowmic-server binary for bundling.
+# The binary is placed here by CI before building the Tauri app.

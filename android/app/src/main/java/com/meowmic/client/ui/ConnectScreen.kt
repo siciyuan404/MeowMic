@@ -4,6 +4,7 @@ import android.Manifest
 import android.content.pm.PackageManager
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
@@ -24,13 +25,7 @@ import com.meowmic.client.ConnectionState
 import com.meowmic.client.MeowMicViewModel
 import com.meowmic.client.NativeBridge
 
-/**
- * 连接页面
- *
- * - 输入 PC 端地址(control 端口,默认 28900)
- * - 申请录音权限
- * - 触发连接
- */
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ConnectScreen(
     vm: MeowMicViewModel,
@@ -38,6 +33,7 @@ fun ConnectScreen(
 ) {
     val context = LocalContext.current
     val connectionState by vm.connectionState.collectAsState()
+    val historyAddresses by vm.historyAddresses.collectAsState()
 
     var serverAddr by remember { mutableStateOf("192.168.1.100:28900") }
     var clientName by remember { mutableStateOf("Android-Client") }
@@ -49,6 +45,7 @@ fun ConnectScreen(
             ) == PackageManager.PERMISSION_GRANTED
         )
     }
+    var showHistoryMenu by remember { mutableStateOf(false) }
 
     val permissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission()
@@ -56,14 +53,16 @@ fun ConnectScreen(
         hasMicPermission = granted
     }
 
-    // 连接成功后自动跳转
+    LaunchedEffect(Unit) {
+        vm.init(context)
+    }
+
     LaunchedEffect(connectionState) {
         if (connectionState is ConnectionState.Connected) {
             onConnected()
         }
     }
 
-    // 首次进入申请权限
     LaunchedEffect(Unit) {
         if (!hasMicPermission) {
             permissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
@@ -77,7 +76,6 @@ fun ConnectScreen(
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center,
     ) {
-        // Logo 区域
         Icon(
             imageVector = Icons.Default.Computer,
             contentDescription = null,
@@ -98,17 +96,52 @@ fun ConnectScreen(
 
         Spacer(Modifier.height(40.dp))
 
-        // 服务端地址
-        OutlinedTextField(
-            value = serverAddr,
-            onValueChange = { serverAddr = it },
-            label = { Text("PC 端地址") },
-            placeholder = { Text("192.168.1.100:28900") },
-            singleLine = true,
-            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
-            leadingIcon = { Icon(Icons.Default.SettingsEthernet, contentDescription = null) },
-            modifier = Modifier.fillMaxWidth(),
-        )
+        ExposedDropdownMenuBox(
+            expanded = showHistoryMenu,
+            onExpandedChange = { showHistoryMenu = it }
+        ) {
+            OutlinedTextField(
+                value = serverAddr,
+                onValueChange = { serverAddr = it },
+                label = { Text("PC 端地址") },
+                placeholder = { Text("192.168.1.100:28900") },
+                singleLine = true,
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
+                leadingIcon = { Icon(Icons.Default.SettingsEthernet, contentDescription = null) },
+                trailingIcon = {
+                    if (historyAddresses.isNotEmpty()) {
+                        Text(
+                            text = if (showHistoryMenu) "▲" else "▼",
+                            modifier = Modifier
+                                .padding(end = 8.dp)
+                                .clickable { showHistoryMenu = !showHistoryMenu },
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            fontSize = 12.sp,
+                        )
+                    }
+                },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .menuAnchor()
+            )
+
+            if (historyAddresses.isNotEmpty()) {
+                ExposedDropdownMenu(
+                    expanded = showHistoryMenu,
+                    onDismissRequest = { showHistoryMenu = false }
+                ) {
+                    historyAddresses.forEach { addr ->
+                        DropdownMenuItem(
+                            text = { Text(addr) },
+                            onClick = {
+                                serverAddr = addr
+                                showHistoryMenu = false
+                            }
+                        )
+                    }
+                }
+            }
+        }
         Spacer(Modifier.height(12.dp))
 
         OutlinedTextField(
@@ -121,7 +154,6 @@ fun ConnectScreen(
 
         Spacer(Modifier.height(20.dp))
 
-        // 权限状态提示
         if (!hasMicPermission) {
             Card(
                 colors = CardDefaults.cardColors(
@@ -153,7 +185,6 @@ fun ConnectScreen(
             Spacer(Modifier.height(12.dp))
         }
 
-        // Rust core 加载状态
         if (!NativeBridge.isLoaded()) {
             Card(
                 colors = CardDefaults.cardColors(
@@ -172,7 +203,6 @@ fun ConnectScreen(
             Spacer(Modifier.height(12.dp))
         }
 
-        // 连接按钮
         val isConnecting = connectionState is ConnectionState.Connecting
         Button(
             onClick = { vm.connect(serverAddr, clientName) },
@@ -195,7 +225,6 @@ fun ConnectScreen(
             }
         }
 
-        // 错误提示
         Spacer(Modifier.height(20.dp))
         (connectionState as? ConnectionState.Error)?.let { err ->
             Card(
@@ -205,12 +234,17 @@ fun ConnectScreen(
                 shape = RoundedCornerShape(8.dp),
                 modifier = Modifier.fillMaxWidth(),
             ) {
-                Text(
-                    err.message,
-                    color = MaterialTheme.colorScheme.onErrorContainer,
+                Row(
                     modifier = Modifier.padding(12.dp),
-                    fontSize = 13.sp,
-                )
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        err.message,
+                        color = MaterialTheme.colorScheme.onErrorContainer,
+                        fontSize = 13.sp,
+                        modifier = Modifier.weight(1f),
+                    )
+                }
             }
         }
     }
