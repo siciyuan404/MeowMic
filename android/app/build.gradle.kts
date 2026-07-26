@@ -1,7 +1,6 @@
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
-    id("org.jetbrains.kotlin.plugin.compose")
 }
 
 android {
@@ -55,6 +54,11 @@ android {
     buildFeatures {
         compose = true
         buildConfig = true
+    }
+
+    composeOptions {
+        // Kotlin 1.9.24 对应的 Compose Compiler
+        kotlinCompilerExtensionVersion = "1.5.14"
     }
 
     packaging {
