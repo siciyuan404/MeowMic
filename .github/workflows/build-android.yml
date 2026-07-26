@@ -13,7 +13,6 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
-  RUSTFLAGS: "-C link-arg=-landroid"
 
 jobs:
   build:
@@ -74,10 +73,10 @@ jobs:
             gradle-${{ runner.os }}-
 
       - name: Build Rust core (all ABIs)
-        working-directory: android
-        run: |
-          cd rust-core
-          cargo ndk -t armv7-linux-androideabi -t aarch64-linux-android -t x86_64-linux-android -o ../app/src/main/jniLibs build --release
+        working-directory: android/rust-core
+        env:
+          RUSTFLAGS: "-C link-arg=-landroid"
+        run: cargo ndk -t armv7-linux-androideabi -t aarch64-linux-android -t x86_64-linux-android -o ../app/src/main/jniLibs build --release
 
       - name: Generate Gradle wrapper
         working-directory: android
