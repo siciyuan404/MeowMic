@@ -1,0 +1,19 @@
+[package]
+name = "meowmic-integration-test"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "meowmic-itest"
+path = "src/main.rs"
+
+[dependencies]
+meowmic-net = { path = "../../crates/net" }
+meowmic-audio = { path = "../../crates/audio" }
+meowmic-protocol = { path = "../../crates/protocol" }
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+anyhow = { workspace = true }
+clap = { version = "4", features = ["derive"] }

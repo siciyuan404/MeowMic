@@ -21,6 +21,27 @@ android {
         }
     }
 
+    // CI 注入 keystore 后启用正式签名;本地无 keystore 时回退 debug 签名
+    val keystoreFile = System.getenv("KEYSTORE_FILE")
+    val keystorePass = System.getenv("KEYSTORE_PASSWORD")
+    val keyAlias = System.getenv("KEY_ALIAS")
+    val keyPass = System.getenv("KEY_PASSWORD")
+    val hasKeystore = keystoreFile != null && file(keystoreFile!!).exists()
+
+    if (hasKeystore) {
+        signingConfigs {
+            create("release") {
+                storeFile = file(keystoreFile!!)
+                storePassword = keystorePass
+                keyAlias = keyAlias
+                keyPassword = keyPass
+                enableV1Signing = true
+                enableV2Signing = true
+                enableV3Signing = true
+            }
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = true
@@ -29,8 +50,9 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
-            // 暂不签名,GitHub Action 产物用 debug 签名便于测试
-            // 后续接入正式签名: signingConfig = signingConfigs.getByName("release")
+            if (hasKeystore) {
+                signingConfig = signingConfigs.getByName("release")
+            }
         }
         debug {
             isMinifyEnabled = false

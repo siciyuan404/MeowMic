@@ -23,3 +23,14 @@ Thumbs.db
 # 驱动签名临时文件
 *.cat
 *.inf.bak
+
+# 签名密钥(本地保存,不入库)
+/secrets/
+*.keystore
+*.keystore.p12
+*.jks
+*.key
+*.crt
+*.pem
+secrets.ps1
+artifacts/
