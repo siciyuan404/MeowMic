@@ -22,19 +22,19 @@ android {
     }
 
     // CI 注入 keystore 后启用正式签名;本地无 keystore 时回退 debug 签名
-    val keystoreFile = System.getenv("KEYSTORE_FILE")
-    val keystorePass = System.getenv("KEYSTORE_PASSWORD")
-    val keyAlias = System.getenv("KEY_ALIAS")
-    val keyPass = System.getenv("KEY_PASSWORD")
-    val hasKeystore = keystoreFile != null && file(keystoreFile!!).exists()
+    val ksFile = System.getenv("KEYSTORE_FILE")
+    val ksPass = System.getenv("KEYSTORE_PASSWORD")
+    val ksAlias = System.getenv("KEY_ALIAS")
+    val ksKeyPass = System.getenv("KEY_PASSWORD")
+    val hasKeystore = ksFile != null && file(ksFile!!).exists()
 
     if (hasKeystore) {
         signingConfigs {
             create("release") {
-                storeFile = file(keystoreFile!!)
-                storePassword = keystorePass
-                keyAlias = keyAlias
-                keyPassword = keyPass
+                storeFile = file(ksFile!!)
+                storePassword = ksPass
+                keyAlias = ksAlias
+                keyPassword = ksKeyPass
                 enableV1Signing = true
                 enableV2Signing = true
                 enableV3Signing = true
