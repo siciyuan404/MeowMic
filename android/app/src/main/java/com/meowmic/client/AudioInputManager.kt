@@ -1,6 +1,8 @@
 package com.meowmic.client
 
+import android.content.Context
 import android.media.MediaPlayer
+import android.net.Uri
 import android.util.Log
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -27,6 +29,11 @@ class AudioInputManager {
     private var mediaPlayer: MediaPlayer? = null
     private var pcmFileThread: Thread? = null
     private var isPlaying = false
+    private var appContext: Context? = null
+
+    fun init(context: Context) {
+        appContext = context.applicationContext
+    }
 
     fun switchToMicrophone() {
         stopMusicPlayback()
@@ -34,14 +41,30 @@ class AudioInputManager {
         Log.i(TAG, "切换到麦克风输入模式")
     }
 
-    suspend fun playMusicFile(filePath: String): Boolean {
+    /**
+     * 播放音频文件。
+     * path 可以是:
+     *  - 普通文件路径(支持 .pcm/.mp3/.wav/.m4a/.aac)
+     *  - content:// Uri 字符串(使用应用上下文打开,仅支持压缩格式)
+     */
+    suspend fun playMusicFile(path: String): Boolean {
         stopMusicPlayback()
 
         return withContext(Dispatchers.IO) {
             try {
-                val file = File(filePath)
+                if (path.startsWith("content://")) {
+                    val ctx = appContext
+                    if (ctx == null) {
+                        Log.e(TAG, "appContext 未初始化,无法打开 Uri")
+                        return@withContext false
+                    }
+                    val uri = Uri.parse(path)
+                    return@withContext playCompressedAudio(ctx, uri, path)
+                }
+
+                val file = File(path)
                 if (!file.exists()) {
-                    Log.e(TAG, "文件不存在: $filePath")
+                    Log.e(TAG, "文件不存在: $path")
                     return@withContext false
                 }
 
@@ -118,6 +141,23 @@ class AudioInputManager {
             true
         } catch (e: Exception) {
             Log.e(TAG, "MediaPlayer 初始化失败", e)
+            false
+        }
+    }
+
+    private fun playCompressedAudio(ctx: Context, uri: Uri, debugPath: String): Boolean {
+        return try {
+            mediaPlayer = MediaPlayer().apply {
+                setDataSource(ctx, uri)
+                prepare()
+                isLooping = true
+                start()
+            }
+            _currentMode.value = InputMode.MUSIC_FILE
+            Log.i(TAG, "开始播放音频(Uri): $debugPath")
+            true
+        } catch (e: Exception) {
+            Log.e(TAG, "MediaPlayer(Uri) 初始化失败", e)
             false
         }
     }

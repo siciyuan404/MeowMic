@@ -5,10 +5,13 @@
 //! - 音频:cpal 直接播放(后续替换为自研 WDM 虚拟麦克风设备)
 //! - 统计:周期打印延迟/丢包/速率
 
+use std::net::SocketAddr;
 use std::sync::Arc;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::TcpListener;
 use tokio::sync::Mutex;
 use tracing::{info, warn};
 
@@ -72,8 +75,8 @@ async fn run_server(bind: &str, port: u16) -> Result<()> {
     let bind = bind.to_string();
     info!("MeowMic 服务端启动中...");
     info!(
-        "端口分配: control={}(TCP) touch={}(UDP) audio={}(UDP)",
-        ports.control, ports.touch, ports.audio
+        "端口分配: control={}(TCP) touch={}(UDP) audio={}(UDP) stats={}(HTTP)",
+        ports.control, ports.touch, ports.audio, port + 3
     );
 
     list_local_ips();
@@ -88,11 +91,27 @@ async fn run_server(bind: &str, port: u16) -> Result<()> {
         stats::print_loop(stats_clone).await;
     });
 
+    // 启动 HTTP /stats 服务(监听 127.0.0.1:{base_port + 3})
+    let stats_port = port + 3;
+    let stats_addr: SocketAddr = format!("127.0.0.1:{}", stats_port).parse()?;
+    let stats_clone2 = stats.clone();
+    tokio::spawn(async move {
+        run_stats_server(stats_clone2, stats_addr).await;
+    });
+    info!("stats HTTP 监听: http://{}/stats", stats_addr);
+
     // P0:触摸注入器(SendInput)
     let touch_injector = Arc::new(touch_inject::TouchInjector::new());
     // P0:音频播放器(cpal)
     let audio_cfg = AudioConfig::default();
-    let audio_player = Arc::new(audio_play::AudioPlayer::new(audio_cfg).await?);
+    // 静音外放:读取 MEOWMIC_MUTE_SPEAKER env,muted 时 stream 仍存活但不推送 PCM
+    let muted = std::env::var("MEOWMIC_MUTE_SPEAKER")
+        .ok()
+        .as_deref()
+        .map(|v| v == "1")
+        .unwrap_or(false);
+    info!("静音外放: {}", if muted { "开启" } else { "关闭" });
+    let audio_player = Arc::new(audio_play::AudioPlayer::new(audio_cfg, muted).await?);
     let decoder = Arc::new(Mutex::new(meowmic_audio::make_decoder(&audio_cfg)));
 
     // 事件循环
@@ -121,6 +140,7 @@ async fn run_server(bind: &str, port: u16) -> Result<()> {
                     "✓ 客户端已连接 id={} peer={} audio={}/{}/{}ms",
                     client_id, peer, audio_sample_rate, audio_channels, audio_frame_ms
                 );
+                stats.lock().await.record_connect();
             }
             ServerEvent::Touch {
                 seq,
@@ -166,6 +186,7 @@ async fn run_server(bind: &str, port: u16) -> Result<()> {
             }
             ServerEvent::ClientDisconnected { client_id } => {
                 info!("✗ 客户端断开 id={}", client_id);
+                stats.lock().await.record_disconnect();
             }
             ServerEvent::Error(e) => {
                 warn!("服务端事件错误: {}", e);
@@ -175,6 +196,63 @@ async fn run_server(bind: &str, port: u16) -> Result<()> {
 
     server_handle.await??;
     Ok(())
+}
+
+/// HTTP /stats 服务:监听 127.0.0.1:port,GET /stats 返回 JSON 统计快照,其他路径 404
+async fn run_stats_server(stats: Arc<Mutex<stats::Stats>>, addr: SocketAddr) {
+    let listener = match TcpListener::bind(addr).await {
+        Ok(l) => l,
+        Err(e) => {
+            tracing::error!("stats HTTP 绑定 {} 失败: {}", addr, e);
+            return;
+        }
+    };
+    loop {
+        let (mut stream, _peer) = match listener.accept().await {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::warn!("stats accept 失败: {}", e);
+                continue;
+            }
+        };
+        let stats = stats.clone();
+        tokio::spawn(async move {
+            // 读取请求(只关心第一行 METHOD PATH HTTP/1.1)
+            let mut buf = [0u8; 1024];
+            let n = match stream.read(&mut buf).await {
+                Ok(n) if n > 0 => n,
+                _ => return,
+            };
+            let req = String::from_utf8_lossy(&buf[..n]);
+            let first_line = req.lines().next().unwrap_or("");
+            let mut parts = first_line.split_whitespace();
+            let method = parts.next().unwrap_or("");
+            let path = parts.next().unwrap_or("");
+
+            let (status, body) = if method == "GET" && path == "/stats" {
+                let (conn, tps, afs, uptime) = stats.lock().await.snapshot_and_reset();
+                let body = format!(
+                    "{{\"connections\": {}, \"touches_per_sec\": {}, \"audio_frames_per_sec\": {}, \"uptime_secs\": {}}}",
+                    conn, tps, afs, uptime
+                );
+                ("200 OK", body)
+            } else {
+                (
+                    "404 Not Found",
+                    r#"{"error":"not found"}"#.to_string(),
+                )
+            };
+
+            let response = format!(
+                "HTTP/1.1 {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                status,
+                body.len(),
+                body
+            );
+            let _ = stream.write_all(response.as_bytes()).await;
+            let _ = stream.shutdown().await;
+        });
+    }
 }
 
 fn list_local_ips() {

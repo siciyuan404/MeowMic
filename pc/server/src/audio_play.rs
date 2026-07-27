@@ -14,10 +14,12 @@ use meowmic_audio::AudioConfig;
 pub struct AudioPlayer {
     /// PCM 样本发送端(解码线程 → cpal 回调)
     tx: mpsc::Sender<Vec<i16>>,
+    /// 静音模式:play() 直接丢弃 PCM,但 cpal stream 仍然存活
+    muted: bool,
 }
 
 impl AudioPlayer {
-    pub async fn new(cfg: AudioConfig) -> anyhow::Result<Self> {
+    pub async fn new(cfg: AudioConfig, muted: bool) -> anyhow::Result<Self> {
         let host = cpal::default_host();
         let device = host
             .default_output_device()
@@ -104,10 +106,15 @@ impl AudioPlayer {
         // (cpal Stream drop 即停,这里用静态持有简化 P0)
         std::mem::forget(stream);
 
-        Ok(Self { tx })
+        Ok(Self { tx, muted })
     }
 
     pub async fn play(&self, pcm: &[i16]) {
+        // 静音模式:不把 PCM 推入 cpal 缓冲,直接丢弃
+        // stream 仍然存活(输出静音),麦克风声音不会从扬声器外放
+        if self.muted {
+            return;
+        }
         let _ = self.tx.send(pcm.to_vec()).await;
     }
 }

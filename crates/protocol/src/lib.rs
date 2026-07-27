@@ -129,9 +129,25 @@ pub struct TouchPacket {
 
 impl TouchPacket {
     pub fn new(seq: u16, ts_ns: u32, event: TouchEventType, dx: f32, dy: f32) -> Self {
+        Self::new_with_button(seq, ts_ns, event, 0, dx, dy)
+    }
+
+    /// 带按钮掩码的构造函数
+    ///
+    /// `button_mask` 位定义: bit0=左键 bit1=右键 bit2=中键
+    /// 对于 `TouchEventType::Button` 事件,`dx` 低 16 位表示按下(1)/抬起(0),
+    /// 这里用 `button_mask` 直接表达"哪些键被按下/释放",由 server 端解释。
+    pub fn new_with_button(
+        seq: u16,
+        ts_ns: u32,
+        event: TouchEventType,
+        button_mask: u8,
+        dx: f32,
+        dy: f32,
+    ) -> Self {
         let payload = TouchPayload {
             event_type: event as u8,
-            button_mask: 0,
+            button_mask,
             dx_q16: (dx * 65536.0) as i32,
             dy_q16: (dy * 65536.0) as i32,
             pressure: 0,

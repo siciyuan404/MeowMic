@@ -127,13 +127,27 @@ impl Client {
         dx: f32,
         dy: f32,
     ) -> Result<(), NetError> {
+        self.send_touch_with_button(event, 0, dx, dy).await
+    }
+
+    /// 发送带按钮掩码的触摸事件
+    ///
+    /// `button_mask` 位定义: bit0=左键 bit1=右键 bit2=中键
+    /// 用于 `TouchEventType::Button` 事件表达鼠标按键按下/抬起。
+    pub async fn send_touch_with_button(
+        &self,
+        event: meowmic_protocol::TouchEventType,
+        button_mask: u8,
+        dx: f32,
+        dy: f32,
+    ) -> Result<(), NetError> {
         let mut seq_guard = self.touch_seq.lock().await;
         let seq = *seq_guard;
         *seq_guard = seq.wrapping_add(1);
         drop(seq_guard);
 
         let ts = monotonic_ns() as u32;
-        let pkt = TouchPacket::new(seq, ts, event, dx, dy);
+        let pkt = TouchPacket::new_with_button(seq, ts, event, button_mask, dx, dy);
         let mut buf = Vec::with_capacity(64);
         pkt.encode(&mut buf);
         self.touch_sock.send_to(&buf, self.peer.touch).await?;

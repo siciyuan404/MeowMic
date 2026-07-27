@@ -32,11 +32,73 @@ object NativeBridge {
 
     /**
      * 发送触摸事件
-     * @param eventType 0x01=Down 0x02=Move 0x03=Up 0x04=Button
+     * @param eventType 0x01=Down 0x02=Move 0x03=Up 0x04=Button 0x05=Scroll
      * @param dx 相对 X 位移(像素)
      * @param dy 相对 Y 位移(像素)
      */
     external fun nativeSendTouch(eventType: Int, dx: Float, dy: Float): Boolean
+
+    /**
+     * 发送带按钮掩码的触摸事件
+     * @param eventType 0x04=Button (其他同 nativeSendTouch)
+     * @param buttonMask bit0=左键 bit1=右键 bit2=中键
+     * @param dx 对于 Button 事件: >0 表示按下, <=0 表示抬起
+     * @param dy 相对 Y 位移(像素)
+     */
+    external fun nativeSendTouchWithButton(
+        eventType: Int,
+        buttonMask: Int,
+        dx: Float,
+        dy: Float,
+    ): Boolean
+
+    // ============ 便捷方法 ============
+
+    /**
+     * 发送鼠标按键按下事件
+     * @param buttonMask bit0=左键 bit1=右键 bit2=中键
+     */
+    fun sendButtonDown(buttonMask: Int): Boolean {
+        return try {
+            nativeSendTouchWithButton(0x04, buttonMask, 1f, 0f)
+        } catch (e: UnsatisfiedLinkError) {
+            false
+        }
+    }
+
+    /**
+     * 发送鼠标按键抬起事件
+     * @param buttonMask bit0=左键 bit1=右键 bit2=中键
+     */
+    fun sendButtonUp(buttonMask: Int): Boolean {
+        return try {
+            nativeSendTouchWithButton(0x04, buttonMask, 0f, 0f)
+        } catch (e: UnsatisfiedLinkError) {
+            false
+        }
+    }
+
+    /**
+     * 发送鼠标按键点击(按下+抬起)
+     * @param buttonMask bit0=左键 bit1=右键 bit2=中键
+     */
+    fun sendButtonClick(buttonMask: Int): Boolean {
+        val down = sendButtonDown(buttonMask)
+        val up = sendButtonUp(buttonMask)
+        return down && up
+    }
+
+    /**
+     * 发送滚轮事件
+     * @param deltaY 滚动量(正值向上,负值向下)
+     */
+    fun sendScroll(deltaY: Float): Boolean {
+        return try {
+            nativeSendTouch(0x05, 0f, deltaY)
+        } catch (e: UnsatisfiedLinkError) {
+            false
+        }
+    }
 
     /**
      * 发送一帧音频 PCM

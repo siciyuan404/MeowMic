@@ -16,6 +16,10 @@ pub struct Stats {
     pub audio_latency_max_ns: u64,
     pub last_print: Option<Instant>,
     pub window_start: Instant,
+    /// 当前连接数(HTTP /stats 用)
+    pub current_connections: u32,
+    /// server 启动时刻(用于 uptime)
+    pub started_at: Instant,
 }
 
 impl Default for Stats {
@@ -29,6 +33,8 @@ impl Default for Stats {
             audio_latency_max_ns: 0,
             last_print: None,
             window_start: Instant::now(),
+            current_connections: 0,
+            started_at: Instant::now(),
         }
     }
 }
@@ -48,6 +54,42 @@ impl Stats {
         if latency_ns as u64 > self.audio_latency_max_ns {
             self.audio_latency_max_ns = latency_ns as u64;
         }
+    }
+
+    /// 客户端连接 +1
+    pub fn record_connect(&mut self) {
+        self.current_connections = self.current_connections.saturating_add(1);
+    }
+
+    /// 客户端断开 -1
+    pub fn record_disconnect(&mut self) {
+        self.current_connections = self.current_connections.saturating_sub(1);
+    }
+
+    /// 快照当前统计并重置窗口计数
+    /// 返回 (connections, touches_per_sec, audio_frames_per_sec, uptime_secs)
+    pub fn snapshot_and_reset(&mut self) -> (u32, u32, u32, u64) {
+        let elapsed = self.window_start.elapsed().as_secs_f64().max(0.001);
+        let touches_per_sec = (self.touch_count as f64 / elapsed) as u32;
+        let audio_frames_per_sec = (self.audio_count as f64 / elapsed) as u32;
+        let uptime_secs = self.started_at.elapsed().as_secs();
+
+        // 重置窗口
+        self.touch_count = 0;
+        self.audio_count = 0;
+        self.touch_latency_ns = 0;
+        self.audio_latency_ns = 0;
+        self.touch_latency_max_ns = 0;
+        self.audio_latency_max_ns = 0;
+        self.window_start = Instant::now();
+        self.last_print = Some(Instant::now());
+
+        (
+            self.current_connections,
+            touches_per_sec,
+            audio_frames_per_sec,
+            uptime_secs,
+        )
     }
 }
 
@@ -89,6 +131,7 @@ pub async fn print_loop(stats: Arc<Mutex<Stats>>) {
         s.audio_latency_ns = 0;
         s.touch_latency_max_ns = 0;
         s.audio_latency_max_ns = 0;
+        s.window_start = Instant::now();
         s.last_print = Some(Instant::now());
     }
 }

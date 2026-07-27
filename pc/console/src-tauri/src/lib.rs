@@ -6,18 +6,18 @@
 use serde::{Deserialize, Serialize};
 use std::env;
 use std::fs;
+use std::io::{Read, Write};
+use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4, TcpStream};
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
+use std::time::Duration;
 use tauri::State;
 
 const CONFIG_FILE: &str = "meowmic-console.json";
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct AppConfig {
-    pub tcp_port: u16,
-    pub touch_port: u16,
-    pub audio_port: u16,
-    pub output_device: String,
+    pub base_port: u16,
     pub mute_speaker: bool,
     pub auto_start: bool,
     pub sensitivity: f32,
@@ -26,10 +26,7 @@ pub struct AppConfig {
 impl Default for AppConfig {
     fn default() -> Self {
         Self {
-            tcp_port: 28900,
-            touch_port: 28901,
-            audio_port: 28902,
-            output_device: String::new(),
+            base_port: 28900,
             mute_speaker: false,
             auto_start: false,
             sensitivity: 1.2,
@@ -47,10 +44,24 @@ pub struct ServiceStatus {
     pub last_error: Option<String>,
 }
 
+#[derive(Debug, Deserialize)]
+struct StatsResponse {
+    pub connections: u32,
+    pub touches_per_sec: u32,
+    pub audio_frames_per_sec: u32,
+}
+
 pub struct ServiceManager {
     process: Option<Child>,
     started_at: Option<std::time::Instant>,
+    base_port: Option<u16>,
     status: ServiceStatus,
+}
+
+impl Default for ServiceManager {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl ServiceManager {
@@ -58,6 +69,7 @@ impl ServiceManager {
         Self {
             process: None,
             started_at: None,
+            base_port: None,
             status: ServiceStatus {
                 running: false,
                 uptime_secs: 0,
@@ -81,6 +93,26 @@ impl ServiceManager {
             self.status.uptime_secs = started.elapsed().as_secs();
         }
         self.status.running = self.is_running();
+        if self.status.running {
+            if let Some(base_port) = self.base_port {
+                match fetch_stats(base_port) {
+                    Some(stats) => {
+                        self.status.connections = stats.connections;
+                        self.status.touches_per_sec = stats.touches_per_sec;
+                        self.status.audio_frames_per_sec = stats.audio_frames_per_sec;
+                    }
+                    None => {
+                        self.status.connections = 0;
+                        self.status.touches_per_sec = 0;
+                        self.status.audio_frames_per_sec = 0;
+                    }
+                }
+            }
+        } else {
+            self.status.connections = 0;
+            self.status.touches_per_sec = 0;
+            self.status.audio_frames_per_sec = 0;
+        }
         self.status.clone()
     }
 
@@ -93,9 +125,9 @@ impl ServiceManager {
 
         let mut cmd = Command::new(&server_exe);
         // server 使用 --port 基础端口 (control=port, touch=port+1, audio=port+2)
-        cmd.arg("--port").arg(config.tcp_port.to_string());
+        cmd.arg("--port").arg(config.base_port.to_string());
 
-        // 静音外放:通过环境变量传递(server 用 RUST_LOG 控制,音频静音待 server 支持)
+        // 静音外放:通过环境变量传递
         if config.mute_speaker {
             cmd.env("MEOWMIC_MUTE_SPEAKER", "1");
         }
@@ -108,6 +140,7 @@ impl ServiceManager {
             Ok(child) => {
                 self.process = Some(child);
                 self.started_at = Some(std::time::Instant::now());
+                self.base_port = Some(config.base_port);
                 self.status.last_error = None;
                 Ok(())
             }
@@ -136,6 +169,27 @@ impl Drop for ServiceManager {
     }
 }
 
+/// 通过 HTTP GET 拉取 server 的 /stats 统计接口。
+/// 任何失败(连接拒绝、超时、解析错误)都返回 None,不阻断 status。
+fn fetch_stats(base_port: u16) -> Option<StatsResponse> {
+    let port = base_port.checked_add(3)?;
+    let addr = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, port));
+
+    let mut stream = TcpStream::connect_timeout(&addr, Duration::from_secs(1)).ok()?;
+    stream.set_read_timeout(Some(Duration::from_secs(1))).ok()?;
+    stream.set_write_timeout(Some(Duration::from_secs(1))).ok()?;
+
+    let request = "GET /stats HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n";
+    stream.write_all(request.as_bytes()).ok()?;
+
+    let mut response = String::new();
+    stream.read_to_string(&mut response).ok()?;
+
+    // 跳过 HTTP 头部,取 \r\n\r\n 之后的 body
+    let body = response.split("\r\n\r\n").nth(1)?;
+    serde_json::from_str(body).ok()
+}
+
 fn find_server_executable() -> Result<PathBuf, String> {
     let exe_dir = env::current_exe()
         .map_err(|e| e.to_string())?
@@ -150,18 +204,30 @@ fn find_server_executable() -> Result<PathBuf, String> {
         exe_dir.join("bin").join("meowmic-server"),
         exe_dir.join("resources").join("meowmic-server.exe"),
         exe_dir.join("resources").join("meowmic-server"),
+        // target/debug 或 target/release 同级的另一个目录
+        exe_dir.join("..").join("release").join("meowmic-server.exe"),
+        exe_dir.join("..").join("release").join("meowmic-server"),
+        exe_dir.join("..").join("debug").join("meowmic-server.exe"),
+        exe_dir.join("..").join("debug").join("meowmic-server"),
         exe_dir.join("..").join("resources").join("meowmic-server.exe"),
         exe_dir.join("..").join("resources").join("meowmic-server"),
         exe_dir.join("..").join("bin").join("meowmic-server.exe"),
         exe_dir.join("..").join("bin").join("meowmic-server"),
     ];
 
-    // 开发模式下从 target/release 查找
+    // 开发模式下从 cwd 与 workspace 根查找
     if let Ok(cwd) = env::current_dir() {
         candidates.push(cwd.join("target").join("release").join("meowmic-server.exe"));
         candidates.push(cwd.join("target").join("release").join("meowmic-server"));
+        candidates.push(cwd.join("target").join("debug").join("meowmic-server.exe"));
+        candidates.push(cwd.join("target").join("debug").join("meowmic-server"));
         candidates.push(cwd.join("pc").join("console").join("bin").join("meowmic-server.exe"));
         candidates.push(cwd.join("pc").join("console").join("bin").join("meowmic-server"));
+        // src-tauri 作为 cwd 时,workspace 根在上两级
+        candidates.push(cwd.join("..").join("..").join("target").join("release").join("meowmic-server.exe"));
+        candidates.push(cwd.join("..").join("..").join("target").join("release").join("meowmic-server"));
+        candidates.push(cwd.join("..").join("..").join("target").join("debug").join("meowmic-server.exe"));
+        candidates.push(cwd.join("..").join("..").join("target").join("debug").join("meowmic-server"));
     }
 
     let search_paths: Vec<String> = candidates.iter().map(|p| format!("  {}", p.display())).collect();
@@ -237,16 +303,6 @@ fn get_status(state: State<AppState>) -> ServiceStatus {
     svc.status()
 }
 
-#[tauri::command]
-fn get_output_devices() -> Result<Vec<String>, String> {
-    Ok(vec![
-        "默认设备".to_string(),
-        "扬声器 (Realtek High Definition Audio)".to_string(),
-        "显示器 (HDMI Audio)".to_string(),
-        "耳机 (USB Audio Device)".to_string(),
-    ])
-}
-
 pub fn run() {
     let config = load_config();
     let state = AppState {
@@ -266,7 +322,6 @@ pub fn run() {
             start_service,
             stop_service,
             get_status,
-            get_output_devices,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

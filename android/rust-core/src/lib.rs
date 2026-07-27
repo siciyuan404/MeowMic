@@ -130,11 +130,32 @@ pub extern "system" fn Java_com_meowmic_client_NativeBridge_nativeConnect(
 }
 
 /// Java: boolean nativeSendTouch(int eventType, float dx, float dy)
+///
+/// 旧接口保留兼容,button_mask=0。
 #[no_mangle]
 pub extern "system" fn Java_com_meowmic_client_NativeBridge_nativeSendTouch(
+    env: JNIEnv,
+    _class: JClass,
+    event_type: jint,
+    dx: jfloat,
+    dy: jfloat,
+) -> jboolean {
+    // 转发到新的带 button_mask 的实现
+    Java_com_meowmic_client_NativeBridge_nativeSendTouchWithButton(
+        env, _class, event_type, 0, dx, dy,
+    )
+}
+
+/// Java: boolean nativeSendTouchWithButton(int eventType, int buttonMask, float dx, float dy)
+///
+/// `buttonMask` 位定义: bit0=左键 bit1=右键 bit2=中键
+/// 用于 `TouchEventType::Button` (0x04) 事件表达鼠标按键按下/抬起。
+#[no_mangle]
+pub extern "system" fn Java_com_meowmic_client_NativeBridge_nativeSendTouchWithButton(
     _env: JNIEnv,
     _class: JClass,
     event_type: jint,
+    button_mask: jint,
     dx: jfloat,
     dy: jfloat,
 ) -> jboolean {
@@ -151,7 +172,9 @@ pub extern "system" fn Java_com_meowmic_client_NativeBridge_nativeSendTouch(
         return JNI_FALSE;
     };
 
-    let result = s.rt.handle().block_on(s.client.send_touch(event, dx, dy));
+    let result = s.rt.handle().block_on(
+        s.client.send_touch_with_button(event, button_mask as u8, dx, dy),
+    );
     match result {
         Ok(_) => {
             s.touch_sent.fetch_add(1, Ordering::Relaxed);

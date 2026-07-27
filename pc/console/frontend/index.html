@@ -5,40 +5,67 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>MeowMic 控制台</title>
     <style>
+        :root {
+            /* 配色 */
+            --bg: #1a1a2e;
+            --card-bg: #16213e;
+            --card-border: #0f3460;
+            --accent: #667eea;
+            --accent-2: #764ba2;
+            --text: #eee;
+            --text-muted: #94a3b8;
+            --success: #10b981;
+            --danger: #ef4444;
+
+            /* 圆角 */
+            --radius-sm: 8px;
+            --radius-md: 12px;
+            --radius-lg: 16px;
+
+            /* 间距 */
+            --gap-xs: 4px;
+            --gap-sm: 8px;
+            --gap-md: 16px;
+            --gap-lg: 24px;
+
+            /* 字体 */
+            --font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            --font-mono: 'SF Mono', 'Cascadia Code', Consolas, monospace;
+        }
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-            background: #1a1a2e;
-            color: #eee;
-            padding: 20px;
+            font-family: var(--font-sans);
+            background: var(--bg);
+            color: var(--text);
+            padding: var(--gap-md);
             min-height: 100vh;
         }
         .container { max-width: 440px; margin: 0 auto; }
         h1 {
             font-size: 20px;
-            margin-bottom: 16px;
+            margin-bottom: var(--gap-md);
             text-align: center;
-            background: linear-gradient(135deg, #667eea, #764ba2);
+            background: linear-gradient(135deg, var(--accent), var(--accent-2));
             -webkit-background-clip: text;
             -webkit-text-fill-color: transparent;
         }
         .status-card {
-            background: #16213e;
-            border-radius: 12px;
-            padding: 16px;
-            margin-bottom: 16px;
-            border: 1px solid #0f3460;
+            background: var(--card-bg);
+            border-radius: var(--radius-md);
+            padding: var(--gap-md);
+            margin-bottom: var(--gap-md);
+            border: 1px solid var(--card-border);
         }
         .status-header {
             display: flex;
             justify-content: space-between;
             align-items: center;
-            margin-bottom: 12px;
+            margin-bottom: var(--gap-sm);
         }
         .status-indicator {
             display: flex;
             align-items: center;
-            gap: 8px;
+            gap: var(--gap-sm);
             font-size: 14px;
             font-weight: 500;
         }
@@ -50,31 +77,31 @@
             transition: background 0.3s;
         }
         .status-dot.running {
-            background: #4ade80;
-            box-shadow: 0 0 8px #4ade80;
+            background: var(--success);
+            box-shadow: 0 0 8px var(--success);
             animation: pulse 1.5s infinite;
         }
         @keyframes pulse {
             0%, 100% { opacity: 1; }
             50% { opacity: 0.5; }
         }
-        .status-dot.stopped { background: #ef4444; }
+        .status-dot.stopped { background: var(--danger); }
         .btn {
-            padding: 8px 20px;
+            padding: var(--gap-sm) var(--gap-lg);
             border: none;
-            border-radius: 8px;
+            border-radius: var(--radius-sm);
             font-size: 14px;
             font-weight: 600;
             cursor: pointer;
             transition: all 0.2s;
         }
         .btn-start {
-            background: #10b981;
+            background: var(--success);
             color: white;
         }
         .btn-start:hover:not(:disabled) { background: #059669; }
         .btn-stop {
-            background: #ef4444;
+            background: var(--danger);
             color: white;
         }
         .btn-stop:hover:not(:disabled) { background: #dc2626; }
@@ -82,66 +109,75 @@
         .stats-grid {
             display: grid;
             grid-template-columns: 1fr 1fr;
-            gap: 8px;
+            gap: var(--gap-sm);
         }
         .stat-item {
-            background: #0f3460;
-            border-radius: 8px;
-            padding: 10px;
+            background: var(--card-border);
+            border-radius: var(--radius-sm);
+            padding: var(--gap-sm);
             text-align: center;
+            transition: box-shadow 0.3s ease;
         }
-        .stat-label { font-size: 11px; color: #94a3b8; margin-bottom: 4px; }
-        .stat-value { font-size: 18px; font-weight: 700; color: #667eea; }
+        .stat-item.glow {
+            box-shadow: 0 0 12px rgba(16, 185, 129, 0.5);
+        }
+        .stat-label { font-size: 11px; color: var(--text-muted); margin-bottom: var(--gap-xs); }
+        .stat-value { font-size: 18px; font-weight: 700; color: var(--accent); }
+        .stat-value.flash { animation: valueFlash 0.5s ease-out; }
+        @keyframes valueFlash {
+            0% { color: var(--success); }
+            100% { color: var(--accent); }
+        }
         .settings-card {
-            background: #16213e;
-            border-radius: 12px;
-            padding: 16px;
-            margin-bottom: 16px;
-            border: 1px solid #0f3460;
+            background: var(--card-bg);
+            border-radius: var(--radius-md);
+            padding: var(--gap-md);
+            margin-bottom: var(--gap-md);
+            border: 1px solid var(--card-border);
         }
         .settings-title {
             font-size: 14px;
             font-weight: 600;
-            margin-bottom: 12px;
-            color: #a5b4fc;
+            margin-bottom: var(--gap-sm);
+            color: var(--accent);
         }
         .form-row {
-            margin-bottom: 12px;
+            margin-bottom: var(--gap-sm);
         }
         .form-label {
             display: block;
             font-size: 12px;
-            color: #94a3b8;
-            margin-bottom: 4px;
+            color: var(--text-muted);
+            margin-bottom: var(--gap-xs);
         }
         .form-input, .form-select {
             width: 100%;
-            padding: 8px 12px;
-            background: #0f3460;
+            padding: var(--gap-sm) 12px;
+            background: var(--card-border);
             border: 1px solid #1e40af;
-            border-radius: 6px;
-            color: #eee;
+            border-radius: var(--radius-sm);
+            color: var(--text);
             font-size: 13px;
         }
         .form-input:focus, .form-select:focus {
             outline: none;
-            border-color: #667eea;
+            border-color: var(--accent);
         }
         .port-group {
             display: grid;
             grid-template-columns: 1fr 1fr 1fr;
-            gap: 8px;
+            gap: var(--gap-sm);
         }
         .checkbox-row {
             display: flex;
             align-items: center;
-            gap: 8px;
-            margin-bottom: 8px;
+            gap: var(--gap-sm);
+            margin-bottom: var(--gap-sm);
         }
         .checkbox-row input {
             width: 16px;
             height: 16px;
-            accent-color: #667eea;
+            accent-color: var(--accent);
         }
         .checkbox-row label {
             font-size: 13px;
@@ -150,13 +186,18 @@
         .error-msg {
             background: #7f1d1d;
             color: #fecaca;
-            padding: 8px 12px;
-            border-radius: 6px;
+            padding: var(--gap-sm) 12px;
+            border-radius: var(--radius-sm);
             font-size: 12px;
-            margin-top: 8px;
+            margin-top: var(--gap-sm);
             display: none;
         }
         .error-msg.show { display: block; }
+        .muted-text {
+            font-size: 12px;
+            color: var(--text-muted);
+            margin-bottom: var(--gap-sm);
+        }
     </style>
 </head>
 <body>
@@ -175,20 +216,20 @@
                 </div>
             </div>
             <div class="stats-grid">
-                <div class="stat-item">
-                    <div class="stat-label">运行时长</div>
+                <div class="stat-item" id="statUptimeCard">
+                    <div class="stat-label">⏱️ 运行时长</div>
                     <div class="stat-value" id="statUptime">0s</div>
                 </div>
-                <div class="stat-item">
-                    <div class="stat-label">连接数</div>
+                <div class="stat-item" id="statConnsCard">
+                    <div class="stat-label">🔗 连接数</div>
                     <div class="stat-value" id="statConns">0</div>
                 </div>
-                <div class="stat-item">
-                    <div class="stat-label">触控/秒</div>
+                <div class="stat-item" id="statTouchesCard">
+                    <div class="stat-label">👆 触控/秒</div>
                     <div class="stat-value" id="statTouches">0</div>
                 </div>
-                <div class="stat-item">
-                    <div class="stat-label">音频/秒</div>
+                <div class="stat-item" id="statAudioCard">
+                    <div class="stat-label">🎵 音频/秒</div>
                     <div class="stat-value" id="statAudio">0</div>
                 </div>
             </div>
@@ -198,18 +239,13 @@
         <div class="settings-card">
             <div class="settings-title">⚙️ 基础设置</div>
             <div class="form-row">
-                <label class="form-label">基础端口 (TCP=端口, 触控=端口+1, 音频=端口+2)</label>
+                <label class="form-label">基础端口</label>
                 <input type="number" id="tcpPort" class="form-input" placeholder="28900">
             </div>
-            <div style="font-size:11px;color:#64748b;margin-top:-8px;margin-bottom:12px">
-                默认: 28900(TCP) / 28901(触控) / 28902(音频)
+            <div class="muted-text">
+                默认: 28900（TCP=28900 / 触控=28901 / 音频=28902 / 状态=28903）
             </div>
-            <div class="form-row">
-                <label class="form-label">音频输出设备</label>
-                <select id="outputDevice" class="form-select">
-                    <option value="">加载中...</option>
-                </select>
-            </div>
+            <div class="muted-text">使用系统默认音频输出设备</div>
             <div class="checkbox-row">
                 <input type="checkbox" id="muteSpeaker">
                 <label for="muteSpeaker">静音外放 (仅接收麦克风输入)</label>
@@ -223,12 +259,10 @@
 
     <script>
         let config = {
-            tcp_port: 28900,
-            touch_port: 28901,
-            audio_port: 28902,
-            output_device: "",
+            base_port: 28900,
             mute_speaker: false,
             auto_start: false,
+            sensitivity: 1.2,
         };
         let statusInterval = null;
 
@@ -244,19 +278,6 @@
                 config = await Tauri.invoke('get_config');
                 applyConfigToUI(config);
 
-                const devices = await Tauri.invoke('get_output_devices');
-                const select = document.getElementById('outputDevice');
-                select.innerHTML = '';
-                devices.forEach(d => {
-                    const opt = document.createElement('option');
-                    opt.value = d === '默认设备' ? '' : d;
-                    opt.textContent = d;
-                    if (d === config.output_device || (d === '默认设备' && !config.output_device)) {
-                        opt.selected = true;
-                    }
-                    select.appendChild(opt);
-                });
-
                 updateStatus();
                 statusInterval = setInterval(updateStatus, 1000);
             } catch(e) {
@@ -265,19 +286,14 @@
         }
 
         function applyConfigToUI(cfg) {
-            document.getElementById('tcpPort').value = cfg.tcp_port;
-            document.getElementById('touchPort').value = cfg.touch_port;
-            document.getElementById('audioPort').value = cfg.audio_port;
+            document.getElementById('tcpPort').value = cfg.base_port;
             document.getElementById('muteSpeaker').checked = cfg.mute_speaker;
             document.getElementById('autoStart').checked = cfg.auto_start;
         }
 
         function getConfigFromUI() {
             return {
-                tcp_port: parseInt(document.getElementById('tcpPort').value) || 28900,
-                touch_port: (parseInt(document.getElementById('tcpPort').value) || 28900) + 1,
-                audio_port: (parseInt(document.getElementById('tcpPort').value) || 28900) + 2,
-                output_device: document.getElementById('outputDevice').value,
+                base_port: parseInt(document.getElementById('tcpPort').value) || 28900,
                 mute_speaker: document.getElementById('muteSpeaker').checked,
                 auto_start: document.getElementById('autoStart').checked,
                 sensitivity: 1.2,
@@ -326,12 +342,30 @@
                     stopBtn.disabled = true;
                 }
 
-                document.getElementById('statUptime').textContent = formatUptime(status.uptime_secs);
-                document.getElementById('statConns').textContent = status.connections;
-                document.getElementById('statTouches').textContent = status.touches_per_sec;
-                document.getElementById('statAudio').textContent = status.audio_frames_per_sec;
+                setStatValue('statUptime', formatUptime(status.uptime_secs));
+                setStatValue('statConns', status.connections);
+                setStatValue('statTouches', status.touches_per_sec);
+                setStatValue('statAudio', status.audio_frames_per_sec);
+
+                const touchesCard = document.getElementById('statTouchesCard');
+                if (status.touches_per_sec > 0) {
+                    touchesCard.classList.add('glow');
+                } else {
+                    touchesCard.classList.remove('glow');
+                }
             } catch(e) {
                 console.error(e);
+            }
+        }
+
+        function setStatValue(id, value) {
+            const el = document.getElementById(id);
+            const str = String(value);
+            if (el.textContent !== str) {
+                el.textContent = str;
+                el.classList.remove('flash');
+                void el.offsetWidth;
+                el.classList.add('flash');
             }
         }
 

@@ -34,8 +34,12 @@ fun ConnectScreen(
     val context = LocalContext.current
     val connectionState by vm.connectionState.collectAsState()
     val historyAddresses by vm.historyAddresses.collectAsState()
+    val lastAddr by vm.lastAddr.collectAsState()
 
-    var serverAddr by remember { mutableStateOf("192.168.1.100:28900") }
+    // 默认地址:优先用上次输入的,其次用历史第一条,最后用占位符
+    var serverAddr by remember {
+        mutableStateOf(lastAddr.ifBlank { historyAddresses.firstOrNull() ?: "192.168.1.100:28900" })
+    }
     var clientName by remember { mutableStateOf("Android-Client") }
     var hasMicPermission by remember {
         mutableStateOf(
