@@ -186,16 +186,17 @@ class AudioInputManager {
 
                 // 输入/输出循环
                 while (isPlaying) {
+                    val ex = extractor ?: break
                     // 喂输入
                     val inputIndex = codec.dequeueInputBuffer(10000)
                     if (inputIndex >= 0) {
                         val ib = codec.getInputBuffer(inputIndex)!!
-                        val sampleSize = extractor.readSampleData(ib, 0)
+                        val sampleSize = ex.readSampleData(ib, 0)
                         if (sampleSize < 0) {
                             codec.queueInputBuffer(inputIndex, 0, 0, 0, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
                         } else {
-                            codec.queueInputBuffer(inputIndex, 0, sampleSize, extractor.sampleTime, 0)
-                            extractor.advance()
+                            codec.queueInputBuffer(inputIndex, 0, sampleSize, ex.sampleTime, 0)
+                            ex.advance()
                         }
                     }
 
@@ -225,15 +226,16 @@ class AudioInputManager {
                         if (info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0) {
                             Log.i(TAG, "解码完成,循环重播")
                             // 循环播放:重新定位 extractor
-                            extractor.release()
-                            extractor = MediaExtractor()
-                            extractor.setDataSource(ctx, uri, null)
+                            ex.release()
+                            val newExtractor = MediaExtractor()
+                            newExtractor.setDataSource(ctx, uri, null)
+                            extractor = newExtractor
                             // 重新查找音频轨道
-                            for (i in 0 until extractor.trackCount) {
-                                val fmt = extractor.getTrackFormat(i)
+                            for (i in 0 until newExtractor.trackCount) {
+                                val fmt = newExtractor.getTrackFormat(i)
                                 val m = fmt.getString(MediaFormat.KEY_MIME) ?: continue
                                 if (m.startsWith("audio/")) {
-                                    extractor.selectTrack(i)
+                                    newExtractor.selectTrack(i)
                                     break
                                 }
                             }
