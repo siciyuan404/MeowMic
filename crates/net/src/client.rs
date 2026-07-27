@@ -9,6 +9,7 @@
 
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU16, Ordering};
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpStream, UdpSocket};
@@ -16,6 +17,7 @@ use tokio::sync::{Mutex, mpsc};
 
 use meowmic_protocol::{
     AudioPacket, ControlMessage, TouchPacket, encode_control, monotonic_ns,
+    HEADER_LEN, TOUCH_PAYLOAD_LEN,
 };
 
 use crate::{NetError, PeerAddr};
@@ -43,10 +45,12 @@ pub struct Client {
     /// TCP 控制流(线程安全写入)
     control_stream: Arc<Mutex<TcpStream>>,
     touch_sock: Arc<UdpSocket>,
+    /// 同步触摸发送 socket(与 touch_sock 共享同一 fd,用于绕过 block_on)
+    touch_sock_sync: Arc<std::net::UdpSocket>,
     audio_sock: Arc<UdpSocket>,
     peer: PeerAddr,
-    /// 触摸包序号
-    touch_seq: Arc<Mutex<u16>>,
+    /// 触摸包序号(原子操作,避免 async Mutex 开销)
+    touch_seq: Arc<AtomicU16>,
     /// 音频包序号
     audio_seq: Arc<Mutex<u16>>,
 }
@@ -75,7 +79,10 @@ impl Client {
         stream.set_nodelay(true)?;
 
         // 本地 UDP socket:绑定任意端口
-        let touch_sock = UdpSocket::bind("0.0.0.0:0").await?;
+        // touch_sock 使用 std 创建后 try_clone,一份转 tokio(异步接收),一份留作同步发送
+        let touch_sock_std = std::net::UdpSocket::bind("0.0.0.0:0")?;
+        let touch_sock_sync = Arc::new(touch_sock_std.try_clone()?);
+        let touch_sock = UdpSocket::from_std(touch_sock_std)?;
         let audio_sock = UdpSocket::bind("0.0.0.0:0").await?;
 
         let sync = ClockSynchronizer::new();
@@ -83,9 +90,10 @@ impl Client {
             sync: sync.clone(),
             control_stream: Arc::new(Mutex::new(stream)),
             touch_sock: Arc::new(touch_sock),
+            touch_sock_sync,
             audio_sock: Arc::new(audio_sock),
             peer,
-            touch_seq: Arc::new(Mutex::new(0)),
+            touch_seq: Arc::new(AtomicU16::new(0)),
             audio_seq: Arc::new(Mutex::new(0)),
         };
 
@@ -141,17 +149,39 @@ impl Client {
         dx: f32,
         dy: f32,
     ) -> Result<(), NetError> {
-        let mut seq_guard = self.touch_seq.lock().await;
-        let seq = *seq_guard;
-        *seq_guard = seq.wrapping_add(1);
-        drop(seq_guard);
-
+        let seq = self.touch_seq.fetch_add(1, Ordering::Relaxed);
         let ts = monotonic_ns() as u32;
         let pkt = TouchPacket::new_with_button(seq, ts, event, button_mask, dx, dy);
-        let mut buf = Vec::with_capacity(64);
+        let mut buf = Vec::with_capacity(HEADER_LEN + TOUCH_PAYLOAD_LEN);
         pkt.encode(&mut buf);
         self.touch_sock.send_to(&buf, self.peer.touch).await?;
         Ok(())
+    }
+
+    /// 同步发送触摸事件(绕过 tokio block_on,用于高频触摸 JNI 调用)
+    ///
+    /// 直接使用 std::net::UdpSocket::send_to,无 async runtime 开销。
+    /// socket 为非阻塞模式(与 tokio 共享 fd);send buffer 满时丢弃包(触摸为实时数据)。
+    pub fn send_touch_sync(
+        &self,
+        event: meowmic_protocol::TouchEventType,
+        button_mask: u8,
+        dx: f32,
+        dy: f32,
+    ) -> Result<(), NetError> {
+        let seq = self.touch_seq.fetch_add(1, Ordering::Relaxed);
+        let ts = monotonic_ns() as u32;
+        let pkt = TouchPacket::new_with_button(seq, ts, event, button_mask, dx, dy);
+        let mut buf = Vec::with_capacity(HEADER_LEN + TOUCH_PAYLOAD_LEN);
+        pkt.encode(&mut buf);
+        match self.touch_sock_sync.send_to(&buf, self.peer.touch) {
+            Ok(_) => Ok(()),
+            Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                // send buffer 满,丢弃触摸包(实时数据可丢)
+                Ok(())
+            }
+            Err(e) => Err(NetError::Io(e)),
+        }
     }
 
     /// 发送一帧 Opus 音频

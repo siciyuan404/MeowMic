@@ -143,10 +143,11 @@ fun TouchpadScreen(
             modifier = modifier
                 .background(MaterialTheme.colorScheme.surface, RoundedCornerShape(14.dp))
                 .pointerInteropFilter { event ->
-                    pointerCount = event.pointerCount
-                    touchMode = when {
-                        event.pointerCount >= 3 -> "三指"
-                        event.pointerCount == 2 -> "双指"
+                    // 仅在值变化时更新 state,避免每个 ACTION_MOVE 触发重组
+                    val newCount = event.pointerCount
+                    val newMode = when {
+                        newCount >= 3 -> "三指"
+                        newCount == 2 -> "双指"
                         else -> when (event.actionMasked) {
                             MotionEvent.ACTION_DOWN -> "按下"
                             MotionEvent.ACTION_MOVE -> "移动"
@@ -154,6 +155,8 @@ fun TouchpadScreen(
                             else -> "移动"
                         }
                     }
+                    if (newCount != pointerCount) pointerCount = newCount
+                    if (newMode != touchMode) touchMode = newMode
                     vm.handleTouch(event)
                     true
                 },
@@ -700,32 +703,38 @@ fun TouchpadScreen(
             }
         }
     } else {
-        // 竖屏:自上而下
-        Column(modifier = Modifier.fillMaxSize().padding(12.dp).verticalScroll(rememberScrollState())) {
+        // 竖屏:自上而下,不使用 verticalScroll 以免干扰触控事件传递
+        Column(modifier = Modifier.fillMaxSize().padding(12.dp)) {
             StatusBar()
             Spacer(Modifier.height(8.dp))
-            TouchArea(modifier = Modifier.weight(1f).fillMaxWidth().heightIn(min = 200.dp))
+            // 触控区域占满剩余空间(weight 在无 scroll 的 Column 中生效)
+            TouchArea(modifier = Modifier.weight(1f).fillMaxWidth())
             Spacer(Modifier.height(8.dp))
-            VoicePanel()
-            Spacer(Modifier.height(8.dp))
-            if (showBottomButtons) {
-                MouseButtonsBar()
-            } else {
-                TextButton(
-                    onClick = { showBottomButtons = true },
-                    modifier = Modifier.align(Alignment.CenterHorizontally),
-                ) {
-                    Icon(Icons.Default.ExpandLess, null, Modifier.size(16.dp))
-                    Text("显示按键", fontSize = 11.sp)
+            // 控制面板限高,内部滚动避免溢出
+            Box(modifier = Modifier.fillMaxWidth().heightIn(max = 240.dp)) {
+                Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
+                    VoicePanel()
+                    Spacer(Modifier.height(8.dp))
+                    if (showBottomButtons) {
+                        MouseButtonsBar()
+                    } else {
+                        TextButton(
+                            onClick = { showBottomButtons = true },
+                            modifier = Modifier.align(Alignment.CenterHorizontally),
+                        ) {
+                            Icon(Icons.Default.ExpandLess, null, Modifier.size(16.dp))
+                            Text("显示按键", fontSize = 11.sp)
+                        }
+                    }
+                    Spacer(Modifier.height(6.dp))
+                    OutlinedButton(
+                        onClick = onDisconnect,
+                        modifier = Modifier.fillMaxWidth().height(40.dp),
+                        shape = RoundedCornerShape(8.dp),
+                        colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.error),
+                    ) { Text("断开", fontSize = 12.sp) }
                 }
             }
-            Spacer(Modifier.height(6.dp))
-            OutlinedButton(
-                onClick = onDisconnect,
-                modifier = Modifier.fillMaxWidth().height(40.dp),
-                shape = RoundedCornerShape(8.dp),
-                colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.error),
-            ) { Text("断开", fontSize = 12.sp) }
         }
     }
 }

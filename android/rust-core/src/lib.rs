@@ -150,6 +150,8 @@ pub extern "system" fn Java_com_meowmic_client_NativeBridge_nativeSendTouch(
 ///
 /// `buttonMask` 位定义: bit0=左键 bit1=右键 bit2=中键
 /// 用于 `TouchEventType::Button` (0x04) 事件表达鼠标按键按下/抬起。
+///
+/// 使用 send_touch_sync 同步发送,绕过 tokio block_on,避免 UI 线程阻塞。
 #[no_mangle]
 pub extern "system" fn Java_com_meowmic_client_NativeBridge_nativeSendTouchWithButton(
     _env: JNIEnv,
@@ -172,9 +174,8 @@ pub extern "system" fn Java_com_meowmic_client_NativeBridge_nativeSendTouchWithB
         return JNI_FALSE;
     };
 
-    let result = s.rt.handle().block_on(
-        s.client.send_touch_with_button(event, button_mask as u8, dx, dy),
-    );
+    // 同步发送:无 block_on,无 async Mutex,直接 kernel syscall
+    let result = s.client.send_touch_sync(event, button_mask as u8, dx, dy);
     match result {
         Ok(_) => {
             s.touch_sent.fetch_add(1, Ordering::Relaxed);
