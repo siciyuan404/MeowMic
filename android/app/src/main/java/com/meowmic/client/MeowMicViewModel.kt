@@ -269,7 +269,8 @@ class MeowMicViewModel : ViewModel() {
         }
         // 尝试将 uri 转为可重复打开的路径(失败则保留 uri 字符串)
         val path = uri.toString()
-        return path to name
+        val finalName: String = name ?: "audio"
+        return path to finalName
     }
 
     private fun loadAudioPanel() {

@@ -129,7 +129,7 @@ fun TouchpadScreen(
                 Spacer(Modifier.width(6.dp))
                 Column(modifier = Modifier.weight(1f)) {
                     Text("已连接 · $serverAddr", fontSize = 11.sp, fontWeight = FontWeight.Medium, maxLines = 1)
-                    Text("T:$touchSent  A:$audioSent  $touchMode·$pointerCount指", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text("T:$touchSent  A:$audioSent  $touchMode·${pointerCount}指", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
                 Text(if (isLandscape) "横屏" else "竖屏", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
@@ -180,6 +180,7 @@ fun TouchpadScreen(
     // idle → 按下 → recording → 抬起 → idle
     // idle → 按下 → recording → 滑动超过阈值 → locked
     // locked → 点击 → idle
+    @OptIn(ExperimentalComposeUiApi::class)
     @Composable
     fun PttButton(modifier: Modifier) {
         var btnState by remember { mutableStateOf("idle") }
@@ -218,8 +219,8 @@ fun TouchpadScreen(
                                     val event = awaitPointerEvent(PointerEventPass.Main)
                                     val change = event.changes.firstOrNull() ?: break
                                     if (!locked) {
-                                        val dx = change.position.x - pressX
-                                        val dy = change.position.y - pressY
+                                        val dx: Float = change.position.x - pressX
+                                        val dy: Float = change.position.y - pressY
                                         if (abs(dx) > lockThresholdPx || abs(dy) > lockThresholdPx) {
                                             locked = true
                                             btnState = "locked"
