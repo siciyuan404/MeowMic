@@ -1,6 +1,7 @@
 package com.meowmic.client
 
 import android.content.Context
+import android.media.AudioFormat
 import android.media.MediaCodec
 import android.media.MediaExtractor
 import android.media.MediaFormat
@@ -144,6 +145,9 @@ class AudioInputManager {
     /**
      * 用 MediaExtractor + MediaCodec 解码任意容器格式为 PCM,
      * 然后按帧发送给 PC。支持 MP3/AAC/M4A/WAV 等。
+     *
+     * 关键:源文件可能是 44100Hz 立体声,需要下混到单声道 + 重采样到 48kHz,
+     * 否则 PC 端播放会杂音(立体声交错当单声道)或变调(采样率不匹配)。
      */
     private fun decodeWithMediaCodec(ctx: Context, uri: Uri, debugPath: String): Boolean {
         isPlaying = true
@@ -174,15 +178,22 @@ class AudioInputManager {
                 extractor.selectTrack(audioTrackIndex)
 
                 val mime = inputFormat.getString(MediaFormat.KEY_MIME)!!
+                // 请求 16-bit PCM 输出(部分解码器默认输出 float)
+                try {
+                    inputFormat.setInteger(MediaFormat.KEY_PCM_ENCODING, AudioFormat.ENCODING_PCM_16BIT)
+                } catch (_: Exception) { /* 老设备可能不支持 */ }
                 codec = MediaCodec.createDecoderByType(mime)
                 codec.configure(inputFormat, null, null, 0)
                 codec.start()
 
                 val info = MediaCodec.BufferInfo()
-                val pcmBuffer = java.util.concurrent.ConcurrentLinkedQueue<Short>()
                 var frameAccumulator = ShortArray(0)
 
-                Log.i(TAG, "开始解码音频到 PC: $debugPath (mime=$mime)")
+                // 源格式(输出格式可能变化,初始用输入格式预估)
+                var srcSampleRate = inputFormat.getInteger(MediaFormat.KEY_SAMPLE_RATE, TARGET_SAMPLE_RATE)
+                var srcChannels = inputFormat.getInteger(MediaFormat.KEY_CHANNEL_COUNT, 1)
+
+                Log.i(TAG, "开始解码音频: $debugPath (mime=$mime src=${srcSampleRate}Hz ${srcChannels}ch → ${TARGET_SAMPLE_RATE}Hz mono)")
 
                 // 输入/输出循环
                 while (isPlaying) {
@@ -202,41 +213,56 @@ class AudioInputManager {
 
                     // 取输出
                     val outIndex = codec.dequeueOutputBuffer(info, 10000)
-                    if (outIndex >= 0) {
-                        val ob = codec.getOutputBuffer(outIndex)!!
-                        // 读取 PCM(假设是 i16)
-                        val remaining = ob.remaining()
-                        val bytes = ByteArray(remaining)
-                        ob.get(bytes)
-                        codec.releaseOutputBuffer(outIndex, false)
-
-                        // 转换为 short 并累积到 frameAccumulator
-                        val shorts = bytesToShorts(bytes)
-                        frameAccumulator = concatShorts(frameAccumulator, shorts)
-
-                        // 按 FRAME_SAMPLES 切片发送
-                        while (frameAccumulator.size >= FRAME_SAMPLES) {
-                            val frame = frameAccumulator.copyOfRange(0, FRAME_SAMPLES)
-                            sendPcmFrameShorts(frame)
-                            frameAccumulator = frameAccumulator.copyOfRange(FRAME_SAMPLES, frameAccumulator.size)
-                            // 节流:每帧 20ms
-                            Thread.sleep(20)
+                    when {
+                        outIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> {
+                            // 解码器输出格式确定,更新实际采样率/声道数
+                            val ofmt = codec.outputFormat
+                            srcSampleRate = ofmt.getInteger(MediaFormat.KEY_SAMPLE_RATE, srcSampleRate)
+                            srcChannels = ofmt.getInteger(MediaFormat.KEY_CHANNEL_COUNT, srcChannels)
+                            Log.i(TAG, "解码输出格式: ${srcSampleRate}Hz ${srcChannels}ch")
                         }
+                        outIndex >= 0 -> {
+                            val ob = codec.getOutputBuffer(outIndex)!!
+                            val remaining = ob.remaining()
+                            val bytes = ByteArray(remaining)
+                            ob.get(bytes)
+                            codec.releaseOutputBuffer(outIndex, false)
 
-                        if (info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0) {
-                            Log.i(TAG, "解码完成,循环重播")
-                            // 循环播放:重新定位 extractor
-                            ex.release()
-                            val newExtractor = MediaExtractor()
-                            newExtractor.setDataSource(ctx, uri, null)
-                            extractor = newExtractor
-                            // 重新查找音频轨道
-                            for (i in 0 until newExtractor.trackCount) {
-                                val fmt = newExtractor.getTrackFormat(i)
-                                val m = fmt.getString(MediaFormat.KEY_MIME) ?: continue
-                                if (m.startsWith("audio/")) {
-                                    newExtractor.selectTrack(i)
-                                    break
+                            // 转换为 i16 shorts
+                            var shorts = bytesToShorts(bytes)
+                            // 下混立体声→单声道
+                            if (srcChannels >= 2) {
+                                shorts = downmixToMono(shorts, srcChannels)
+                            }
+                            // 重采样到 48kHz
+                            if (srcSampleRate != TARGET_SAMPLE_RATE) {
+                                shorts = resample(shorts, srcSampleRate, TARGET_SAMPLE_RATE)
+                            }
+
+                            frameAccumulator = concatShorts(frameAccumulator, shorts)
+                            // 按 FRAME_SAMPLES 切片发送
+                            while (frameAccumulator.size >= FRAME_SAMPLES) {
+                                val frame = frameAccumulator.copyOfRange(0, FRAME_SAMPLES)
+                                sendPcmFrameShorts(frame)
+                                frameAccumulator = frameAccumulator.copyOfRange(FRAME_SAMPLES, frameAccumulator.size)
+                                // 节流:每帧 20ms
+                                Thread.sleep(20)
+                            }
+
+                            if (info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0) {
+                                Log.i(TAG, "解码完成,循环重播")
+                                // 循环播放:重新定位 extractor
+                                ex.release()
+                                val newExtractor = MediaExtractor()
+                                newExtractor.setDataSource(ctx, uri, null)
+                                extractor = newExtractor
+                                for (i in 0 until newExtractor.trackCount) {
+                                    val fmt = newExtractor.getTrackFormat(i)
+                                    val m = fmt.getString(MediaFormat.KEY_MIME) ?: continue
+                                    if (m.startsWith("audio/")) {
+                                        newExtractor.selectTrack(i)
+                                        break
+                                    }
                                 }
                             }
                         }
@@ -256,6 +282,47 @@ class AudioInputManager {
             start()
         }
         return true
+    }
+
+    /**
+     * 多声道下混到单声道(取各声道平均值)
+     */
+    private fun downmixToMono(shorts: ShortArray, channels: Int): ShortArray {
+        if (channels <= 1) return shorts
+        val n = shorts.size / channels
+        val out = ShortArray(n)
+        for (i in 0 until n) {
+            var sum = 0
+            for (c in 0 until channels) {
+                sum += shorts[i * channels + c].toInt()
+            }
+            out[i] = (sum / channels).toShort()
+        }
+        return out
+    }
+
+    /**
+     * 线性插值重采样
+     * 适用于 44100→48000(上采样)等常见场景
+     */
+    private fun resample(shorts: ShortArray, srcRate: Int, dstRate: Int): ShortArray {
+        if (srcRate == dstRate || shorts.isEmpty()) return shorts
+        val ratio = srcRate.toFloat() / dstRate.toFloat()
+        val outLen = (shorts.size / ratio).toInt().coerceAtLeast(1)
+        val out = ShortArray(outLen)
+        for (i in 0 until outLen) {
+            val srcPos = i * ratio
+            val srcIdx = srcPos.toInt()
+            val frac = srcPos - srcIdx
+            if (srcIdx + 1 < shorts.size) {
+                val a = shorts[srcIdx].toInt()
+                val b = shorts[srcIdx + 1].toInt()
+                out[i] = (a + (b - a) * frac).toInt().toShort()
+            } else {
+                out[i] = shorts[shorts.size - 1]
+            }
+        }
+        return out
     }
 
     private fun sendPcmFrame(bytes: ByteArray) {

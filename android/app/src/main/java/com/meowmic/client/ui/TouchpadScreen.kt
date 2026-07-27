@@ -95,12 +95,9 @@ fun TouchpadScreen(
         uri?.let { vm.onAudioFilePicked(it) }
     }
 
-    LaunchedEffect(configuration.orientation, configuration.screenWidthDp, configuration.screenHeightDp) {
-        val width = configuration.screenWidthDp
-        val height = configuration.screenHeightDp
-        val rotation = if (width > height) 90 else 0
-        vm.setScreenRotation(rotation)
-    }
+    // 注意:不设置 screenRotation。
+    // Compose pointerInteropFilter 返回的 MotionEvent 坐标已经在当前屏幕方向的坐标系中
+    // (横屏时 X 向右、Y 向下),直接用原始 delta 即可,不需要旋转。
 
     LaunchedEffect(connectionState) {
         if (connectionState is ConnectionState.Disconnected || connectionState is ConnectionState.Error) {
