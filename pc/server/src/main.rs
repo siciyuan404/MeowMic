@@ -33,6 +33,9 @@ struct Cli {
     /// 基础端口(control=base, touch=base+1, audio=base+2)
     #[arg(long, default_value_t = PortLayout::DEFAULT_BASE)]
     port: u16,
+    /// 指定音频输出设备名称(空则用默认)
+    #[arg(long)]
+    output_device: Option<String>,
 }
 
 #[derive(Subcommand, Debug)]
@@ -43,6 +46,9 @@ enum Cmd {
         bind: String,
         #[arg(long, default_value_t = PortLayout::DEFAULT_BASE)]
         port: u16,
+        /// 指定音频输出设备名称(空则用默认)
+        #[arg(long)]
+        output_device: Option<String>,
     },
     /// 打印本机所有 IP,方便手机端配置
     ListIps,
@@ -61,16 +67,16 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.cmd {
-        Some(Cmd::Run { bind, port }) => run_server(&bind, port).await,
+        Some(Cmd::Run { bind, port, output_device }) => run_server(&bind, port, output_device.as_deref()).await,
         Some(Cmd::ListIps) => {
             list_local_ips();
             Ok(())
         }
-        None => run_server(&cli.bind, cli.port).await,
+        None => run_server(&cli.bind, cli.port, cli.output_device.as_deref()).await,
     }
 }
 
-async fn run_server(bind: &str, port: u16) -> Result<()> {
+async fn run_server(bind: &str, port: u16, output_device: Option<&str>) -> Result<()> {
     let ports = PortLayout::from_base(port);
     let bind = bind.to_string();
     info!("MeowMic 服务端启动中...");
@@ -111,7 +117,12 @@ async fn run_server(bind: &str, port: u16) -> Result<()> {
         .map(|v| v == "1")
         .unwrap_or(false);
     info!("静音外放: {}", if muted { "开启" } else { "关闭" });
-    let audio_player = Arc::new(audio_play::AudioPlayer::new(audio_cfg, muted).await?);
+    if let Some(ref name) = output_device {
+        info!("音频输出设备: {}", name);
+    } else {
+        info!("音频输出设备: 默认");
+    }
+    let audio_player = Arc::new(audio_play::AudioPlayer::new(audio_cfg, muted, output_device.map(|s| s.to_string())).await?);
     let decoder = Arc::new(Mutex::new(meowmic_audio::make_decoder(&audio_cfg)));
 
     // 事件循环

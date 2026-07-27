@@ -15,6 +15,7 @@ const CONFIG_FILE: &str = "meowmic-console.json";
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct AppConfig {
     pub base_port: u16,
+    pub output_device: String,
     pub mute_speaker: bool,
     pub auto_start: bool,
     pub sensitivity: f32,
@@ -24,6 +25,7 @@ impl Default for AppConfig {
     fn default() -> Self {
         Self {
             base_port: 28900,
+            output_device: String::new(),
             mute_speaker: false,
             auto_start: false,
             sensitivity: 1.2,
@@ -127,6 +129,10 @@ impl ServiceManager {
         // 静音外放:通过环境变量传递
         if config.mute_speaker {
             cmd.env("MEOWMIC_MUTE_SPEAKER", "1");
+        }
+
+        if !config.output_device.is_empty() {
+            cmd.arg("--output-device").arg(&config.output_device);
         }
 
         cmd.stdout(Stdio::piped());
@@ -300,6 +306,20 @@ fn get_status(state: State<AppState>) -> ServiceStatus {
     svc.status()
 }
 
+#[tauri::command]
+fn get_output_devices() -> Result<Vec<String>, String> {
+    use cpal::traits::{DeviceTrait, HostTrait};
+    let host = cpal::default_host();
+    let mut devices = vec!["系统默认输出设备".to_string()];
+    let iter = host.output_devices().map_err(|e| e.to_string())?;
+    for device in iter {
+        if let Ok(name) = device.name() {
+            devices.push(name);
+        }
+    }
+    Ok(devices)
+}
+
 pub fn run() {
     let config = load_config();
     let state = AppState {
@@ -319,6 +339,7 @@ pub fn run() {
             start_service,
             stop_service,
             get_status,
+            get_output_devices,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

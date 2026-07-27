@@ -294,7 +294,15 @@
             <div class="muted-text">
                 默认: 28900（TCP=28900 / 触控=28901 / 音频=28902 / 状态=28903）
             </div>
-            <div class="muted-text">使用系统默认音频输出设备</div>
+            <div class="form-row">
+                <label class="form-label">音频输出设备</label>
+                <select id="outputDevice" class="form-select">
+                    <option value="">加载中...</option>
+                </select>
+            </div>
+            <div class="muted-text">
+                提示：选择 "CABLE Input" 等虚拟音频设备，可将手机麦克风声音路由到其他应用（如 Zoom、Discord）
+            </div>
             <div class="checkbox-row">
                 <input type="checkbox" id="muteSpeaker">
                 <label for="muteSpeaker">静音外放 (仅接收麦克风输入)</label>
@@ -309,6 +317,7 @@
     <script>
         let config = {
             base_port: 28900,
+            output_device: "",
             mute_speaker: false,
             auto_start: false,
             sensitivity: 1.2,
@@ -329,6 +338,25 @@
 
                 config = await Tauri.invoke('get_config');
                 applyConfigToUI(config);
+
+                try {
+                    const devices = await Tauri.invoke('get_output_devices');
+                    const select = document.getElementById('outputDevice');
+                    select.innerHTML = '';
+                    const pendingValue = select.getAttribute('data-pending') || config.output_device || '';
+                    devices.forEach(d => {
+                        const opt = document.createElement('option');
+                        opt.value = d === '系统默认输出设备' ? '' : d;
+                        opt.textContent = d;
+                        if (d === pendingValue || (d === '系统默认输出设备' && !pendingValue)) {
+                            opt.selected = true;
+                        }
+                        select.appendChild(opt);
+                    });
+                    select.removeAttribute('data-pending');
+                } catch(e) {
+                    console.error('加载输出设备列表失败:', e);
+                }
 
                 updateStatus();
                 statusInterval = setInterval(updateStatus, 1000);
@@ -367,6 +395,12 @@
 
         function applyConfigToUI(cfg) {
             document.getElementById('tcpPort').value = cfg.base_port;
+            const outputDevice = document.getElementById('outputDevice');
+            if (outputDevice.options.length > 0) {
+                outputDevice.value = cfg.output_device || '';
+            } else {
+                outputDevice.setAttribute('data-pending', cfg.output_device || '');
+            }
             document.getElementById('muteSpeaker').checked = cfg.mute_speaker;
             document.getElementById('autoStart').checked = cfg.auto_start;
         }
@@ -374,6 +408,7 @@
         function getConfigFromUI() {
             return {
                 base_port: parseInt(document.getElementById('tcpPort').value) || 28900,
+                output_device: document.getElementById('outputDevice').value,
                 mute_speaker: document.getElementById('muteSpeaker').checked,
                 auto_start: document.getElementById('autoStart').checked,
                 sensitivity: 1.2,

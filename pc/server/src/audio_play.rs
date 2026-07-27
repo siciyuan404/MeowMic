@@ -20,11 +20,17 @@ pub struct AudioPlayer {
 }
 
 impl AudioPlayer {
-    pub async fn new(cfg: AudioConfig, muted: bool) -> anyhow::Result<Self> {
+    pub async fn new(cfg: AudioConfig, muted: bool, output_device: Option<String>) -> anyhow::Result<Self> {
         let host = cpal::default_host();
-        let device = host
-            .default_output_device()
-            .ok_or_else(|| anyhow::anyhow!("无可用音频输出设备"))?;
+        let device = if let Some(ref name) = output_device {
+            // 尝试查找指定设备
+            host.output_devices()?
+                .find(|d| d.name().ok().as_deref() == Some(name.as_str()))
+                .ok_or_else(|| anyhow::anyhow!("找不到指定的音频输出设备: {}", name))?
+        } else {
+            host.default_output_device()
+                .ok_or_else(|| anyhow::anyhow!("无可用音频输出设备"))?
+        };
 
         let supported = device
             .supported_output_configs()?
