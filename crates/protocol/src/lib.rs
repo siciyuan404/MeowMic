@@ -284,6 +284,9 @@ pub enum ControlMessage {
         touch_packets_lost: u64,
         audio_packets_lost: u64,
     },
+    /// 客户端通知服务端切换外放静音状态
+    /// muted=true 时,服务端丢弃 PCM 不输出到扬声器
+    SetMuteSpeaker { muted: bool },
     Ping,
     Pong,
     Bye,

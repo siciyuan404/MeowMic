@@ -109,6 +109,13 @@ object NativeBridge {
     /** 优雅断开 */
     external fun nativeDisconnect()
 
+    /**
+     * 通知服务端切换外放静音状态
+     * @param muted true=静音(丢弃 PCM 不输出到 PC 扬声器)
+     * @return true 表示控制消息发送成功
+     */
+    external fun nativeSetMuteSpeaker(muted: Boolean): Boolean
+
     /** 获取统计 JSON: {"touch_sent":N,"audio_sent":N} */
     external fun nativeGetStats(): String
 }

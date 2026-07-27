@@ -3,6 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="icon" href="data:,">
     <title>MeowMic 控制台</title>
     <style>
         :root {
@@ -198,12 +199,60 @@
             color: var(--text-muted);
             margin-bottom: var(--gap-sm);
         }
+        /* ============ 自定义标题栏 ============ */
+        .titlebar {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            height: 36px;
+            padding: 0 8px 0 14px;
+            background: linear-gradient(135deg, #0f0f1e, #16213e);
+            border-bottom: 1px solid var(--card-border);
+            user-select: none;
+            -webkit-user-select: none;
+        }
+        .titlebar-title {
+            font-size: 12px;
+            font-weight: 600;
+            color: var(--text-muted);
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+        .titlebar-buttons {
+            display: flex;
+            gap: 2px;
+        }
+        .titlebar-btn {
+            width: 28px;
+            height: 28px;
+            border: none;
+            background: transparent;
+            color: var(--text-muted);
+            font-size: 12px;
+            cursor: pointer;
+            border-radius: 4px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: background 0.15s;
+        }
+        .titlebar-btn:hover { background: rgba(255,255,255,0.1); }
+        .titlebar-btn.close:hover { background: #e81123; color: white; }
+        body { padding: 0; }
+        .container { padding: var(--gap-md); padding-top: var(--gap-sm); }
     </style>
 </head>
 <body>
+    <div class="titlebar">
+        <div class="titlebar-title" data-drag>🐱 MeowMic 控制台</div>
+        <div class="titlebar-buttons">
+            <button class="titlebar-btn" onclick="windowMinimize()" title="最小化">─</button>
+            <button class="titlebar-btn" onclick="windowToggleMax()" title="最大化/还原">▢</button>
+            <button class="titlebar-btn close" onclick="windowClose()" title="关闭">✕</button>
+        </div>
+    </div>
     <div class="container">
-        <h1>🐱 MeowMic 控制台</h1>
-
         <div class="status-card">
             <div class="status-header">
                 <div class="status-indicator">
@@ -275,6 +324,9 @@
                     return;
                 }
 
+                // 标题栏拖拽
+                setupTitlebarDrag(Tauri);
+
                 config = await Tauri.invoke('get_config');
                 applyConfigToUI(config);
 
@@ -283,6 +335,34 @@
             } catch(e) {
                 console.error(e);
             }
+        }
+
+        // ============ 自定义窗口控制 ============
+        function setupTitlebarDrag(Tauri) {
+            const dragEls = document.querySelectorAll('[data-drag]');
+            dragEls.forEach(el => {
+                el.addEventListener('mousedown', async (e) => {
+                    if (e.button === 0) {
+                        // 左键拖拽窗口
+                        try { await Tauri.window.getCurrent().startDragging(); } catch(err) {}
+                    }
+                });
+            });
+        }
+
+        async function windowMinimize() {
+            const Tauri = window.__TAURI__;
+            try { await Tauri.window.getCurrent().minimize(); } catch(err) { console.error(err); }
+        }
+
+        async function windowToggleMax() {
+            const Tauri = window.__TAURI__;
+            try { await Tauri.window.getCurrent().toggleMaximize(); } catch(err) { console.error(err); }
+        }
+
+        async function windowClose() {
+            const Tauri = window.__TAURI__;
+            try { await Tauri.window.getCurrent().close(); } catch(err) { console.error(err); }
         }
 
         function applyConfigToUI(cfg) {

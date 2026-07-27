@@ -183,9 +183,17 @@ fun TouchpadScreen(
     @OptIn(ExperimentalComposeUiApi::class)
     @Composable
     fun PttButton(modifier: Modifier) {
+        // 状态: idle(空闲) / recording(录音中) / locked(锁定录音)
+        // idle → 按下 → recording → 松开 → idle
+        // idle → 按下 → recording → 滑动超过阈值 → locked
+        // locked → 点击 → idle(取消锁定)
         var btnState by remember { mutableStateOf("idle") }
         val density = LocalDensity.current
         val lockThresholdPx = with(density) { 60.dp.toPx() }
+        val scope = rememberCoroutineScope()
+
+        // 用 mutableStateOf 包装当前状态供 pointerInput 读取,避免 key 变化重启
+        val stateRef = remember { mutableStateOf("idle") }
 
         val bgColor = when (btnState) {
             "recording" -> MaterialTheme.colorScheme.error
@@ -203,15 +211,17 @@ fun TouchpadScreen(
             modifier = modifier
                 .height(48.dp)
                 .background(bgColor, RoundedCornerShape(8.dp))
-                .pointerInput(btnState) {
+                .pointerInput(Unit) {
                     awaitEachGesture {
                         val down = awaitFirstDown(requireUnconsumed = false)
                         val pressX = down.position.x
                         val pressY = down.position.y
+                        val currentState = stateRef.value
 
-                        when (btnState) {
+                        when (currentState) {
                             "idle" -> {
                                 btnState = "recording"
+                                stateRef.value = "recording"
                                 vm.setMicEnabled(true)
                                 showToast("开始录音(松开结束,滑动锁定)")
                                 var locked = false
@@ -224,12 +234,14 @@ fun TouchpadScreen(
                                         if (abs(dx) > lockThresholdPx || abs(dy) > lockThresholdPx) {
                                             locked = true
                                             btnState = "locked"
+                                            stateRef.value = "locked"
                                             showToast("已锁定录音(点击取消)")
                                         }
                                     }
                                     if (change.changedToUp()) {
                                         if (!locked) {
                                             btnState = "idle"
+                                            stateRef.value = "idle"
                                             vm.setMicEnabled(false)
                                         }
                                         break
@@ -237,22 +249,30 @@ fun TouchpadScreen(
                                 }
                             }
                             "locked" -> {
-                                // 点击取消锁定
-                                btnState = "idle"
-                                vm.setMicEnabled(false)
-                                showToast("已取消锁定录音")
+                                // 点击取消锁定 - 等待抬起后再切换状态
                                 while (true) {
                                     val event = awaitPointerEvent(PointerEventPass.Main)
                                     val change = event.changes.firstOrNull() ?: break
-                                    if (change.changedToUp()) break
+                                    if (change.changedToUp()) {
+                                        btnState = "idle"
+                                        stateRef.value = "idle"
+                                        vm.setMicEnabled(false)
+                                        showToast("已取消锁定录音")
+                                        break
+                                    }
                                 }
                             }
                             else -> {
-                                // recording 状态防御
+                                // recording 状态防御:等待抬起
                                 while (true) {
                                     val event = awaitPointerEvent(PointerEventPass.Main)
                                     val change = event.changes.firstOrNull() ?: break
-                                    if (change.changedToUp()) break
+                                    if (change.changedToUp()) {
+                                        btnState = "idle"
+                                        stateRef.value = "idle"
+                                        vm.setMicEnabled(false)
+                                        break
+                                    }
                                 }
                             }
                         }
@@ -529,9 +549,14 @@ fun TouchpadScreen(
         }
     }
 
-    // 语音控制面板(精简:PTT + 静音 + 提示开关)
+    // 语音控制面板:Tab 切换 麦克风 / 音频
     @Composable
     fun VoicePanel() {
+        var selectedTab by remember { mutableStateOf(0) }  // 0=麦克风, 1=音频
+        val micEnabled by vm.micEnabled.collectAsState()
+        val muteSpk by vm.muteSpeaker.collectAsState()
+        val currentMode by vm.currentAudioMode.collectAsState()
+
         Card(
             modifier = Modifier.fillMaxWidth(),
             shape = RoundedCornerShape(10.dp),
@@ -549,32 +574,70 @@ fun TouchpadScreen(
                     )
                 }
                 Spacer(Modifier.height(8.dp))
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(6.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    PttButton(modifier = Modifier.weight(1f))
 
-                    IconButton(
+                // Tab 行
+                TabRow(
+                    selectedTabIndex = selectedTab,
+                    modifier = Modifier.fillMaxWidth(),
+                    contentColor = MaterialTheme.colorScheme.primary,
+                ) {
+                    Tab(
+                        selected = selectedTab == 0,
                         onClick = {
-                            muteSpeaker = !muteSpeaker
-                            vm.setMuteSpeaker(muteSpeaker)
-                            showToast(if (muteSpeaker) "已静音外放" else "已开启外放")
+                            selectedTab = 0
+                            // 切到麦克风 Tab,停止音频文件播放
+                            if (currentMode == AudioInputManager.InputMode.MUSIC_FILE) {
+                                vm.stopMusicPlayback()
+                            }
+                            showToast("麦克风 Tab")
                         },
-                        modifier = Modifier
-                            .size(48.dp)
-                            .pointerInput(Unit) {
-                                detectTapGestures(
-                                    onLongPress = { showToast("静音外放切换") }
+                        text = { Text("麦克风", fontSize = 11.sp) },
+                        icon = { Icon(Icons.Default.Mic, null, Modifier.size(14.dp)) },
+                    )
+                    Tab(
+                        selected = selectedTab == 1,
+                        onClick = {
+                            selectedTab = 1
+                            // 切到音频 Tab,停止麦克风
+                            if (micEnabled) vm.setMicEnabled(false)
+                            showToast("音频 Tab")
+                        },
+                        text = { Text("音频", fontSize = 11.sp) },
+                        icon = { Icon(Icons.Default.MusicNote, null, Modifier.size(14.dp)) },
+                    )
+                }
+
+                Spacer(Modifier.height(8.dp))
+
+                when (selectedTab) {
+                    0 -> {
+                        // 麦克风 Tab:PTT 长按说话 + 静音外放
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            PttButton(modifier = Modifier.weight(1f))
+                            IconButton(
+                                onClick = {
+                                    val newMuted = !muteSpk
+                                    vm.setMuteSpeaker(newMuted)
+                                    showToast(if (newMuted) "已静音外放" else "已开启外放")
+                                },
+                                modifier = Modifier.size(48.dp),
+                            ) {
+                                Icon(
+                                    if (muteSpk) Icons.Default.VolumeOff else Icons.Default.VolumeUp,
+                                    contentDescription = "静音外放",
+                                    tint = if (muteSpk) MaterialTheme.colorScheme.error
+                                    else MaterialTheme.colorScheme.onSurfaceVariant,
                                 )
-                            },
-                    ) {
-                        Icon(
-                            if (muteSpeaker) Icons.Default.VolumeOff else Icons.Default.VolumeUp,
-                            contentDescription = "静音外放",
-                            tint = if (muteSpeaker) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
+                            }
+                        }
+                    }
+                    1 -> {
+                        // 音频 Tab:音频面板(历史 + 快捷 slot)
+                        AudioPanel()
                     }
                 }
             }
@@ -625,7 +688,6 @@ fun TouchpadScreen(
                 verticalArrangement = Arrangement.spacedBy(6.dp),
             ) {
                 VoicePanel()
-                AudioPanel()
                 if (showBottomButtons) {
                     MouseButtonsBar()
                 }
@@ -645,8 +707,6 @@ fun TouchpadScreen(
             TouchArea(modifier = Modifier.weight(1f).fillMaxWidth().heightIn(min = 200.dp))
             Spacer(Modifier.height(8.dp))
             VoicePanel()
-            Spacer(Modifier.height(8.dp))
-            AudioPanel()
             Spacer(Modifier.height(8.dp))
             if (showBottomButtons) {
                 MouseButtonsBar()

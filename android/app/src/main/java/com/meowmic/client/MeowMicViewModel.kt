@@ -194,6 +194,11 @@ class MeowMicViewModel : ViewModel() {
 
     fun setMuteSpeaker(mute: Boolean) {
         _muteSpeaker.value = mute
+        try {
+            NativeBridge.nativeSetMuteSpeaker(mute)
+        } catch (e: UnsatisfiedLinkError) {
+            Log.w(TAG, "nativeSetMuteSpeaker 失败: ${e.message}")
+        }
     }
 
     fun switchAudioMode(mode: AudioInputManager.InputMode) {

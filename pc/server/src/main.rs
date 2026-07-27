@@ -188,6 +188,10 @@ async fn run_server(bind: &str, port: u16) -> Result<()> {
                 info!("✗ 客户端断开 id={}", client_id);
                 stats.lock().await.record_disconnect();
             }
+            ServerEvent::SetMuteSpeaker { client_id, muted } => {
+                audio_player.set_muted(muted);
+                info!("已切换外放静音: id={} muted={}", client_id, muted);
+            }
             ServerEvent::Error(e) => {
                 warn!("服务端事件错误: {}", e);
             }

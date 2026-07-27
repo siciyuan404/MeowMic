@@ -25,6 +25,14 @@
       },
       "fs": {
         "all": true
+      },
+      "window": {
+        "all": false,
+        "startDragging": true,
+        "minimize": true,
+        "maximize": true,
+        "unmaximize": true,
+        "close": true
       }
     },
     "bundle": {
@@ -50,7 +58,9 @@
         "width": 480,
         "height": 600,
         "resizable": true,
-        "fullscreen": false
+        "fullscreen": false,
+        "decorations": false,
+        "transparent": false
       }
     ]
   }

@@ -1,7 +1,4 @@
-#![cfg_attr(
-    all(not(debug_assertions), target_os = "windows"),
-    windows_subsystem = "windows"
-)]
+// windows_subsystem 在 main.rs 中设置
 
 use serde::{Deserialize, Serialize};
 use std::env;

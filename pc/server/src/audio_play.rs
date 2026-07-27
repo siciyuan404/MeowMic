@@ -5,6 +5,7 @@
 //! 后续:替换为自研 WDM 虚拟麦克风设备,任意应用可选用,延迟可控
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::sync::mpsc;
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
@@ -14,8 +15,8 @@ use meowmic_audio::AudioConfig;
 pub struct AudioPlayer {
     /// PCM 样本发送端(解码线程 → cpal 回调)
     tx: mpsc::Sender<Vec<i16>>,
-    /// 静音模式:play() 直接丢弃 PCM,但 cpal stream 仍然存活
-    muted: bool,
+    /// 静音模式:运行时可通过 set_muted() 切换
+    muted: Arc<AtomicBool>,
 }
 
 impl AudioPlayer {
@@ -50,7 +51,6 @@ impl AudioPlayer {
         let (tx, mut rx) = mpsc::channel::<Vec<i16>>(32);
 
         // 共享环形缓冲,缓冲 3 帧(60ms)对抗抖动
-        // P0 用简化版本:直接 channel + Vec 拼接
         let buffer: Arc<std::sync::Mutex<std::collections::VecDeque<i16>>> =
             Arc::new(std::sync::Mutex::new(std::collections::VecDeque::with_capacity(
                 cfg.samples_per_frame() * 4,
@@ -103,16 +103,27 @@ impl AudioPlayer {
         stream.play()?;
 
         // stream 必须保持存活:用 OnceCell 持有
-        // (cpal Stream drop 即停,这里用静态持有简化 P0)
         std::mem::forget(stream);
 
-        Ok(Self { tx, muted })
+        Ok(Self {
+            tx,
+            muted: Arc::new(AtomicBool::new(muted)),
+        })
+    }
+
+    /// 运行时切换静音状态
+    pub fn set_muted(&self, muted: bool) {
+        self.muted.store(muted, Ordering::Relaxed);
+    }
+
+    pub fn is_muted(&self) -> bool {
+        self.muted.load(Ordering::Relaxed)
     }
 
     pub async fn play(&self, pcm: &[i16]) {
         // 静音模式:不把 PCM 推入 cpal 缓冲,直接丢弃
         // stream 仍然存活(输出静音),麦克风声音不会从扬声器外放
-        if self.muted {
+        if self.is_muted() {
             return;
         }
         let _ = self.tx.send(pcm.to_vec()).await;

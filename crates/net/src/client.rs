@@ -183,6 +183,11 @@ impl Client {
         let _ = self.send_control(ControlMessage::Bye).await;
         Ok(())
     }
+
+    /// 通知服务端切换外放静音状态
+    pub async fn set_mute_speaker(&self, muted: bool) -> Result<(), NetError> {
+        self.send_control(ControlMessage::SetMuteSpeaker { muted }).await
+    }
 }
 
 async fn run_control_recv(

@@ -269,6 +269,27 @@ pub extern "system" fn Java_com_meowmic_client_NativeBridge_nativeDisconnect(
     }
 }
 
+/// Java: boolean nativeSetMuteSpeaker(boolean muted)
+#[no_mangle]
+pub extern "system" fn Java_com_meowmic_client_NativeBridge_nativeSetMuteSpeaker(
+    _env: JNIEnv,
+    _class: JClass,
+    muted: jboolean,
+) -> jboolean {
+    let guard = state().lock().unwrap();
+    let Some(s) = guard.as_ref() else {
+        return JNI_FALSE;
+    };
+    let muted_bool = muted == JNI_TRUE;
+    match s.rt.handle().block_on(s.client.set_mute_speaker(muted_bool)) {
+        Ok(_) => JNI_TRUE,
+        Err(e) => {
+            log::warn!("set_mute_speaker 失败: {}", e);
+            JNI_FALSE
+        }
+    }
+}
+
 /// Java: String nativeGetStats()
 #[no_mangle]
 pub extern "system" fn Java_com_meowmic_client_NativeBridge_nativeGetStats(

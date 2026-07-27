@@ -49,6 +49,8 @@ pub enum ServerEvent {
     },
     /// 客户端断开
     ClientDisconnected { client_id: u32 },
+    /// 客户端请求切换外放静音状态
+    SetMuteSpeaker { client_id: u32, muted: bool },
     /// 错误
     Error(NetError),
 }
@@ -293,6 +295,16 @@ async fn handle_control_msg(
         }
         ControlMessage::Bye => {
             tracing::info!("客户端主动断开");
+            None
+        }
+        ControlMessage::SetMuteSpeaker { muted } => {
+            tracing::info!("客户端请求切换外放静音: muted={}", muted);
+            let _ = event_tx
+                .send(ServerEvent::SetMuteSpeaker {
+                    client_id: *client_id,
+                    muted: *muted,
+                })
+                .await;
             None
         }
         ControlMessage::Ping => Some(ControlMessage::Pong),
