@@ -962,7 +962,7 @@ fun TouchpadScreen(
     }
 
     @Composable
-    fun ComboBtn(label: String, vararg keyCodes: Int, modifier: Modifier = Modifier) {
+    fun ComboBtn(label: String, modifier: Modifier = Modifier, vararg keyCodes: Int) {
         Box(
             modifier = modifier
                 .height(36.dp)
@@ -1038,23 +1038,23 @@ fun TouchpadScreen(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(4.dp),
             ) {
-                ComboBtn("复制", VK.CONTROL, VK.C, Modifier.weight(1f))
-                ComboBtn("粘贴", VK.CONTROL, VK.V, Modifier.weight(1f))
-                ComboBtn("剪切", VK.CONTROL, VK.X, Modifier.weight(1f))
-                ComboBtn("撤销", VK.CONTROL, VK.Z, Modifier.weight(1f))
-                ComboBtn("全选", VK.CONTROL, VK.A, Modifier.weight(1f))
-                ComboBtn("保存", VK.CONTROL, VK.S, Modifier.weight(1f))
+                ComboBtn("复制", Modifier.weight(1f), VK.CONTROL, VK.C)
+                ComboBtn("粘贴", Modifier.weight(1f), VK.CONTROL, VK.V)
+                ComboBtn("剪切", Modifier.weight(1f), VK.CONTROL, VK.X)
+                ComboBtn("撤销", Modifier.weight(1f), VK.CONTROL, VK.Z)
+                ComboBtn("全选", Modifier.weight(1f), VK.CONTROL, VK.A)
+                ComboBtn("保存", Modifier.weight(1f), VK.CONTROL, VK.S)
             }
             // 第 3 行:系统快捷键
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(4.dp),
             ) {
-                ComboBtn("⇄Tab", VK.MENU, VK.TAB, Modifier.weight(1f))
-                ComboBtn("Win", VK.LWIN, Modifier.weight(1f))
-                ComboBtn("AltF4", VK.MENU, VK.F4, Modifier.weight(1f))
-                ComboBtn("刷新", VK.CONTROL, VK.F5, Modifier.weight(1f))
-                ComboBtn("截屏", VK.SNAPSHOT, Modifier.weight(1f))
+                ComboBtn("⇄Tab", Modifier.weight(1f), VK.MENU, VK.TAB)
+                ComboBtn("Win", Modifier.weight(1f), VK.LWIN)
+                ComboBtn("AltF4", Modifier.weight(1f), VK.MENU, VK.F4)
+                ComboBtn("刷新", Modifier.weight(1f), VK.CONTROL, VK.F5)
+                ComboBtn("截屏", Modifier.weight(1f), VK.SNAPSHOT)
             }
             // 第 4 行:功能键 F1-F12(横向滚动)
             LazyRow(
