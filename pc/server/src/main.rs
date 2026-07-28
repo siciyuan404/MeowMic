@@ -97,15 +97,6 @@ async fn run_server(bind: &str, port: u16, output_device: Option<&str>) -> Resul
         stats::print_loop(stats_clone).await;
     });
 
-    // 启动 HTTP /stats 服务(监听 127.0.0.1:{base_port + 3})
-    let stats_port = port + 3;
-    let stats_addr: SocketAddr = format!("127.0.0.1:{}", stats_port).parse()?;
-    let stats_clone2 = stats.clone();
-    tokio::spawn(async move {
-        run_stats_server(stats_clone2, stats_addr).await;
-    });
-    info!("stats HTTP 监听: http://{}/stats", stats_addr);
-
     // P0:触摸注入器(SendInput)
     let touch_injector = Arc::new(touch_inject::TouchInjector::new());
     // P0:音频播放器(cpal)
@@ -124,6 +115,18 @@ async fn run_server(bind: &str, port: u16, output_device: Option<&str>) -> Resul
     }
     let audio_player = Arc::new(audio_play::AudioPlayer::new(audio_cfg, muted, output_device.map(|s| s.to_string())).await?);
     let decoder = Arc::new(Mutex::new(meowmic_audio::make_decoder(&audio_cfg)));
+
+    // 启动 HTTP /stats 服务(监听 127.0.0.1:{base_port + 3})
+    // 同时提供 /mute?on=1|0 接口,供 PC 控制台运行时切换外放静音
+    let stats_port = port + 3;
+    let stats_addr: SocketAddr = format!("127.0.0.1:{}", stats_port).parse()?;
+    let stats_clone2 = stats.clone();
+    let audio_for_http = audio_player.clone();
+    tokio::spawn(async move {
+        run_stats_server(stats_clone2, audio_for_http, stats_addr).await;
+    });
+    info!("stats HTTP 监听: http://{}/stats", stats_addr);
+    info!("mute HTTP 监听: http://{}/mute?on=1|0", stats_addr);
 
     // 事件循环
     let server_handle = tokio::spawn(async move {
@@ -214,7 +217,8 @@ async fn run_server(bind: &str, port: u16, output_device: Option<&str>) -> Resul
 }
 
 /// HTTP /stats 服务:监听 127.0.0.1:port,GET /stats 返回 JSON 统计快照,其他路径 404
-async fn run_stats_server(stats: Arc<Mutex<stats::Stats>>, addr: SocketAddr) {
+/// GET /mute?on=1|0 运行时切换外放静音(App 端通过 control 通道,PC 控制台通过此 HTTP 接口)
+async fn run_stats_server(stats: Arc<Mutex<stats::Stats>>, audio: Arc<audio_play::AudioPlayer>, addr: SocketAddr) {
     let listener = match TcpListener::bind(addr).await {
         Ok(l) => l,
         Err(e) => {
@@ -231,6 +235,7 @@ async fn run_stats_server(stats: Arc<Mutex<stats::Stats>>, addr: SocketAddr) {
             }
         };
         let stats = stats.clone();
+        let audio = audio.clone();
         tokio::spawn(async move {
             // 读取请求(只关心第一行 METHOD PATH HTTP/1.1)
             let mut buf = [0u8; 1024];
@@ -242,7 +247,12 @@ async fn run_stats_server(stats: Arc<Mutex<stats::Stats>>, addr: SocketAddr) {
             let first_line = req.lines().next().unwrap_or("");
             let mut parts = first_line.split_whitespace();
             let method = parts.next().unwrap_or("");
-            let path = parts.next().unwrap_or("");
+            let raw_path = parts.next().unwrap_or("");
+            // 分离 path 与 query
+            let (path, query) = match raw_path.split_once('?') {
+                Some((p, q)) => (p, q),
+                None => (raw_path, ""),
+            };
 
             let (status, body) = if method == "GET" && path == "/stats" {
                 let (conn, tps, afs, uptime) = stats.lock().await.snapshot_and_reset();
@@ -251,6 +261,22 @@ async fn run_stats_server(stats: Arc<Mutex<stats::Stats>>, addr: SocketAddr) {
                     conn, tps, afs, uptime
                 );
                 ("200 OK", body)
+            } else if method == "GET" && path == "/mute" {
+                // 解析 on=1|0|true|false
+                let muted = query
+                    .split('&')
+                    .find_map(|kv| {
+                        let (k, v) = kv.split_once('=')?;
+                        if k == "on" {
+                            Some(v == "1" || v.eq_ignore_ascii_case("true"))
+                        } else {
+                            None
+                        }
+                    })
+                    .unwrap_or_else(|| audio.is_muted());
+                audio.set_muted(muted);
+                info!("HTTP /mute 切换: muted={}", muted);
+                ("200 OK", format!("{{\"muted\":{}}}", muted))
             } else {
                 (
                     "404 Not Found",

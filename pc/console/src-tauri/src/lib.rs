@@ -164,6 +164,18 @@ impl ServiceManager {
         }
         Ok(())
     }
+
+    /// 运行时切换外放静音:通过 HTTP /mute?on=1|0 通知正在运行的 server
+    /// 服务未运行时返回 Ok(()),仅靠持久化的配置在下次启动时生效
+    pub fn set_mute_speaker(&mut self, muted: bool) -> Result<(), String> {
+        let Some(base_port) = self.base_port else {
+            return Ok(());
+        };
+        if !self.is_running() {
+            return Ok(());
+        }
+        send_mute_http(base_port, muted)
+    }
 }
 
 impl Drop for ServiceManager {
@@ -191,6 +203,32 @@ fn fetch_stats(base_port: u16) -> Option<StatsResponse> {
     // 跳过 HTTP 头部,取 \r\n\r\n 之后的 body
     let body = response.split("\r\n\r\n").nth(1)?;
     serde_json::from_str(body).ok()
+}
+
+/// 通过 HTTP GET /mute?on=1|0 通知 server 切换外放静音
+fn send_mute_http(base_port: u16, muted: bool) -> Result<(), String> {
+    let port = base_port.checked_add(3).ok_or("端口溢出")?;
+    let addr = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, port));
+
+    let mut stream = TcpStream::connect_timeout(&addr, Duration::from_secs(1))
+        .map_err(|e| format!("连接 server 失败: {}", e))?;
+    stream.set_read_timeout(Some(Duration::from_secs(1))).map_err(|e| e.to_string())?;
+    stream.set_write_timeout(Some(Duration::from_secs(1))).map_err(|e| e.to_string())?;
+
+    let on = if muted { 1 } else { 0 };
+    let request = format!(
+        "GET /mute?on={} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+        on
+    );
+    stream.write_all(request.as_bytes()).map_err(|e| e.to_string())?;
+
+    let mut response = String::new();
+    stream.read_to_string(&mut response).map_err(|e| e.to_string())?;
+
+    if !response.starts_with("HTTP/1.1 200 OK") {
+        return Err(format!("server 响应异常: {}", response.lines().next().unwrap_or("")));
+    }
+    Ok(())
 }
 
 fn find_server_executable() -> Result<PathBuf, String> {
@@ -320,6 +358,21 @@ fn get_output_devices() -> Result<Vec<String>, String> {
     Ok(devices)
 }
 
+/// 运行时切换外放静音。
+/// 持久化配置,服务运行中则同步推送到 server;未运行时仅保存,下次启动生效。
+#[tauri::command]
+fn set_mute_speaker(state: State<AppState>, muted: bool) -> Result<(), String> {
+    let mut config = load_config();
+    config.mute_speaker = muted;
+    save_config(&config)?;
+
+    let mut svc = state.service.lock().unwrap();
+    if svc.is_running() {
+        svc.set_mute_speaker(muted)?;
+    }
+    Ok(())
+}
+
 pub fn run() {
     let config = load_config();
     let state = AppState {
@@ -340,6 +393,7 @@ pub fn run() {
             stop_service,
             get_status,
             get_output_devices,
+            set_mute_speaker,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

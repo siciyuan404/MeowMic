@@ -115,7 +115,8 @@ impl OpusEncoder {
             opus::Application::LowDelay,
         )?;
         // 极致低延迟参数
-        enc.set_bitrate(opus::Bitrate::Bits(32000))?;
+        // 64 kbps:对人声/音乐文件失真明显小于 32 kbps,每帧仅多几十字节,延迟几乎无影响
+        enc.set_bitrate(opus::Bitrate::Bits(64000))?;
         enc.set_vbr(false)?; // CBR,避免码率波动引入抖动
         enc.set_inband_fec(cfg.inband_fec)?;
         enc.set_packet_loss_perc(5)?; // 假设 5% 丢包,FEC 据此调强度

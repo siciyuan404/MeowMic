@@ -194,10 +194,14 @@ class MeowMicViewModel : ViewModel() {
 
     fun setMuteSpeaker(mute: Boolean) {
         _muteSpeaker.value = mute
-        try {
-            NativeBridge.nativeSetMuteSpeaker(mute)
-        } catch (e: UnsatisfiedLinkError) {
-            Log.w(TAG, "nativeSetMuteSpeaker 失败: ${e.message}")
+        // 必须在 IO 线程:nativeSetMuteSpeaker 内部 block_on 走 TCP 控制流,
+        // 在 UI 主线程调用会与后台 control_recv task 争用 control_stream 锁导致 ANR/闪退
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                NativeBridge.nativeSetMuteSpeaker(mute)
+            } catch (e: UnsatisfiedLinkError) {
+                Log.w(TAG, "nativeSetMuteSpeaker 失败: ${e.message}")
+            }
         }
     }
 

@@ -304,7 +304,7 @@
                 提示：选择 "CABLE Input" 等虚拟音频设备，可将手机麦克风声音路由到其他应用（如 Zoom、Discord）
             </div>
             <div class="checkbox-row">
-                <input type="checkbox" id="muteSpeaker">
+                <input type="checkbox" id="muteSpeaker" onchange="onMuteSpeakerChange()">
                 <label for="muteSpeaker">静音外放 (仅接收麦克风输入)</label>
             </div>
             <div class="checkbox-row">
@@ -433,6 +433,29 @@
                 showError('');
             } catch(e) {
                 showError(e);
+            }
+        }
+
+        // 静音外放复选框变化:持久化配置 + 服务运行中时通过 HTTP 同步切换 server
+        async function onMuteSpeakerChange() {
+            const Tauri = window.__TAURI__;
+            const muted = document.getElementById('muteSpeaker').checked;
+            try {
+                await Tauri.invoke('set_mute_speaker', { muted: muted });
+                // 同步本地 config 对象
+                config.mute_speaker = muted;
+                // 短暂提示当前状态
+                const msg = muted ? '已静音外放' : '已开启外放';
+                showError(msg);
+                setTimeout(() => {
+                    // 仅当提示仍是当前状态时清除,避免覆盖后续错误
+                    const el = document.getElementById('errorMsg');
+                    if (el.textContent === msg) showError('');
+                }, 1200);
+            } catch(e) {
+                showError(String(e));
+                // 失败时回滚 UI 到原状态
+                document.getElementById('muteSpeaker').checked = !muted;
             }
         }
 
