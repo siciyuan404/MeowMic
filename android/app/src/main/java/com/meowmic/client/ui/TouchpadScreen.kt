@@ -936,7 +936,7 @@ fun TouchpadScreen(
                     contentAlignment = Alignment.Center,
                 ) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(Icons.Default.LogOut, null, Modifier.size(16.dp), tint = MaterialTheme.colorScheme.error)
+                        Icon(Icons.Default.Logout, null, Modifier.size(16.dp), tint = MaterialTheme.colorScheme.error)
                         Spacer(Modifier.width(6.dp))
                         Text("断开", fontSize = 12.sp, color = MaterialTheme.colorScheme.error)
                     }
@@ -994,7 +994,7 @@ fun TouchpadScreen(
                                 contentAlignment = Alignment.Center,
                             ) {
                                 Row(verticalAlignment = Alignment.CenterVertically) {
-                                    Icon(Icons.Default.LogOut, null, Modifier.size(16.dp), tint = MaterialTheme.colorScheme.error)
+                                    Icon(Icons.Default.Logout, null, Modifier.size(16.dp), tint = MaterialTheme.colorScheme.error)
                                     Spacer(Modifier.width(6.dp))
                                     Text("断开", fontSize = 12.sp, color = MaterialTheme.colorScheme.error)
                                 }
