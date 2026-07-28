@@ -1,5 +1,7 @@
 package com.meowmic.client
 
+import android.os.Handler
+import android.os.Looper
 import android.view.MotionEvent
 import kotlin.math.abs
 import kotlin.math.hypot
@@ -29,6 +31,18 @@ class TouchHandler(
     private val invertY: Boolean = false,
 ) {
     var screenRotation: Int = 0
+
+    // ============ Handler(主线程,用于定时触发长按) ============
+    // 参考 moonlight-android:长按不依赖 ACTION_MOVE(手指静止时不触发),
+    // 改用 postDelayed 在 longPressTimeout 后强制触发左键按下。
+    private val handler = Handler(Looper.getMainLooper())
+    private val longPressRunnable = Runnable {
+        if (!isLeftDrag && !isTwoFingerScroll && downPointerCount == 1) {
+            NativeBridge.sendButtonDown(BTN_LEFT)
+            isLeftDrag = true
+            leftDragTriggered = true
+        }
+    }
 
     // ============ 按钮掩码常量 ============
     private val BTN_LEFT = 0x01
@@ -105,10 +119,14 @@ class TouchHandler(
                 lastScrollY = y
                 pendingSingleX = x
                 pendingSingleY = y
+                // 长按由 Runnable 定时触发(手指静止也能在 longPressTimeout 后触发拖拽)
+                handler.postDelayed(longPressRunnable, longPressTimeout)
                 return false
             }
 
             MotionEvent.ACTION_POINTER_DOWN -> {
+                // 双指介入立即取消未触发的长按(避免双指操作时误触发左键拖拽)
+                handler.removeCallbacks(longPressRunnable)
                 // Bug A:用 pointerId 跟踪新落下的手指
                 val newId = event.getPointerId(pointerIndex)
                 if (primaryPointerId == MotionEvent.INVALID_POINTER_ID) {
@@ -164,7 +182,7 @@ class TouchHandler(
                         }
                         // Bug B:已触发后最小 delta 1f(不再用 0.5f)
                         if (isTwoFingerScroll && abs(deltaY) >= 1f) {
-                            sendScroll(deltaY * 0.5f)
+                            sendScroll(applyScrollAcceleration(deltaY))
                             handled = true
                         }
                     }
@@ -176,7 +194,7 @@ class TouchHandler(
                         isTwoFingerScroll = true
                     }
                     if (isTwoFingerScroll && abs(deltaY) >= 1f) {
-                        sendScroll(deltaY * 0.5f)
+                        sendScroll(applyScrollAcceleration(deltaY))
                         handled = true
                     }
                     return handled
@@ -206,17 +224,13 @@ class TouchHandler(
                 lastX = x
                 lastY = y
 
-                // 长按拖拽判定
+                // 长按取消判定:手指挪出 slop 范围则取消未触发的长按 Runnable
+                // (长按触发完全由 longPressRunnable 驱动,不依赖 ACTION_MOVE)
                 val totalDx = x - downX
                 val totalDy = y - downY
                 val totalDist = hypot(totalDx, totalDy)
-                val elapsed = currentTime - downTime
-
-                // 出了死区且未触发长按
-                if (!isLeftDrag && !isTwoFingerScroll && elapsed > longPressTimeout && totalDist < longPressSlop + clickThreshold) {
-                    NativeBridge.sendButtonDown(BTN_LEFT)
-                    isLeftDrag = true
-                    leftDragTriggered = true
+                if (!isLeftDrag && totalDist > longPressSlop + clickThreshold) {
+                    handler.removeCallbacks(longPressRunnable)
                 }
 
                 return sentAny
@@ -263,6 +277,8 @@ class TouchHandler(
             }
 
             MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                // 抬起/取消时清理未触发的长按 Runnable
+                handler.removeCallbacks(longPressRunnable)
                 // 长按拖拽抬起
                 if (leftDragTriggered) {
                     NativeBridge.sendButtonUp(BTN_LEFT)
@@ -362,7 +378,31 @@ class TouchHandler(
         }
     }
 
+    /**
+     * 滚轮加速曲线(参考 moonlight-android)
+     * - 慢速(小 delta):放大,便于精确滚动
+     * - 快速(大 delta):抑制,防止过冲
+     * 输入 delta 是原始像素位移,输出滚轮量
+     *
+     * 方向约定(与 PC 端 touch_inject.rs:67 wheel_delta = dy * -12.0 配合):
+     * - 双指上滑 → 中点 Y 减小 → deltaY 为负 → sendScroll 传负值
+     *   → PC 端 wheel_delta = 负 * -12 = 正 = 向上滚(页面向上滚)✓
+     * - 双指下滑 → deltaY 为正 → wheel_delta 为负 = 向下滚(页面向下滚)✓
+     * 故本函数保留 sign,不取反。
+     */
+    private fun applyScrollAcceleration(delta: Float): Float {
+        val absDelta = abs(delta)
+        val sign = if (delta >= 0) 1f else -1f
+        // 指数曲线: pow(absDelta, 0.7) * scale
+        // 小 delta(1px): 1^0.7 * 0.8 = 0.8(轻微放大)
+        // 中 delta(10px): 10^0.7 * 0.8 ≈ 4.0(适中)
+        // 大 delta(50px): 50^0.7 * 0.8 ≈ 13.3(抑制)
+        val accelerated = Math.pow(absDelta.toDouble(), 0.7).toFloat() * 0.8f
+        return sign * accelerated
+    }
+
     fun reset() {
+        handler.removeCallbacks(longPressRunnable)
         hasLast = false
         isTwoFingerScroll = false
         isLeftDrag = false
