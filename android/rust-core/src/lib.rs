@@ -166,6 +166,7 @@ pub extern "system" fn Java_com_meowmic_client_NativeBridge_nativeSendTouchWithB
         0x02 => TouchEventType::Move,
         0x03 => TouchEventType::Up,
         0x04 => TouchEventType::Button,
+        0x05 => TouchEventType::Scroll,
         _ => return JNI_FALSE,
     };
 

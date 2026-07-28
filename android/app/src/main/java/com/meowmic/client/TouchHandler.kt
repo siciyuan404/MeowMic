@@ -47,6 +47,14 @@ class TouchHandler(
     private var downY: Float = 0f
     private var downPointerCount: Int = 0
 
+    // ============ 多指 pointerId 跟踪(Bug A:不再用 pointerIndex) ============
+    // Android 在某指抬起时 pointerIndex 会重排,必须用 pointerId 稳定跟踪。
+    private var primaryPointerId: Int = MotionEvent.INVALID_POINTER_ID
+    private var secondaryPointerId: Int = MotionEvent.INVALID_POINTER_ID
+    // 双指轻触右键准备:POINTER_UP 时记录剩余指坐标,UP 时用它与抬指坐标算距离
+    private var pendingSingleX: Float = 0f
+    private var pendingSingleY: Float = 0f
+
     // ============ 双击检测 ============
     private var lastTapTime: Long = 0L
     private var lastTapX: Float = 0f
@@ -82,6 +90,8 @@ class TouchHandler(
 
         when (action) {
             MotionEvent.ACTION_DOWN -> {
+                primaryPointerId = event.getPointerId(0)
+                secondaryPointerId = MotionEvent.INVALID_POINTER_ID
                 downTime = currentTime
                 downX = x
                 downY = y
@@ -93,17 +103,33 @@ class TouchHandler(
                 isLeftDrag = false
                 leftDragTriggered = false
                 lastScrollY = y
+                pendingSingleX = x
+                pendingSingleY = y
                 return false
             }
 
             MotionEvent.ACTION_POINTER_DOWN -> {
+                // Bug A:用 pointerId 跟踪新落下的手指
+                val newId = event.getPointerId(pointerIndex)
+                if (primaryPointerId == MotionEvent.INVALID_POINTER_ID) {
+                    primaryPointerId = newId
+                } else if (secondaryPointerId == MotionEvent.INVALID_POINTER_ID) {
+                    secondaryPointerId = newId
+                }
                 if (pointerCount == 2) {
                     isTwoFingerScroll = false
-                    lastScrollY = event.getY(1)
-                    // 取消单指拖拽
+                    // Bug B:滚动参考点改为两指中点 Y
+                    val primaryIdx = event.findPointerIndex(primaryPointerId)
+                    val secondaryIdx = event.findPointerIndex(secondaryPointerId)
+                    if (primaryIdx >= 0 && secondaryIdx >= 0) {
+                        lastScrollY = (event.getY(primaryIdx) + event.getY(secondaryIdx)) / 2f
+                    }
+                    // Bug D:取消单指拖拽时,同时清 leftDragTriggered,
+                    // 否则 ACTION_UP 会再发一次 button up
                     if (isLeftDrag) {
                         NativeBridge.sendButtonUp(BTN_LEFT)
                         isLeftDrag = false
+                        leftDragTriggered = false
                     }
                 }
                 downPointerCount = pointerCount
@@ -119,29 +145,37 @@ class TouchHandler(
                 }
 
                 if (pointerCount >= 2) {
-                    // 双指滚动 - 也遍历历史采样
+                    // Bug A + B:双指滚动,用 findPointerIndex 取两指坐标,中点 Y 作参考
+                    val primaryIdx = event.findPointerIndex(primaryPointerId)
+                    val secondaryIdx = event.findPointerIndex(secondaryPointerId)
+                    if (primaryIdx < 0 || secondaryIdx < 0) {
+                        return false
+                    }
                     var handled = false
                     val historySize = event.historySize
                     for (i in 0 until historySize) {
-                        val histScrollY = event.getHistoricalY(1, i)
-                        val deltaY = histScrollY - lastScrollY
-                        lastScrollY = histScrollY
-                        if (!isTwoFingerScroll && abs(deltaY) > 2f) {
+                        val histMidY = (event.getHistoricalY(primaryIdx, i) +
+                                event.getHistoricalY(secondaryIdx, i)) / 2f
+                        val deltaY = histMidY - lastScrollY
+                        lastScrollY = histMidY
+                        // Bug B:触发阈值 10f(参考 Moonlight TWO_FINGER_SCROLL_DEAD_ZONE)
+                        if (!isTwoFingerScroll && abs(deltaY) > 10f) {
                             isTwoFingerScroll = true
                         }
-                        if (isTwoFingerScroll && abs(deltaY) >= 0.5f) {
+                        // Bug B:已触发后最小 delta 1f(不再用 0.5f)
+                        if (isTwoFingerScroll && abs(deltaY) >= 1f) {
                             sendScroll(deltaY * 0.5f)
                             handled = true
                         }
                     }
                     // 当前采样
-                    val scrollY = event.getY(1)
-                    val deltaY = scrollY - lastScrollY
-                    lastScrollY = scrollY
-                    if (!isTwoFingerScroll && abs(deltaY) > 2f) {
+                    val midY = (event.getY(primaryIdx) + event.getY(secondaryIdx)) / 2f
+                    val deltaY = midY - lastScrollY
+                    lastScrollY = midY
+                    if (!isTwoFingerScroll && abs(deltaY) > 10f) {
                         isTwoFingerScroll = true
                     }
-                    if (isTwoFingerScroll && abs(deltaY) >= 0.5f) {
+                    if (isTwoFingerScroll && abs(deltaY) >= 1f) {
                         sendScroll(deltaY * 0.5f)
                         handled = true
                     }
@@ -189,40 +223,83 @@ class TouchHandler(
             }
 
             MotionEvent.ACTION_POINTER_UP -> {
+                // Bug A:用 pointerId 判定哪根手指抬起,清空对应 id
+                val liftedId = event.getPointerId(pointerIndex)
+                if (liftedId == primaryPointerId) {
+                    // 主指抬起:副指升为主指
+                    primaryPointerId = secondaryPointerId
+                    secondaryPointerId = MotionEvent.INVALID_POINTER_ID
+                } else if (liftedId == secondaryPointerId) {
+                    secondaryPointerId = MotionEvent.INVALID_POINTER_ID
+                }
                 if (pointerCount <= 2) {
                     isTwoFingerScroll = false
                 }
-                val newIndex = if (pointerIndex == 0) 1 else 0
-                if (newIndex < event.pointerCount - 1) {
-                    lastX = event.getX(newIndex)
-                    lastY = event.getY(newIndex)
+                // Bug C:双指场景下抬起一指(pointerCount==2 表示从 2 指变 1 指),
+                // 未触发滚动时,记录剩余指当前坐标 + 更新 downTime,准备双指轻触右键判定
+                if (downPointerCount >= 2 && !isTwoFingerScroll && pointerCount == 2) {
+                    val remainingId = if (primaryPointerId != MotionEvent.INVALID_POINTER_ID)
+                        primaryPointerId else secondaryPointerId
+                    if (remainingId != MotionEvent.INVALID_POINTER_ID) {
+                        val remainingIdx = event.findPointerIndex(remainingId)
+                        if (remainingIdx >= 0) {
+                            pendingSingleX = event.getX(remainingIdx)
+                            pendingSingleY = event.getY(remainingIdx)
+                            downTime = currentTime
+                        }
+                    }
+                }
+                // 更新 lastX/lastY 为剩余手指坐标,避免后续单指移动跳变
+                val trackId = if (primaryPointerId != MotionEvent.INVALID_POINTER_ID)
+                    primaryPointerId else secondaryPointerId
+                if (trackId != MotionEvent.INVALID_POINTER_ID) {
+                    val trackIdx = event.findPointerIndex(trackId)
+                    if (trackIdx >= 0) {
+                        lastX = event.getX(trackIdx)
+                        lastY = event.getY(trackIdx)
+                    }
                 }
                 return false
             }
 
             MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
-                val totalDx = x - downX
-                val totalDy = y - downY
-                val totalDist = hypot(totalDx, totalDy)
-                val elapsed = currentTime - downTime
-                val isClick = totalDist < clickThreshold && elapsed < clickTimeout
-
                 // 长按拖拽抬起
                 if (leftDragTriggered) {
                     NativeBridge.sendButtonUp(BTN_LEFT)
                     isLeftDrag = false
                     leftDragTriggered = false
                     hasLast = false
+                    primaryPointerId = MotionEvent.INVALID_POINTER_ID
+                    secondaryPointerId = MotionEvent.INVALID_POINTER_ID
                     return true
                 }
 
-                if (isClick && !isTwoFingerScroll) {
-                    // 双指轻触 → 右键
-                    if (downPointerCount >= 2) {
+                // Bug C:双指轻触 → 右键
+                // 距离用 pendingSingleX/Y(POINTER_UP 时剩余指坐标)到当前 x/y(抬指坐标),
+                // 时长用 currentTime - downTime(downTime 在 POINTER_UP 时已更新)
+                if (downPointerCount >= 2 && !isTwoFingerScroll) {
+                    val dx = x - pendingSingleX
+                    val dy = y - pendingSingleY
+                    val dist = hypot(dx, dy)
+                    val elapsed = currentTime - downTime
+                    primaryPointerId = MotionEvent.INVALID_POINTER_ID
+                    secondaryPointerId = MotionEvent.INVALID_POINTER_ID
+                    hasLast = false
+                    isTwoFingerScroll = false
+                    if (dist < clickThreshold && elapsed < clickTimeout) {
                         return NativeBridge.sendButtonClick(BTN_RIGHT)
                     }
+                    return false
+                }
 
-                    // 单指轻触 → 判断单击/双击
+                // ============ 单指场景:原有单击/双击逻辑(不动) ============
+                val totalDx = x - downX
+                val totalDy = y - downY
+                val totalDist = hypot(totalDx, totalDy)
+                val elapsed = currentTime - downTime
+                val isClick = totalDist < clickThreshold && elapsed < clickTimeout
+
+                if (isClick && !isTwoFingerScroll) {
                     val sinceLastTap = currentTime - lastTapTime
                     val tapDx = x - lastTapX
                     val tapDy = y - lastTapY
@@ -245,6 +322,8 @@ class TouchHandler(
                 hasLast = false
                 isTwoFingerScroll = false
                 leftDragTriggered = false
+                primaryPointerId = MotionEvent.INVALID_POINTER_ID
+                secondaryPointerId = MotionEvent.INVALID_POINTER_ID
                 return false
             }
         }
@@ -288,6 +367,8 @@ class TouchHandler(
         isTwoFingerScroll = false
         isLeftDrag = false
         leftDragTriggered = false
+        primaryPointerId = MotionEvent.INVALID_POINTER_ID
+        secondaryPointerId = MotionEvent.INVALID_POINTER_ID
         if (NativeBridge.isLoaded()) {
             NativeBridge.sendButtonUp(BTN_LEFT or BTN_RIGHT)
         }

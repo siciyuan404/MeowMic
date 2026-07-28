@@ -70,6 +70,7 @@ pub enum TouchEventType {
     Move = 0x02,
     Up = 0x03,
     Button = 0x04,
+    Scroll = 0x05,
 }
 
 /// 触摸数据负载(12 字节)
@@ -196,6 +197,7 @@ impl TouchPacket {
             0x02 => Ok(TouchEventType::Move),
             0x03 => Ok(TouchEventType::Up),
             0x04 => Ok(TouchEventType::Button),
+            0x05 => Ok(TouchEventType::Scroll),
             v => Err(ProtocolError::UnknownTouchEventType(v)),
         }
     }
