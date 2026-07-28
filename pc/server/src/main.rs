@@ -206,6 +206,13 @@ async fn run_server(bind: &str, port: u16, output_device: Option<&str>) -> Resul
                 audio_player.set_muted(muted);
                 info!("已切换外放静音: id={} muted={}", client_id, muted);
             }
+            ServerEvent::KeyEvent { client_id, key_code, is_down } => {
+                touch_injector.inject_key(key_code, is_down);
+                tracing::debug!(
+                    "key id={} vk=0x{:02X} down={}",
+                    client_id, key_code, is_down
+                );
+            }
             ServerEvent::Error(e) => {
                 warn!("服务端事件错误: {}", e);
             }

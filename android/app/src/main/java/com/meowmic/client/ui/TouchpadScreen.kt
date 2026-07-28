@@ -57,6 +57,38 @@ private const val BTN_LEFT = 0x01
 private const val BTN_RIGHT = 0x02
 private const val BTN_MIDDLE = 0x04
 
+// ============ Windows VK code 常量(用于模拟键盘) ============
+private object VK {
+    // 修饰键
+    const val CONTROL = 0x11
+    const val SHIFT = 0x10
+    const val MENU = 0x12       // Alt
+    const val LWIN = 0x5B
+    // 字母
+    const val C = 0x43; const val V = 0x56; const val X = 0x58
+    const val Z = 0x5A; const val A = 0x41; const val S = 0x53
+    const val F = 0x46; const val W = 0x57; const val R = 0x52
+    const val T = 0x54; const val D = 0x44
+    // 功能键
+    const val F1 = 0x70; const val F2 = 0x71; const val F3 = 0x72
+    const val F4 = 0x73; const val F5 = 0x74; const val F6 = 0x75
+    const val F7 = 0x76; const val F8 = 0x77; const val F9 = 0x78
+    const val F10 = 0x79; const val F11 = 0x7A; const val F12 = 0x7B
+    // 编辑键
+    const val TAB = 0x09; const val RETURN = 0x0D; const val ESCAPE = 0x1B
+    const val SPACE = 0x20; const val BACK = 0x08; const val DELETE = 0x2E
+    const val INSERT = 0x2D; const val HOME = 0x24; const val END = 0x23
+    const val PRIOR = 0x21  // PageUp
+    const val NEXT = 0x22   // PageDown
+    // 方向键
+    const val LEFT = 0x25; const val UP = 0x26
+    const val RIGHT = 0x27; const val DOWN = 0x28
+    // 其他
+    const val SNAPSHOT = 0x2C  // PrtScn
+    const val CAPITAL = 0x14   // CapsLock
+    const val NUMLOCK = 0x90
+}
+
 @OptIn(ExperimentalComposeUiApi::class)
 @Composable
 fun TouchpadScreen(
@@ -886,6 +918,191 @@ fun TouchpadScreen(
         }
     }
 
+    // ============ 键盘面板(快捷键 + 粘滞修饰键) ============
+    // 粘滞修饰键状态:点一下高亮保持,再点普通键时自动组合并清除
+    val stickyMods = remember { mutableStateMapOf<Int, Boolean>() }
+
+    fun fireKey(keyCode: Int) {
+        val activeMods = stickyMods.keys.filter { stickyMods[it] == true }
+        for (mod in activeMods) NativeBridge.sendKeyDown(mod)
+        NativeBridge.sendKeyPress(keyCode)
+        for (mod in activeMods.reversed()) NativeBridge.sendKeyUp(mod)
+        stickyMods.clear()
+    }
+
+    @Composable
+    fun StickyModBtn(label: String, vkCode: Int, modifier: Modifier = Modifier) {
+        val active = stickyMods[vkCode] == true
+        val bgColor = if (active) MaterialTheme.colorScheme.primary
+            else MaterialTheme.colorScheme.surfaceVariant
+        val fgColor = if (active) Color.White
+            else MaterialTheme.colorScheme.onSurfaceVariant
+        Box(
+            modifier = modifier
+                .height(36.dp)
+                .background(bgColor, RoundedCornerShape(8.dp))
+                .border(
+                    1.dp,
+                    if (active) MaterialTheme.colorScheme.primary
+                    else MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f),
+                    RoundedCornerShape(8.dp),
+                )
+                .clickable {
+                    stickyMods[vkCode] = !(stickyMods[vkCode] ?: false)
+                },
+            contentAlignment = Alignment.Center,
+        ) {
+            Text(
+                label,
+                fontSize = 11.sp,
+                color = fgColor,
+                fontWeight = if (active) FontWeight.Bold else FontWeight.Medium,
+            )
+        }
+    }
+
+    @Composable
+    fun ComboBtn(label: String, vararg keyCodes: Int, modifier: Modifier = Modifier) {
+        Box(
+            modifier = modifier
+                .height(36.dp)
+                .background(
+                    MaterialTheme.colorScheme.surfaceVariant,
+                    RoundedCornerShape(8.dp),
+                )
+                .border(
+                    1.dp,
+                    MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f),
+                    RoundedCornerShape(8.dp),
+                )
+                .clickable { NativeBridge.sendKeyCombo(*keyCodes) },
+            contentAlignment = Alignment.Center,
+        ) {
+            Text(
+                label,
+                fontSize = 11.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                fontWeight = FontWeight.Medium,
+            )
+        }
+    }
+
+    @Composable
+    fun KeyBtn(
+        label: String,
+        vkCode: Int,
+        modifier: Modifier = Modifier,
+    ) {
+        Box(
+            modifier = modifier
+                .height(36.dp)
+                .background(
+                    MaterialTheme.colorScheme.surfaceVariant,
+                    RoundedCornerShape(8.dp),
+                )
+                .border(
+                    1.dp,
+                    MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f),
+                    RoundedCornerShape(8.dp),
+                )
+                .clickable { fireKey(vkCode) },
+            contentAlignment = Alignment.Center,
+        ) {
+            Text(
+                label,
+                fontSize = 11.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                fontWeight = FontWeight.Medium,
+            )
+        }
+    }
+
+    @Composable
+    fun KeyboardPanel() {
+        Column(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            // 第 1 行:粘滞修饰键
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                StickyModBtn("Ctrl", VK.CONTROL, Modifier.weight(1f))
+                StickyModBtn("Shift", VK.SHIFT, Modifier.weight(1f))
+                StickyModBtn("Alt", VK.MENU, Modifier.weight(1f))
+                StickyModBtn("Win", VK.LWIN, Modifier.weight(1f))
+            }
+            // 第 2 行:常用快捷组合(Ctrl 系列)
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                ComboBtn("复制", VK.CONTROL, VK.C, Modifier.weight(1f))
+                ComboBtn("粘贴", VK.CONTROL, VK.V, Modifier.weight(1f))
+                ComboBtn("剪切", VK.CONTROL, VK.X, Modifier.weight(1f))
+                ComboBtn("撤销", VK.CONTROL, VK.Z, Modifier.weight(1f))
+                ComboBtn("全选", VK.CONTROL, VK.A, Modifier.weight(1f))
+                ComboBtn("保存", VK.CONTROL, VK.S, Modifier.weight(1f))
+            }
+            // 第 3 行:系统快捷键
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                ComboBtn("⇄Tab", VK.MENU, VK.TAB, Modifier.weight(1f))
+                ComboBtn("Win", VK.LWIN, Modifier.weight(1f))
+                ComboBtn("AltF4", VK.MENU, VK.F4, Modifier.weight(1f))
+                ComboBtn("刷新", VK.CONTROL, VK.F5, Modifier.weight(1f))
+                ComboBtn("截屏", VK.SNAPSHOT, Modifier.weight(1f))
+            }
+            // 第 4 行:功能键 F1-F12(横向滚动)
+            LazyRow(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                item { KeyBtn("F1", VK.F1, Modifier.width(48.dp)) }
+                item { KeyBtn("F2", VK.F2, Modifier.width(48.dp)) }
+                item { KeyBtn("F3", VK.F3, Modifier.width(48.dp)) }
+                item { KeyBtn("F4", VK.F4, Modifier.width(48.dp)) }
+                item { KeyBtn("F5", VK.F5, Modifier.width(48.dp)) }
+                item { KeyBtn("F6", VK.F6, Modifier.width(48.dp)) }
+                item { KeyBtn("F7", VK.F7, Modifier.width(48.dp)) }
+                item { KeyBtn("F8", VK.F8, Modifier.width(48.dp)) }
+                item { KeyBtn("F9", VK.F9, Modifier.width(48.dp)) }
+                item { KeyBtn("F10", VK.F10, Modifier.width(48.dp)) }
+                item { KeyBtn("F11", VK.F11, Modifier.width(48.dp)) }
+                item { KeyBtn("F12", VK.F12, Modifier.width(48.dp)) }
+            }
+            // 第 5 行:方向键 + 编辑键
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                KeyBtn("←", VK.LEFT, Modifier.weight(1f))
+                KeyBtn("↑", VK.UP, Modifier.weight(1f))
+                KeyBtn("↓", VK.DOWN, Modifier.weight(1f))
+                KeyBtn("→", VK.RIGHT, Modifier.weight(1f))
+                KeyBtn("Enter", VK.RETURN, Modifier.weight(1.4f))
+                KeyBtn("Esc", VK.ESCAPE, Modifier.weight(1f))
+                KeyBtn("Tab", VK.TAB, Modifier.weight(1f))
+            }
+            // 第 6 行:编辑键
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                KeyBtn("Space", VK.SPACE, Modifier.weight(1.4f))
+                KeyBtn("Back", VK.BACK, Modifier.weight(1f))
+                KeyBtn("Del", VK.DELETE, Modifier.weight(1f))
+                KeyBtn("Home", VK.HOME, Modifier.weight(1f))
+                KeyBtn("End", VK.END, Modifier.weight(1f))
+                KeyBtn("PgUp", VK.PRIOR, Modifier.weight(1f))
+                KeyBtn("PgDn", VK.NEXT, Modifier.weight(1f))
+            }
+        }
+    }
+
     if (isLandscape) {
         // 横屏:触控区域占主导,右侧固定宽度控制面板
         Row(modifier = Modifier.fillMaxSize().padding(8.dp)) {
@@ -917,6 +1134,7 @@ fun TouchpadScreen(
             ) {
                 VoicePanel()
                 MouseButtonsBar()
+                KeyboardPanel()
                 // 断开按钮
                 Box(
                     modifier = Modifier
@@ -975,6 +1193,7 @@ fun TouchpadScreen(
                         ) {
                             VoicePanel()
                             MouseButtonsBar()
+                            KeyboardPanel()
                             // 断开按钮
                             Box(
                                 modifier = Modifier

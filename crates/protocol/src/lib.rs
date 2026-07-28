@@ -289,6 +289,10 @@ pub enum ControlMessage {
     /// 客户端通知服务端切换外放静音状态
     /// muted=true 时,服务端丢弃 PCM 不输出到扬声器
     SetMuteSpeaker { muted: bool },
+    /// 键盘事件(模拟键盘按下/抬起)
+    /// key_code 为 Windows VK code,is_down=true 按下/false 抬起
+    /// 走 TCP 控制通道(可靠传递,快捷键低频)
+    KeyEvent { key_code: u16, is_down: bool },
     Ping,
     Pong,
     Bye,

@@ -6,9 +6,10 @@
 
 #[cfg(windows)]
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    INPUT, INPUT_MOUSE, MOUSE_EVENT_FLAGS, MOUSEINPUT, MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP,
+    INPUT, INPUT_KEYBOARD, INPUT_MOUSE, KEYBDINPUT, KEYBD_EVENT_FLAGS, KEYEVENTF_KEYUP,
+    MOUSE_EVENT_FLAGS, MOUSEINPUT, MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP,
     MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP, MOUSEEVENTF_MOVE, MOUSEEVENTF_RIGHTDOWN,
-    MOUSEEVENTF_RIGHTUP, MOUSEEVENTF_WHEEL, SendInput,
+    MOUSEEVENTF_RIGHTUP, MOUSEEVENTF_WHEEL, SendInput, VIRTUAL_KEY,
 };
 
 /// 事件类型常量(与 protocol::TouchEventType 对应)
@@ -116,6 +117,46 @@ impl TouchInjector {
                 button_mask,
                 dx,
                 dy
+            );
+        }
+    }
+
+    /// 注入键盘事件(模拟按键按下/抬起)
+    ///
+    /// - key_code: Windows VK code(如 0x11=Ctrl, 0x43=C, 0x70=F1)
+    /// - is_down: true=按下, false=抬起
+    ///
+    /// 顺序发送修饰键 down → 普通键 down/up → 修饰键 up 即可触发快捷键组合,
+    /// Windows 自身处理组合状态,无需额外 modifiers 字段。
+    pub fn inject_key(&self, key_code: u16, is_down: bool) {
+        #[cfg(windows)]
+        {
+            unsafe {
+                let mut input = INPUT {
+                    r#type: INPUT_KEYBOARD,
+                    Anonymous: std::mem::zeroed(),
+                };
+                input.Anonymous.ki = KEYBDINPUT {
+                    wVk: VIRTUAL_KEY(key_code),
+                    wScan: 0,
+                    dwFlags: if is_down {
+                        KEYBD_EVENT_FLAGS(0)
+                    } else {
+                        KEYEVENTF_KEYUP
+                    },
+                    time: 0,
+                    dwExtraInfo: 0,
+                };
+                let _ = SendInput(&[input], std::mem::size_of::<INPUT>() as i32);
+            }
+        }
+        #[cfg(not(windows))]
+        {
+            let _ = (key_code, is_down);
+            tracing::debug!(
+                "key inject (no-op on non-windows): vk=0x{:02X} down={}",
+                key_code,
+                is_down
             );
         }
     }

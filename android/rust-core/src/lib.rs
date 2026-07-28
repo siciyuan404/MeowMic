@@ -292,6 +292,32 @@ pub extern "system" fn Java_com_meowmic_client_NativeBridge_nativeSetMuteSpeaker
     }
 }
 
+/// Java: boolean nativeSendKey(int keyCode, boolean isDown)
+///
+/// 发送键盘事件(走 TCP 控制通道,可靠传递)。
+/// keyCode 为 Windows VK code,isDown=true 按下/false 抬起。
+#[no_mangle]
+pub extern "system" fn Java_com_meowmic_client_NativeBridge_nativeSendKey(
+    _env: JNIEnv,
+    _class: JClass,
+    key_code: jint,
+    is_down: jboolean,
+) -> jboolean {
+    let guard = state().lock().unwrap();
+    let Some(s) = guard.as_ref() else {
+        return JNI_FALSE;
+    };
+    let kc = key_code as u16;
+    let down = is_down == JNI_TRUE;
+    match s.rt.handle().block_on(s.client.send_key(kc, down)) {
+        Ok(_) => JNI_TRUE,
+        Err(e) => {
+            log::warn!("send_key 失败: {}", e);
+            JNI_FALSE
+        }
+    }
+}
+
 /// Java: String nativeGetStats()
 #[no_mangle]
 pub extern "system" fn Java_com_meowmic_client_NativeBridge_nativeGetStats(

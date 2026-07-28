@@ -51,6 +51,12 @@ pub enum ServerEvent {
     ClientDisconnected { client_id: u32 },
     /// 客户端请求切换外放静音状态
     SetMuteSpeaker { client_id: u32, muted: bool },
+    /// 客户端键盘事件(模拟键盘按下/抬起)
+    KeyEvent {
+        client_id: u32,
+        key_code: u16,
+        is_down: bool,
+    },
     /// 错误
     Error(NetError),
 }
@@ -303,6 +309,16 @@ async fn handle_control_msg(
                 .send(ServerEvent::SetMuteSpeaker {
                     client_id: *client_id,
                     muted: *muted,
+                })
+                .await;
+            None
+        }
+        ControlMessage::KeyEvent { key_code, is_down } => {
+            let _ = event_tx
+                .send(ServerEvent::KeyEvent {
+                    client_id: *client_id,
+                    key_code: *key_code,
+                    is_down: *is_down,
                 })
                 .await;
             None

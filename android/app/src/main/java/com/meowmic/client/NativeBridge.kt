@@ -116,6 +116,67 @@ object NativeBridge {
      */
     external fun nativeSetMuteSpeaker(muted: Boolean): Boolean
 
+    /**
+     * 发送键盘事件(走 TCP 控制通道,可靠传递)
+     * @param keyCode Windows VK code(如 0x11=Ctrl, 0x43=C)
+     * @param isDown true=按下, false=抬起
+     * @return true 表示控制消息发送成功
+     */
+    external fun nativeSendKey(keyCode: Int, isDown: Boolean): Boolean
+
+    // ============ 键盘便捷方法 ============
+
+    /**
+     * 发送键盘按键按下事件
+     * @param keyCode Windows VK code
+     */
+    fun sendKeyDown(keyCode: Int): Boolean {
+        return try {
+            nativeSendKey(keyCode, true)
+        } catch (e: UnsatisfiedLinkError) {
+            false
+        }
+    }
+
+    /**
+     * 发送键盘按键抬起事件
+     * @param keyCode Windows VK code
+     */
+    fun sendKeyUp(keyCode: Int): Boolean {
+        return try {
+            nativeSendKey(keyCode, false)
+        } catch (e: UnsatisfiedLinkError) {
+            false
+        }
+    }
+
+    /**
+     * 发送键盘按键点击(按下+抬起)
+     * @param keyCode Windows VK code
+     */
+    fun sendKeyPress(keyCode: Int): Boolean {
+        val down = sendKeyDown(keyCode)
+        val up = sendKeyUp(keyCode)
+        return down && up
+    }
+
+    /**
+     * 发送组合键(按下所有键 → 抬起所有键,逆序)
+     * @param keyCodes VK code 数组,按顺序传入(如 [VK_CONTROL, VK_C] 表示 Ctrl+C)
+     */
+    fun sendKeyCombo(vararg keyCodes: Int): Boolean {
+        if (keyCodes.isEmpty()) return false
+        // 顺序按下
+        for (kc in keyCodes) {
+            if (!sendKeyDown(kc)) return false
+        }
+        // 逆序抬起
+        for (kc in keyCodes.reversedArray()) {
+            if (!sendKeyUp(kc)) return false
+        }
+        return true
+    }
+
     /** 获取统计 JSON: {"touch_sent":N,"audio_sent":N} */
     external fun nativeGetStats(): String
 }

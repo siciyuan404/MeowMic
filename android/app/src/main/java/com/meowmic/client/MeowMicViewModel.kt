@@ -243,6 +243,24 @@ class MeowMicViewModel : ViewModel() {
         return NativeBridge.sendButtonUp(button)
     }
 
+    // ============ 键盘事件转发 ============
+
+    fun sendKeyDown(keyCode: Int): Boolean {
+        return NativeBridge.sendKeyDown(keyCode)
+    }
+
+    fun sendKeyUp(keyCode: Int): Boolean {
+        return NativeBridge.sendKeyUp(keyCode)
+    }
+
+    fun sendKeyPress(keyCode: Int): Boolean {
+        return NativeBridge.sendKeyPress(keyCode)
+    }
+
+    fun sendKeyCombo(vararg keyCodes: Int): Boolean {
+        return NativeBridge.sendKeyCombo(*keyCodes)
+    }
+
     private fun startStatsPolling() {
         viewModelScope.launch(Dispatchers.IO) {
             while (_connectionState.value is ConnectionState.Connected) {

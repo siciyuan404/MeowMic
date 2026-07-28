@@ -218,6 +218,14 @@ impl Client {
     pub async fn set_mute_speaker(&self, muted: bool) -> Result<(), NetError> {
         self.send_control(ControlMessage::SetMuteSpeaker { muted }).await
     }
+
+    /// 发送键盘事件(走 TCP 控制通道,可靠传递)
+    ///
+    /// - key_code: Windows VK code(如 0x11=Ctrl, 0x43=C)
+    /// - is_down: true=按下, false=抬起
+    pub async fn send_key(&self, key_code: u16, is_down: bool) -> Result<(), NetError> {
+        self.send_control(ControlMessage::KeyEvent { key_code, is_down }).await
+    }
 }
 
 async fn run_control_recv(
