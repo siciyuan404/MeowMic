@@ -1,0 +1,110 @@
+{
+  "data": [
+    {
+      "id": "page-android-connect",
+      "title": "安卓 · 连接",
+      "type": "page",
+      "version": 1,
+      "createdAt": 1785705600000,
+      "canvasData": {
+        "x": 433,
+        "y": 0,
+        "group": 0
+      },
+      "devMetadata": {
+        "htmlSrc": "pages/android-connect.html",
+        "interactions": [
+          {
+            "domId": "connect-btn",
+            "targetPageId": "page-android-touchpad-portrait"
+          }
+        ]
+      }
+    },
+    {
+      "id": "page-android-touchpad-portrait",
+      "title": "安卓 · 触控板 竖屏",
+      "type": "page",
+      "version": 1,
+      "createdAt": 1785705600000,
+      "canvasData": {
+        "x": 432,
+        "y": 324,
+        "group": 0,
+        "deviceType": "desktop"
+      },
+      "devMetadata": {
+        "htmlSrc": "pages/android-touchpad-portrait.html",
+        "interactions": [
+          {
+            "domId": "back-btn",
+            "targetPageId": "page-android-connect"
+          },
+          {
+            "domId": "rotate-btn",
+            "targetPageId": "page-android-touchpad-landscape"
+          }
+        ]
+      }
+    },
+    {
+      "id": "page-android-touchpad-landscape",
+      "title": "安卓 · 触控板 横屏",
+      "type": "page",
+      "version": 1,
+      "createdAt": 1785705600000,
+      "canvasData": {
+        "x": 0,
+        "y": 0,
+        "group": 0,
+        "deviceType": "freeSize",
+        "windowSize": {
+          "width": 799,
+          "height": 806
+        }
+      },
+      "devMetadata": {
+        "htmlSrc": "pages/android-touchpad-landscape.html",
+        "interactions": [
+          {
+            "domId": "back-btn",
+            "targetPageId": "page-android-connect"
+          },
+          {
+            "domId": "rotate-btn",
+            "targetPageId": "page-android-touchpad-portrait"
+          }
+        ]
+      }
+    },
+    {
+      "id": "page-pc-console",
+      "title": "PC · 控制台",
+      "type": "page",
+      "version": 1,
+      "createdAt": 1785705600000,
+      "canvasData": {
+        "x": 0,
+        "y": 578,
+        "group": 1
+      },
+      "devMetadata": {
+        "htmlSrc": "pages/pc-console.html",
+        "interactions": []
+      }
+    }
+  ],
+  "config": {
+    "autoLayout": false,
+    "deviceType": "freeSize",
+    "designLibrary": {
+      "name": "TRAE Work",
+      "id": "dl_builtin_trae_work",
+      "version": "",
+      "scope": "built-in-global",
+      "path": "c:\\Users\\62744\\.trae-cn\\design_libraries\\dl_builtin_trae_work",
+      "versionSource": "metadata.json"
+    },
+    "showEdge": true
+  }
+}

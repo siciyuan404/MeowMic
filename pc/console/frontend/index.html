@@ -7,198 +7,117 @@
     <title>MeowMic 控制台</title>
     <style>
         :root {
-            /* 配色 */
-            --bg: #1a1a2e;
-            --card-bg: #16213e;
-            --card-border: #0f3460;
-            --accent: #667eea;
-            --accent-2: #764ba2;
-            --text: #eee;
-            --text-muted: #94a3b8;
-            --success: #10b981;
-            --danger: #ef4444;
+            /* ===== TraeWork 设计令牌（浅色主题） ===== */
+            /* radius */
+            --radius-4: 4px;
+            --radius-8: 8px;
+            --radius-12: 12px;
+            --radius-full: 999px;
 
-            /* 圆角 */
-            --radius-sm: 8px;
-            --radius-md: 12px;
-            --radius-lg: 16px;
+            /* spacers */
+            --spacer-4: 4px;
+            --spacer-6: 6px;
+            --spacer-8: 8px;
+            --spacer-10: 10px;
+            --spacer-12: 12px;
+            --spacer-16: 16px;
+            --spacer-20: 20px;
+            --spacer-24: 24px;
+            --spacer-32: 32px;
 
-            /* 间距 */
-            --gap-xs: 4px;
-            --gap-sm: 8px;
-            --gap-md: 16px;
-            --gap-lg: 24px;
+            /* icon sizes */
+            --icon-size-12: 12px;
+            --icon-size-14: 14px;
+            --icon-size-16: 16px;
+            --icon-size-20: 20px;
 
-            /* 字体 */
-            --font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-            --font-mono: 'SF Mono', 'Cascadia Code', Consolas, monospace;
+            /* font */
+            --font-family-default: "SF Pro Text", "PingFang SC", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+            --font-family-metric: "Inter", "SF Pro Text", "PingFang SC", system-ui, sans-serif;
+
+            /* bg */
+            --bg-base-default: #FFFFFF;
+            --bg-base-secondary: #F5F5F5;
+            --bg-overlay-l1: rgba(115, 115, 115, 0.08);
+            --bg-overlay-l2: rgba(115, 115, 115, 0.12);
+            --bg-overlay-l3: rgba(115, 115, 115, 0.16);
+            --bg-overlay-l4: rgba(115, 115, 115, 0.20);
+
+            /* bg-brand */
+            --bg-brand: #4B3FE3;
+            --bg-brand-hover: #6A6FFF;
+            --bg-brand-active: #3F31C6;
+            --bg-brand-disabled: rgba(75, 63, 227, 0.22);
+            --bg-brand-popup: rgba(170, 183, 255, 0.36);
+
+            /* text */
+            --text-default: #171717;
+            --text-secondary: #404040;
+            --text-tertiary: #737373;
+            --text-disabled: #A1A1A1;
+            --text-onbrand: #FFFFFF;
+            --text-white: #FFFFFF;
+            --text-brand: #4B3FE3;
+
+            /* icon */
+            --icon-default: #262626;
+            --icon-secondary: #404040;
+            --icon-tertiary: #737373;
+            --icon-onbrand: #FFFFFF;
+            --icon-brand: #4B3FE3;
+
+            /* border */
+            --border-neutral-l1: rgba(115, 115, 115, 0.12);
+            --border-neutral-l2: rgba(115, 115, 115, 0.18);
+            --border-neutral-l3: rgba(115, 115, 115, 0.36);
+            --border-contrast: #000000;
+
+            /* status */
+            --status-error-default: #E8463A;
+            --status-error-hover: #EA574C;
+            --status-success-default: #15A877;
         }
+
         * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        html, body {
+            height: 100%;
+            overflow: hidden;
+            scrollbar-width: none;
+            -ms-overflow-style: none;
+        }
+        html::-webkit-scrollbar,
+        body::-webkit-scrollbar { display: none; width: 0; height: 0; }
+
         body {
-            font-family: var(--font-sans);
-            background: var(--bg);
-            color: var(--text);
-            padding: var(--gap-md);
-            min-height: 100vh;
-        }
-        .container { max-width: 440px; margin: 0 auto; }
-        h1 {
-            font-size: 20px;
-            margin-bottom: var(--gap-md);
-            text-align: center;
-            background: linear-gradient(135deg, var(--accent), var(--accent-2));
-            -webkit-background-clip: text;
-            -webkit-text-fill-color: transparent;
-        }
-        .status-card {
-            background: var(--card-bg);
-            border-radius: var(--radius-md);
-            padding: var(--gap-md);
-            margin-bottom: var(--gap-md);
-            border: 1px solid var(--card-border);
-        }
-        .status-header {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin-bottom: var(--gap-sm);
-        }
-        .status-indicator {
-            display: flex;
-            align-items: center;
-            gap: var(--gap-sm);
+            font-family: var(--font-family-default);
+            background: transparent;
+            color: var(--text-default);
             font-size: 14px;
-            font-weight: 500;
+            line-height: 20px;
+            -webkit-font-smoothing: antialiased;
+            user-select: none;
+            -webkit-user-select: none;
         }
-        .status-dot {
-            width: 10px;
-            height: 10px;
-            border-radius: 50%;
-            background: #666;
-            transition: background 0.3s;
-        }
-        .status-dot.running {
-            background: var(--success);
-            box-shadow: 0 0 8px var(--success);
-            animation: pulse 1.5s infinite;
-        }
-        @keyframes pulse {
-            0%, 100% { opacity: 1; }
-            50% { opacity: 0.5; }
-        }
-        .status-dot.stopped { background: var(--danger); }
-        .btn {
-            padding: var(--gap-sm) var(--gap-lg);
-            border: none;
-            border-radius: var(--radius-sm);
-            font-size: 14px;
-            font-weight: 600;
-            cursor: pointer;
-            transition: all 0.2s;
-        }
-        .btn-start {
-            background: var(--success);
-            color: white;
-        }
-        .btn-start:hover:not(:disabled) { background: #059669; }
-        .btn-stop {
-            background: var(--danger);
-            color: white;
-        }
-        .btn-stop:hover:not(:disabled) { background: #dc2626; }
-        .btn:disabled { opacity: 0.5; cursor: not-allowed; }
-        .stats-grid {
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: var(--gap-sm);
-        }
-        .stat-item {
-            background: var(--card-border);
-            border-radius: var(--radius-sm);
-            padding: var(--gap-sm);
-            text-align: center;
-            transition: box-shadow 0.3s ease;
-        }
-        .stat-item.glow {
-            box-shadow: 0 0 12px rgba(16, 185, 129, 0.5);
-        }
-        .stat-label { font-size: 11px; color: var(--text-muted); margin-bottom: var(--gap-xs); }
-        .stat-value { font-size: 18px; font-weight: 700; color: var(--accent); }
-        .stat-value.flash { animation: valueFlash 0.5s ease-out; }
-        @keyframes valueFlash {
-            0% { color: var(--success); }
-            100% { color: var(--accent); }
-        }
-        .settings-card {
-            background: var(--card-bg);
-            border-radius: var(--radius-md);
-            padding: var(--gap-md);
-            margin-bottom: var(--gap-md);
-            border: 1px solid var(--card-border);
-        }
-        .settings-title {
-            font-size: 14px;
-            font-weight: 600;
-            margin-bottom: var(--gap-sm);
-            color: var(--accent);
-        }
-        .form-row {
-            margin-bottom: var(--gap-sm);
-        }
-        .form-label {
-            display: block;
-            font-size: 12px;
-            color: var(--text-muted);
-            margin-bottom: var(--gap-xs);
-        }
-        .form-input, .form-select {
-            width: 100%;
-            padding: var(--gap-sm) 12px;
-            background: var(--card-border);
-            border: 1px solid #1e40af;
-            border-radius: var(--radius-sm);
-            color: var(--text);
-            font-size: 13px;
-        }
-        .form-input:focus, .form-select:focus {
-            outline: none;
-            border-color: var(--accent);
-        }
-        .port-group {
-            display: grid;
-            grid-template-columns: 1fr 1fr 1fr;
-            gap: var(--gap-sm);
-        }
-        .checkbox-row {
+
+        /* ============ 窗口圆角框架 ============ */
+        .window-frame {
+            height: 100vh;
+            background: var(--bg-base-default);
+            border: 1px solid var(--border-neutral-l2);
+            border-radius: var(--radius-12);
+            overflow: hidden;
             display: flex;
-            align-items: center;
-            gap: var(--gap-sm);
-            margin-bottom: var(--gap-sm);
+            flex-direction: column;
+            box-shadow: 0 16px 48px rgba(0, 0, 0, 0.12), 0 4px 12px rgba(0, 0, 0, 0.06);
         }
-        .checkbox-row input {
-            width: 16px;
-            height: 16px;
-            accent-color: var(--accent);
+
+        .mono, .metric-value {
+            font-family: var(--font-family-metric);
+            font-variant-numeric: tabular-nums;
+            font-feature-settings: "tnum" 1, "lnum" 1;
         }
-        .checkbox-row label {
-            font-size: 13px;
-            cursor: pointer;
-        }
-        .error-msg {
-            background: #7f1d1d;
-            color: #fecaca;
-            padding: var(--gap-sm) 12px;
-            border-radius: var(--radius-sm);
-            font-size: 12px;
-            margin-top: var(--gap-sm);
-            display: none;
-        }
-        .error-msg.show { display: block; }
-        .muted-text {
-            font-size: 12px;
-            color: var(--text-muted);
-            margin-bottom: var(--gap-sm);
-        }
+
         /* ============ 自定义标题栏 ============ */
         .titlebar {
             display: flex;
@@ -206,113 +125,481 @@
             align-items: center;
             height: 36px;
             padding: 0 8px 0 14px;
-            background: linear-gradient(135deg, #0f0f1e, #16213e);
-            border-bottom: 1px solid var(--card-border);
-            user-select: none;
-            -webkit-user-select: none;
+            background: var(--bg-base-secondary);
+            border-bottom: 1px solid var(--border-neutral-l1);
+            flex-shrink: 0;
         }
         .titlebar-title {
-            font-size: 12px;
-            font-weight: 600;
-            color: var(--text-muted);
             display: flex;
             align-items: center;
             gap: 6px;
+            font-size: 12px;
+            font-weight: 600;
+            color: var(--text-secondary);
+            cursor: default;
         }
+        .titlebar-title svg { width: 16px; height: 16px; color: var(--icon-brand); }
         .titlebar-buttons {
             display: flex;
             gap: 2px;
         }
-        .titlebar-btn {
-            width: 28px;
-            height: 28px;
-            border: none;
-            background: transparent;
-            color: var(--text-muted);
-            font-size: 12px;
-            cursor: pointer;
-            border-radius: 4px;
-            display: flex;
+        .win-ctrl-btn {
+            display: inline-flex;
             align-items: center;
             justify-content: center;
-            transition: background 0.15s;
+            width: 28px;
+            height: 28px;
+            background: transparent;
+            color: var(--text-tertiary);
+            border: none;
+            border-radius: var(--radius-4);
+            cursor: pointer;
+            transition: background .12s ease, color .12s ease;
         }
-        .titlebar-btn:hover { background: rgba(255,255,255,0.1); }
-        .titlebar-btn.close:hover { background: #e81123; color: white; }
-        body { padding: 0; }
-        .container { padding: var(--gap-md); padding-top: var(--gap-sm); }
+        .win-ctrl-btn:hover { background: var(--bg-overlay-l2); color: var(--text-default); }
+        .win-ctrl-btn--close:hover {
+            background: var(--status-error-default);
+            color: var(--text-white);
+        }
+        .win-ctrl-btn svg { width: 14px; height: 14px; }
+
+        /* ============ 主内容区 ============ */
+        .container {
+            max-width: 440px;
+            width: 100%;
+            margin: 0 auto;
+            padding: var(--spacer-16);
+            display: flex;
+            flex-direction: column;
+            gap: var(--spacer-16);
+            flex: 1;
+            overflow-y: auto;
+            scrollbar-width: none;
+            -ms-overflow-style: none;
+        }
+        .container::-webkit-scrollbar { display: none; width: 0; height: 0; }
+
+        /* ============ Card ============ */
+        .ds-card {
+            background: var(--bg-base-secondary);
+            border: 1px solid var(--border-neutral-l1);
+            border-radius: var(--radius-12);
+            padding: var(--spacer-16);
+            color: var(--text-default);
+        }
+
+        /* ============ Status Card ============ */
+        .status-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: var(--spacer-12);
+        }
+        .status-indicator {
+            display: flex;
+            align-items: center;
+            gap: var(--spacer-8);
+            font-size: 14px;
+            font-weight: 500;
+            color: var(--text-default);
+        }
+        .status-dot {
+            width: 10px;
+            height: 10px;
+            border-radius: var(--radius-full);
+            background: var(--status-error-default);
+            flex-shrink: 0;
+            transition: background 0.3s;
+        }
+        .status-dot.running {
+            background: var(--status-success-default);
+            box-shadow: 0 0 8px var(--status-success-default);
+            animation: pulse 1.5s infinite;
+        }
+        .status-dot.stopped { background: var(--status-error-default); }
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+
+        /* ============ Buttons ============ */
+        .ds-btn {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: var(--spacer-6);
+            height: 28px;
+            padding: 0 var(--spacer-12);
+            border-radius: var(--radius-8);
+            border: 1px solid transparent;
+            cursor: pointer;
+            user-select: none;
+            white-space: nowrap;
+            font-family: var(--font-family-default);
+            font-size: 14px;
+            font-weight: 500;
+            line-height: 20px;
+            transition: background .12s ease, color .12s ease, border-color .12s ease, opacity .12s ease;
+        }
+        .ds-btn svg {
+            width: var(--icon-size-16);
+            height: var(--icon-size-16);
+            flex: 0 0 auto;
+        }
+        .ds-btn--brand {
+            background: var(--bg-brand);
+            color: var(--text-onbrand);
+            border-color: var(--bg-brand);
+        }
+        .ds-btn--brand:hover { background: var(--bg-brand-hover); border-color: var(--bg-brand-hover); }
+        .ds-btn--brand:active { background: var(--bg-brand-active); border-color: var(--bg-brand-active); }
+        .ds-btn--brand[disabled] {
+            background: var(--bg-brand-disabled);
+            border-color: transparent;
+            color: var(--text-onbrand);
+            cursor: not-allowed;
+        }
+        .ds-btn--secondary {
+            background: var(--bg-overlay-l1);
+            color: var(--text-default);
+            border-color: var(--border-neutral-l1);
+        }
+        .ds-btn--secondary:hover { background: var(--bg-overlay-l2); border-color: var(--border-neutral-l2); }
+        .ds-btn--secondary[disabled] {
+            color: var(--text-disabled);
+            cursor: not-allowed;
+            opacity: .7;
+        }
+
+        /* ============ Stats Grid ============ */
+        .stats-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: var(--spacer-8);
+        }
+        .stat-item {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            background: var(--bg-overlay-l1);
+            border-radius: var(--radius-8);
+            padding: var(--spacer-8);
+            transition: box-shadow 0.3s ease;
+        }
+        .stat-item.glow {
+            box-shadow: 0 0 12px rgba(75, 63, 227, 0.35);
+        }
+        .stat-label {
+            display: flex;
+            align-items: center;
+            gap: 4px;
+            margin-bottom: 2px;
+        }
+        .stat-label svg {
+            width: var(--icon-size-12);
+            height: var(--icon-size-12);
+            color: var(--icon-tertiary);
+        }
+        .stat-label span {
+            font-size: 11px;
+            color: var(--text-tertiary);
+        }
+        .stat-value {
+            font-size: 18px;
+            font-weight: 700;
+            color: var(--text-brand);
+            line-height: 24px;
+        }
+        .stat-value.flash { animation: valueFlash 0.5s ease-out; }
+        @keyframes valueFlash {
+            0% { color: var(--bg-brand-hover); transform: scale(1.05); }
+            100% { color: var(--text-brand); transform: scale(1); }
+        }
+
+        /* ============ Settings Card ============ */
+        .settings-title {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            margin-bottom: var(--spacer-12);
+            font-size: 14px;
+            font-weight: 600;
+            color: var(--text-brand);
+        }
+        .settings-title svg {
+            width: var(--icon-size-16);
+            height: var(--icon-size-16);
+            color: var(--icon-brand);
+        }
+        .form-row { display: flex; flex-direction: column; }
+        .form-row + .form-row { margin-top: var(--spacer-12); }
+        .form-label {
+            font-size: 12px;
+            color: var(--text-tertiary);
+            margin-bottom: 4px;
+        }
+        .form-hint {
+            font-size: 12px;
+            color: var(--text-tertiary);
+            margin-top: 4px;
+            line-height: 16px;
+        }
+
+        /* ============ Input / Select ============ */
+        .ds-input {
+            display: flex;
+            align-items: center;
+            gap: var(--spacer-8);
+            min-height: 32px;
+            padding: 0 var(--spacer-12);
+            background: var(--bg-base-default);
+            border: 1px solid var(--border-neutral-l1);
+            border-radius: var(--radius-8);
+            color: var(--text-default);
+            width: 100%;
+            font-family: var(--font-family-default);
+            font-size: 14px;
+            line-height: 20px;
+        }
+        .ds-input:focus-within {
+            border-color: var(--border-contrast);
+            background: var(--bg-base-default);
+        }
+        .ds-input input {
+            flex: 1;
+            background: transparent;
+            border: none;
+            outline: none;
+            color: var(--text-default);
+            font: inherit;
+            min-width: 0;
+        }
+        .ds-input input[type="number"] {
+            appearance: textfield;
+            -moz-appearance: textfield;
+        }
+        .ds-input input[type="number"]::-webkit-outer-spin-button,
+        .ds-input input[type="number"]::-webkit-inner-spin-button {
+            -webkit-appearance: none;
+            margin: 0;
+        }
+        .ds-input input::placeholder { color: var(--text-tertiary); }
+
+        .ds-select-wrap {
+            position: relative;
+            width: 100%;
+        }
+        .ds-select {
+            width: 100%;
+            height: 32px;
+            padding: 0 var(--spacer-32) 0 var(--spacer-12);
+            background-color: var(--bg-base-default);
+            color: var(--text-default);
+            border: 1px solid var(--border-neutral-l1);
+            border-radius: var(--radius-8);
+            appearance: none;
+            -webkit-appearance: none;
+            font: inherit;
+            font-size: 14px;
+        }
+        .ds-select:focus {
+            border-color: var(--border-contrast);
+            background-color: var(--bg-base-default);
+            outline: none;
+        }
+        .ds-select__icon {
+            position: absolute;
+            right: var(--spacer-12);
+            top: 50%;
+            width: 16px;
+            height: 16px;
+            color: var(--icon-secondary);
+            pointer-events: none;
+            transform: translateY(-50%);
+        }
+
+        /* ============ Checkbox ============ */
+        .ds-check {
+            display: inline-flex;
+            align-items: center;
+            gap: var(--spacer-8);
+            min-height: 24px;
+            font-size: 14px;
+            color: var(--text-default);
+            cursor: pointer;
+            user-select: none;
+        }
+        .ds-check input { display: none; }
+        .ds-check__box {
+            width: 16px;
+            height: 16px;
+            border: 1px solid var(--border-neutral-l2);
+            background: var(--bg-base-default);
+            border-radius: var(--radius-4);
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            color: var(--text-onbrand);
+            transition: background .12s, border-color .12s;
+            flex-shrink: 0;
+        }
+        .ds-check input:checked + .ds-check__box {
+            background: var(--bg-brand);
+            border-color: var(--bg-brand);
+        }
+        .ds-check input:checked + .ds-check__box::after {
+            content: '';
+            width: 8px;
+            height: 4px;
+            border-left: 2px solid var(--text-onbrand);
+            border-bottom: 2px solid var(--text-onbrand);
+            transform: rotate(-45deg) translate(1px, -1px);
+        }
+
+        /* ============ Error Message ============ */
+        .error-msg {
+            background: rgba(232, 70, 58, 0.12);
+            color: var(--status-error-default);
+            padding: var(--spacer-8) var(--spacer-12);
+            border-radius: var(--radius-8);
+            font-size: 12px;
+            margin-top: var(--spacer-8);
+            display: none;
+            border: 1px solid rgba(232, 70, 58, 0.16);
+        }
+        .error-msg.show { display: block; }
+        .error-msg.info {
+            background: var(--bg-overlay-l1);
+            color: var(--text-secondary);
+            border-color: var(--border-neutral-l1);
+        }
     </style>
 </head>
 <body>
-    <div class="titlebar">
-        <div class="titlebar-title" data-drag>🐱 MeowMic 控制台</div>
+  <!-- 窗口圆角框架 -->
+  <div class="window-frame">
+    <!-- 自定义标题栏（可拖拽 + 窗口控制） -->
+    <div class="titlebar" id="titlebar">
+        <div class="titlebar-title">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M12 5c.94 0 1.81.53 2.26 1.38l.66 1.27c.27.51.36 1.1.66 1.6"/>
+                <path d="M8 15c-1.5 0-3 .5-3 2.5S6 20 8 20c1.5 0 2.84-.5 4-1"/>
+                <path d="M8 17.5c-1.5 0-2 .5-2 1.5s.5 1.5 2 1.5"/>
+                <path d="M8 4.5c0 1.5.5 2.5 1.5 3.5"/>
+                <path d="M11 17c0-1.5.5-3 2-3.5"/>
+                <path d="M16 19c0-1.5.5-3 2-3.5"/>
+                <path d="M19 19c0-1 .5-2 1.5-2.5"/>
+                <path d="M5 11c0-1.5.5-3 2-4"/>
+                <path d="M2 12c0-1.5.5-3 2-4"/>
+            </svg>
+            <span>MeowMic 控制台</span>
+        </div>
         <div class="titlebar-buttons">
-            <button class="titlebar-btn" onclick="windowMinimize()" title="最小化">─</button>
-            <button class="titlebar-btn" onclick="windowToggleMax()" title="最大化/还原">▢</button>
-            <button class="titlebar-btn close" onclick="windowClose()" title="关闭">✕</button>
+            <button class="win-ctrl-btn" type="button" onclick="windowMinimize()" title="最小化">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/></svg>
+            </button>
+            <button class="win-ctrl-btn" type="button" onclick="windowToggleMax()" title="最大化/还原">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="18" x="3" y="3" rx="2"/></svg>
+            </button>
+            <button class="win-ctrl-btn win-ctrl-btn--close" type="button" onclick="windowClose()" title="关闭">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
+            </button>
         </div>
     </div>
+
+    <!-- 主内容 -->
     <div class="container">
-        <div class="status-card">
+        <!-- 状态卡片 -->
+        <div class="ds-card">
             <div class="status-header">
                 <div class="status-indicator">
-                    <div id="statusDot" class="status-dot stopped"></div>
+                    <span id="statusDot" class="status-dot stopped"></span>
                     <span id="statusText">已停止</span>
                 </div>
-                <div>
-                    <button id="startBtn" class="btn btn-start" onclick="startService()">启动</button>
-                    <button id="stopBtn" class="btn btn-stop" onclick="stopService()" disabled>停止</button>
+                <div style="display:flex;gap:8px;">
+                    <button id="startBtn" class="ds-btn ds-btn--brand" onclick="startService()">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="6 3 20 12 6 21 6 3"/></svg>
+                        启动
+                    </button>
+                    <button id="stopBtn" class="ds-btn ds-btn--secondary" onclick="stopService()" disabled>
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="18" x="3" y="3" rx="2"/></svg>
+                        停止
+                    </button>
                 </div>
             </div>
             <div class="stats-grid">
                 <div class="stat-item" id="statUptimeCard">
-                    <div class="stat-label">⏱️ 运行时长</div>
-                    <div class="stat-value" id="statUptime">0s</div>
+                    <div class="stat-label">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+                        <span>运行时长</span>
+                    </div>
+                    <div class="stat-value metric-value" id="statUptime">0s</div>
                 </div>
                 <div class="stat-item" id="statConnsCard">
-                    <div class="stat-label">🔗 连接数</div>
-                    <div class="stat-value" id="statConns">0</div>
+                    <div class="stat-label">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
+                        <span>连接数</span>
+                    </div>
+                    <div class="stat-value metric-value" id="statConns">0</div>
                 </div>
                 <div class="stat-item" id="statTouchesCard">
-                    <div class="stat-label">👆 触控/秒</div>
-                    <div class="stat-value" id="statTouches">0</div>
+                    <div class="stat-label">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 11V6a2 2 0 0 0-2-2a2 2 0 0 0-2 2"/><path d="M14 10V4a2 2 0 0 0-2-2a2 2 0 0 0-2 2v2"/><path d="M10 10.5V6a2 2 0 0 0-2-2a2 2 0 0 0-2 2v8"/><path d="M18 8a2 2 0 1 1 4 0v6a8 8 0 0 1-8 8h-2c-2.8 0-4.5-.86-5.99-2.34l-3.6-3.6a2 2 0 0 1 2.83-2.82L7 15"/></svg>
+                        <span>触控/秒</span>
+                    </div>
+                    <div class="stat-value metric-value" id="statTouches">0</div>
                 </div>
                 <div class="stat-item" id="statAudioCard">
-                    <div class="stat-label">🎵 音频/秒</div>
-                    <div class="stat-value" id="statAudio">0</div>
+                    <div class="stat-label">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>
+                        <span>音频/秒</span>
+                    </div>
+                    <div class="stat-value metric-value" id="statAudio">0</div>
                 </div>
             </div>
             <div id="errorMsg" class="error-msg"></div>
         </div>
 
-        <div class="settings-card">
-            <div class="settings-title">⚙️ 基础设置</div>
+        <!-- 设置卡片 -->
+        <div class="ds-card">
+            <div class="settings-title">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></svg>
+                <span>基础设置</span>
+            </div>
+
             <div class="form-row">
                 <label class="form-label">基础端口</label>
-                <input type="number" id="tcpPort" class="form-input" placeholder="28900">
+                <div class="ds-input">
+                    <input type="number" id="tcpPort" placeholder="28900">
+                </div>
+                <p class="form-hint">默认: 28900（TCP=28900 / 触控=28901 / 音频=28902 / 状态=28903）</p>
             </div>
-            <div class="muted-text">
-                默认: 28900（TCP=28900 / 触控=28901 / 音频=28902 / 状态=28903）
-            </div>
+
             <div class="form-row">
                 <label class="form-label">音频输出设备</label>
-                <select id="outputDevice" class="form-select">
-                    <option value="">加载中...</option>
-                </select>
+                <div class="ds-select-wrap">
+                    <select id="outputDevice" class="ds-select">
+                        <option value="">加载中...</option>
+                    </select>
+                    <svg class="ds-select__icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg>
+                </div>
+                <p class="form-hint">选择 "CABLE Input" 等虚拟音频设备可将声音路由到其他应用</p>
             </div>
-            <div class="muted-text">
-                提示：选择 "CABLE Input" 等虚拟音频设备，可将手机麦克风声音路由到其他应用（如 Zoom、Discord）
-            </div>
-            <div class="checkbox-row">
+
+            <label class="ds-check" style="margin-top: 12px;">
                 <input type="checkbox" id="muteSpeaker" onchange="onMuteSpeakerChange()">
-                <label for="muteSpeaker">静音外放 (仅接收麦克风输入)</label>
-            </div>
-            <div class="checkbox-row">
+                <span class="ds-check__box"></span>
+                <span>静音外放（仅接收麦克风输入）</span>
+            </label>
+
+            <label class="ds-check" style="margin-top: 8px;">
                 <input type="checkbox" id="autoStart">
-                <label for="autoStart">启动控制台时自动启动服务</label>
-            </div>
+                <span class="ds-check__box"></span>
+                <span>启动控制台时自动启动服务</span>
+            </label>
         </div>
     </div>
+  </div>
 
     <script>
         let config = {
@@ -328,12 +615,11 @@
             try {
                 const Tauri = window.__TAURI__;
                 if (!Tauri) {
-                    document.getElementById('errorMsg').textContent = 'Tauri 未加载,请通过桌面应用运行';
-                    document.getElementById('errorMsg').classList.add('show');
+                    showError('Tauri 未加载,请通过桌面应用运行', true);
                     return;
                 }
 
-                // 标题栏拖拽
+                // 标题栏拖拽（点击按钮除外）
                 setupTitlebarDrag(Tauri);
 
                 config = await Tauri.invoke('get_config');
@@ -367,14 +653,18 @@
 
         // ============ 自定义窗口控制 ============
         function setupTitlebarDrag(Tauri) {
-            const dragEls = document.querySelectorAll('[data-drag]');
-            dragEls.forEach(el => {
-                el.addEventListener('mousedown', async (e) => {
-                    if (e.button === 0) {
-                        // 左键拖拽窗口
-                        try { await Tauri.window.getCurrent().startDragging(); } catch(err) {}
-                    }
-                });
+            const titlebar = document.getElementById('titlebar');
+            if (!titlebar) return;
+            titlebar.addEventListener('mousedown', async (e) => {
+                if (e.button !== 0) return;
+                // 点击按钮时不触发拖拽
+                if (e.target.closest('button')) return;
+                try { await Tauri.window.getCurrent().startDragging(); } catch(err) {}
+            });
+            // 双击标题栏切换最大化
+            titlebar.addEventListener('dblclick', (e) => {
+                if (e.target.closest('button')) return;
+                windowToggleMax();
             });
         }
 
@@ -422,7 +712,7 @@
                 await Tauri.invoke('start_service', { config: cfg });
                 showError('');
             } catch(e) {
-                showError(e);
+                showError(String(e));
             }
         }
 
@@ -432,7 +722,7 @@
                 await Tauri.invoke('stop_service');
                 showError('');
             } catch(e) {
-                showError(e);
+                showError(String(e));
             }
         }
 
@@ -442,19 +732,15 @@
             const muted = document.getElementById('muteSpeaker').checked;
             try {
                 await Tauri.invoke('set_mute_speaker', { muted: muted });
-                // 同步本地 config 对象
                 config.mute_speaker = muted;
-                // 短暂提示当前状态
                 const msg = muted ? '已静音外放' : '已开启外放';
-                showError(msg);
+                showError(msg, true);
                 setTimeout(() => {
-                    // 仅当提示仍是当前状态时清除,避免覆盖后续错误
                     const el = document.getElementById('errorMsg');
                     if (el.textContent === msg) showError('');
                 }, 1200);
             } catch(e) {
                 showError(String(e));
-                // 失败时回滚 UI 到原状态
                 document.getElementById('muteSpeaker').checked = !muted;
             }
         }
@@ -514,13 +800,19 @@
             return `${s}s`;
         }
 
-        function showError(msg) {
+        function showError(msg, isInfo) {
             const el = document.getElementById('errorMsg');
             if (msg) {
                 el.textContent = msg;
                 el.classList.add('show');
+                if (isInfo) {
+                    el.classList.add('info');
+                } else {
+                    el.classList.remove('info');
+                }
             } else {
                 el.classList.remove('show');
+                el.classList.remove('info');
             }
         }
 

@@ -1,0 +1,78 @@
+{
+  "skillProvenance": {
+    "skillName": "solo-design",
+    "skillVersion": "1.0.0",
+    "lane": "library_bound"
+  },
+  "project": {
+    "name": "meowmic-ui-redesign",
+    "designProjectPath": "f:/git/MeowMic/meowmic-ui-redesign",
+    "resolvedLane": "library_bound",
+    "selectedIntentWorkflowRead": true,
+    "contextRequirementsLoaded": [
+      {
+        "path": "c:/Users/62744/.trae-cn/design_libraries/dl_builtin_trae_work/metadata.json",
+        "readStatus": "loaded",
+        "bodyRead": true
+      },
+      {
+        "path": "f:/git/MeowMic/meowmic-ui-redesign/colors_and_type.css",
+        "readStatus": "loaded",
+        "bodyRead": true
+      },
+      {
+        "path": "f:/git/MeowMic/meowmic-ui-redesign/pages/android-connect.html",
+        "readStatus": "loaded",
+        "bodyRead": true
+      }
+    ],
+    "contextReadScope": "library-bound-page-rendering",
+    "validationRunDiscipline": {
+      "maxFullValidationRuns": 2,
+      "softWarningsTriggerRepair": false,
+      "blockingRepairMode": "targeted-once",
+      "forbiddenRepairTriggers": ["soft-warning-only", "provenance-warning-only", "style-warning-only"]
+    },
+    "lowValueCallWatchdog": {
+      "noProgressNextAction": "dispatch-or-readiness"
+    },
+    "designLibrary": {
+      "name": "TRAE Work",
+      "id": "dl_builtin_trae_work",
+      "operatingMode": "library-bound",
+      "tokenFidelity": "strict"
+    },
+    "brandColor": "#4B3FE3",
+    "iconAssets": {
+      "path": "assets/icons/dl_builtin_trae_work/",
+      "count": 671,
+      "format": "svg"
+    }
+  },
+  "expectedDispatches": [
+    {
+      "pageId": "page-android-connect",
+      "htmlSrc": "pages/android-connect.html",
+      "title": "安卓 · 连接",
+      "status": "pending"
+    },
+    {
+      "pageId": "page-android-touchpad-portrait",
+      "htmlSrc": "pages/android-touchpad-portrait.html",
+      "title": "安卓 · 触控板 竖屏",
+      "status": "pending"
+    },
+    {
+      "pageId": "page-android-touchpad-landscape",
+      "htmlSrc": "pages/android-touchpad-landscape.html",
+      "title": "安卓 · 触控板 横屏",
+      "status": "pending"
+    },
+    {
+      "pageId": "page-pc-console",
+      "htmlSrc": "pages/pc-console.html",
+      "title": "PC · 控制台",
+      "status": "pending"
+    }
+  ]
+}
