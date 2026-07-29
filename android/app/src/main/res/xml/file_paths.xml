@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<paths>
+    <!-- APK 下载缓存目录,用于自更新安装 -->
+    <cache-path name="apk_updates" path="updates/" />
+    <external-cache-path name="apk_updates_ext" path="updates/" />
+</paths>

@@ -82,9 +82,17 @@ class MeowMicViewModel : ViewModel() {
     // 当前正在编辑的 slot 索引(等待文件选择)
     private var pendingSlotIndex: Int = -1
 
+    // ============ 自动更新 ============
+    private val _updateState = MutableStateFlow<UpdateState>(UpdateState.Idle)
+    val updateState: StateFlow<UpdateState> = _updateState.asStateFlow()
+
+    private var updateChecker: UpdateChecker? = null
+    private var pendingApkPath: String? = null
+
     fun init(context: Context) {
         this.context = context.applicationContext
         audioInputManager.init(context.applicationContext)
+        updateChecker = UpdateChecker(context.applicationContext)
         loadHistory()
         loadAudioPanel()
     }
@@ -428,6 +436,63 @@ class MeowMicViewModel : ViewModel() {
     suspend fun playQuickSlot(index: Int): Boolean {
         val slot = _quickSlots.value.getOrNull(index) ?: return false
         return playMusicFile(slot.path)
+    }
+
+    // ============ 自动更新 ============
+
+    /** 当前应用版本名(来自 PackageInfo) */
+    fun currentVersion(): String = updateChecker?.getCurrentVersion() ?: "0.0.0"
+
+    /** 检查 GitHub 最新 Release */
+    fun checkForUpdate() {
+        val checker = updateChecker ?: run {
+            _updateState.value = UpdateState.Error("更新检查器未初始化")
+            return
+        }
+        viewModelScope.launch {
+            _updateState.value = UpdateState.Checking
+            _updateState.value = checker.checkLatest()
+        }
+    }
+
+    /** 下载最新 APK。仅当状态为 Available 时可调用。 */
+    fun downloadUpdate() {
+        val checker = updateChecker ?: return
+        val state = _updateState.value
+        val url = (state as? UpdateState.Available)?.downloadUrl ?: run {
+            _updateState.value = UpdateState.Error("无可下载的更新")
+            return
+        }
+        viewModelScope.launch {
+            _updateState.value = UpdateState.Downloading(0)
+            try {
+                val path = checker.downloadApk(url) { progress ->
+                    _updateState.value = UpdateState.Downloading(progress)
+                }
+                pendingApkPath = path
+                _updateState.value = UpdateState.ReadyToInstall(path)
+            } catch (e: Exception) {
+                Log.w(TAG, "下载更新失败", e)
+                _updateState.value = UpdateState.Error(e.message ?: "下载失败")
+            }
+        }
+    }
+
+    /** 调起系统安装器。仅当状态为 ReadyToInstall 时可调用。 */
+    fun installUpdate() {
+        val checker = updateChecker ?: return
+        val path = pendingApkPath ?: return
+        try {
+            checker.installApk(path)
+        } catch (e: Exception) {
+            Log.w(TAG, "调起安装器失败", e)
+            _updateState.value = UpdateState.Error(e.message ?: "无法启动安装器")
+        }
+    }
+
+    /** 重置更新状态(从 Error 返回 Idle) */
+    fun resetUpdateState() {
+        _updateState.value = UpdateState.Idle
     }
 
     fun disconnect() {

@@ -32,6 +32,22 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Inject version from tag
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: bash
+        run: |
+          TAG=${GITHUB_REF##*/}          # v0.5.1
+          VER=${TAG#v}                    # 0.5.1
+          # versionCode:取 patch*100 + minor*10000 + major*1000000 的简化方案
+          # 0.5.1 → 1 + 5*100 + 0 = 501  (满足单调递增即可)
+          MAJOR=$(echo "$VER" | cut -d. -f1)
+          MINOR=$(echo "$VER" | cut -d. -f2)
+          PATCH=$(echo "$VER" | cut -d. -f3)
+          VCODE=$(( MAJOR*10000 + MINOR*100 + PATCH ))
+          echo "Injecting versionName=$VER versionCode=$VCODE"
+          sed -i "s/versionCode = [0-9]*/versionCode = $VCODE/" android/app/build.gradle.kts
+          sed -i "s/versionName = \"[^\"]*\"/versionName = \"$VER\"/" android/app/build.gradle.kts
+
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:

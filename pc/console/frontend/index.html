@@ -610,6 +610,22 @@
                 <span>启动控制台时自动启动服务</span>
             </label>
         </div>
+
+        <!-- 关于与更新 -->
+        <div class="ds-card">
+            <div class="ds-card__title">关于</div>
+            <div id="updatePanel" style="margin-top: 8px;">
+                <div style="display:flex; justify-content:space-between; align-items:center; gap:8px;">
+                    <span id="versionText" style="font-size:12px; color:var(--text-tertiary);">版本 ...</span>
+                    <button class="ds-btn ds-btn--secondary" type="button" onclick="checkForUpdate()" id="checkUpdateBtn">检查更新</button>
+                </div>
+                <div id="updateStatus" style="margin-top:8px; font-size:12px; color:var(--text-tertiary); min-height:16px; white-space:pre-wrap; word-break:break-word;"></div>
+                <div id="updateProgress" style="display:none; margin-top:8px; height:4px; background:var(--bg-overlay-l2); border-radius:var(--radius-full); overflow:hidden;">
+                    <div id="updateProgressBar" style="height:100%; width:0%; background:var(--bg-brand); transition:width .2s;"></div>
+                </div>
+                <button id="installUpdateBtn" class="ds-btn ds-btn--brand" type="button" style="display:none; margin-top:8px; width:100%;" onclick="installUpdate()">重启并安装</button>
+            </div>
+        </div>
     </div>
   </div>
 
@@ -635,6 +651,12 @@
                 setupTitlebarDrag(Tauri);
                 // 窗口边框状态(最大化/失焦)
                 setupWindowState(Tauri);
+
+                // 显示当前版本
+                try {
+                    const ver = Tauri.app.getVersion();
+                    document.getElementById('versionText').textContent = '版本 ' + ver;
+                } catch(err) { console.warn('获取版本失败:', err); }
 
                 config = await Tauri.invoke('get_config');
                 applyConfigToUI(config);
@@ -717,6 +739,93 @@
         async function windowClose() {
             const Tauri = window.__TAURI__;
             try { await Tauri.window.getCurrent().close(); } catch(err) { console.error(err); }
+        }
+
+        // ============ 自动更新 ============
+        let pendingUpdate = null;  // 待安装的更新对象
+
+        function showUpdateStatus(text, color) {
+            const el = document.getElementById('updateStatus');
+            el.textContent = text || '';
+            el.style.color = color || 'var(--text-tertiary)';
+        }
+
+        function setUpdateProgress(visible, percent) {
+            const bar = document.getElementById('updateProgress');
+            const fill = document.getElementById('updateProgressBar');
+            bar.style.display = visible ? 'block' : 'none';
+            if (visible) fill.style.width = (percent || 0) + '%';
+        }
+
+        async function checkForUpdate() {
+            const Tauri = window.__TAURI__;
+            const btn = document.getElementById('checkUpdateBtn');
+            btn.disabled = true;
+            btn.textContent = '检查中...';
+            showUpdateStatus('', '');
+            try {
+                const update = await Tauri.updater.check();
+                if (update && update.available) {
+                    pendingUpdate = update;
+                    const ver = update.version || '新版本';
+                    showUpdateStatus('发现新版本 v' + ver + (update.body ? '\n' + update.body : ''), 'var(--text-secondary)');
+                    btn.textContent = '下载更新';
+                    btn.onclick = downloadUpdate;
+                } else {
+                    showUpdateStatus('已是最新版本', 'var(--text-tertiary)');
+                    btn.textContent = '检查更新';
+                    btn.onclick = checkForUpdate;
+                }
+            } catch(err) {
+                showUpdateStatus('检查失败: ' + (err.message || err), 'var(--status-error-default)');
+                btn.textContent = '检查更新';
+            } finally {
+                btn.disabled = false;
+            }
+        }
+
+        async function downloadUpdate() {
+            if (!pendingUpdate) return;
+            const btn = document.getElementById('checkUpdateBtn');
+            btn.disabled = true;
+            btn.textContent = '下载中...';
+            setUpdateProgress(true, 0);
+            showUpdateStatus('正在下载...', '');
+            let lastEmit = 0;
+            try {
+                await pendingUpdate.downloadAndInstall(event => {
+                    const now = Date.now();
+                    if (event.event === 'Downloading' && now - lastEmit > 100) {
+                        lastEmit = now;
+                        if (event.data && event.data.contentLength) {
+                            const pct = Math.round((event.data.downloaded / event.data.contentLength) * 100);
+                            setUpdateProgress(true, pct);
+                        }
+                    } else if (event.event === 'Downloaded') {
+                        setUpdateProgress(true, 100);
+                    }
+                });
+                // 下载完成,显示重启按钮
+                setUpdateProgress(false, 0);
+                btn.style.display = 'none';
+                document.getElementById('installUpdateBtn').style.display = 'block';
+                showUpdateStatus('下载完成,点击重启以完成安装', 'var(--status-success-default)');
+            } catch(err) {
+                setUpdateProgress(false, 0);
+                showUpdateStatus('下载失败: ' + (err.message || err), 'var(--status-error-default)');
+                btn.disabled = false;
+                btn.textContent = '重试下载';
+            }
+        }
+
+        async function installUpdate() {
+            const Tauri = window.__TAURI__;
+            try {
+                // Tauri 1.x: 下载并安装后需手动重启
+                await Tauri.process.relaunch();
+            } catch(err) {
+                showUpdateStatus('安装失败: ' + (err.message || err), 'var(--status-error-default)');
+            }
         }
 
         function applyConfigToUI(cfg) {

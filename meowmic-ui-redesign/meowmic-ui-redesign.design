@@ -9,7 +9,14 @@
       "canvasData": {
         "x": 433,
         "y": 0,
-        "group": 0
+        "group": 0,
+        "layoutSnapshot": {
+          "version": 1,
+          "contentHeight": 901,
+          "viewportWidth": 800,
+          "sourceHash": "fnv1a-c660a821",
+          "measuredAt": 1785312573357
+        }
       },
       "devMetadata": {
         "htmlSrc": "pages/android-connect.html",
@@ -31,7 +38,14 @@
         "x": 432,
         "y": 324,
         "group": 0,
-        "deviceType": "desktop"
+        "deviceType": "desktop",
+        "layoutSnapshot": {
+          "version": 1,
+          "contentHeight": 1192,
+          "viewportWidth": 1440,
+          "sourceHash": "fnv1a-8dbbc5ec",
+          "measuredAt": 1785312573357
+        }
       },
       "devMetadata": {
         "htmlSrc": "pages/android-touchpad-portrait.html",
@@ -61,6 +75,13 @@
         "windowSize": {
           "width": 799,
           "height": 806
+        },
+        "layoutSnapshot": {
+          "version": 1,
+          "contentHeight": 901,
+          "viewportWidth": 799,
+          "sourceHash": "fnv1a-ecb8a2f8",
+          "measuredAt": 1785312573357
         }
       },
       "devMetadata": {
@@ -86,7 +107,14 @@
       "canvasData": {
         "x": 0,
         "y": 578,
-        "group": 1
+        "group": 1,
+        "layoutSnapshot": {
+          "version": 1,
+          "contentHeight": 901,
+          "viewportWidth": 800,
+          "sourceHash": "fnv1a-d3a1e527",
+          "measuredAt": 1785312573357
+        }
       },
       "devMetadata": {
         "htmlSrc": "pages/pc-console.html",

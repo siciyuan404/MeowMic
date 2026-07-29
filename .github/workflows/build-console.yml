@@ -42,6 +42,27 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Inject version from tag
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: bash
+        run: |
+          TAG=${GITHUB_REF##*/}          # v0.5.1
+          VER=${TAG#v}                    # 0.5.1
+          echo "Injecting version $VER"
+          # tauri.conf.json
+          python - <<PY
+          import json, re
+          p = "pc/console/src-tauri/tauri.conf.json"
+          with open(p, "r", encoding="utf-8") as f:
+              cfg = json.load(f)
+          cfg["package"]["version"] = "$VER"
+          with open(p, "w", encoding="utf-8") as f:
+              json.dump(cfg, f, indent=2, ensure_ascii=False)
+          PY
+          # workspace Cargo.toml
+          sed -i "s/^version = \".*\"/version = \"$VER\"/" Cargo.toml
+          echo "Injected version: $VER"
+
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -112,6 +133,9 @@ jobs:
 
       - name: Build Tauri console
         working-directory: pc/console/src-tauri
+        env:
+          TAURI_PRIVATE_KEY: ${{ secrets.TAURI_PRIVATE_KEY }}
+          TAURI_KEY_PASSWORD: ${{ secrets.TAURI_KEY_PASSWORD }}
         run: cargo tauri build --target ${{ matrix.target }}
 
       - name: Prepare artifacts (Windows)
@@ -139,6 +163,36 @@ jobs:
             mv "$f" "${base}-${TAG}-${{ matrix.asset_suffix }}.${ext}" 2>/dev/null || true
           done
           ls -lh
+
+      - name: Generate latest.json manifest
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: bash
+        run: |
+          TAG=${GITHUB_REF##*/}
+          VER=${TAG#v}
+          # 找 NSIS 安装包和签名文件
+          NSIS=$(ls artifacts/*-setup-*.exe 2>/dev/null | head -1 || ls artifacts/*.exe 2>/dev/null | head -1)
+          SIG=$(ls artifacts/*.sig 2>/dev/null | head -1)
+          if [ -z "$NSIS" ]; then echo "未找到安装包"; exit 1; fi
+          # 读取签名内容(如果有)
+          SIG_CONTENT=""
+          if [ -n "$SIG" ] && [ -f "$SIG" ]; then SIG_CONTENT=$(cat "$SIG"); fi
+          # 生成 manifest
+          cat > artifacts/latest.json <<EOF
+          {
+            "version": "$VER",
+            "notes": "MeowMic $TAG",
+            "pub_date": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+            "platforms": {
+              "windows-x86_64": {
+                "signature": "$SIG_CONTENT",
+                "url": "https://github.com/siciyuan404/MeowMic/releases/download/$TAG/$(basename $NSIS)"
+              }
+            }
+          }
+          EOF
+          echo "Generated latest.json:"
+          cat artifacts/latest.json
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
