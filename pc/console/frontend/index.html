@@ -110,6 +110,18 @@
             display: flex;
             flex-direction: column;
             box-shadow: 0 16px 48px rgba(0, 0, 0, 0.12), 0 4px 12px rgba(0, 0, 0, 0.06);
+            transition: border-color .2s ease, box-shadow .2s ease;
+        }
+        /* 最大化:去掉圆角/边框/阴影,贴满屏幕 */
+        body.maximized .window-frame {
+            border-radius: 0;
+            border: none;
+            box-shadow: none;
+        }
+        /* 失焦:边框和阴影变淡 */
+        body.unfocused .window-frame {
+            border-color: var(--border-neutral-l1);
+            box-shadow: 0 8px 24px rgba(0, 0, 0, 0.06), 0 2px 6px rgba(0, 0, 0, 0.03);
         }
 
         .mono, .metric-value {
@@ -621,6 +633,8 @@
 
                 // 标题栏拖拽（点击按钮除外）
                 setupTitlebarDrag(Tauri);
+                // 窗口边框状态(最大化/失焦)
+                setupWindowState(Tauri);
 
                 config = await Tauri.invoke('get_config');
                 applyConfigToUI(config);
@@ -666,6 +680,28 @@
                 if (e.target.closest('button')) return;
                 windowToggleMax();
             });
+        }
+
+        // ============ 窗口边框状态同步(最大化/失焦) ============
+        async function setupWindowState(Tauri) {
+            try {
+                const win = Tauri.window.getCurrent();
+                // 初始同步当前状态
+                const isMax = await win.isMaximized();
+                document.body.classList.toggle('maximized', !!isMax);
+                // 监听最大化/还原
+                await win.onResized(() => {
+                    win.isMaximized().then(m => {
+                        document.body.classList.toggle('maximized', !!m);
+                    });
+                });
+                // 监听焦点/失焦
+                await win.onFocusChanged(({ payload: focused }) => {
+                    document.body.classList.toggle('unfocused', !focused);
+                });
+            } catch(err) {
+                console.warn('窗口状态监听失败:', err);
+            }
         }
 
         async function windowMinimize() {
