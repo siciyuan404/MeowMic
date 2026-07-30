@@ -20,6 +20,7 @@ import java.net.HttpURLConnection
 import java.net.URL
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
+import kotlin.jvm.Synchronized
 
 /**
  * 服务端在线状态(三态轮询,参考 Moonlight)
@@ -165,7 +166,7 @@ class MdnsDiscovery(context: Context) {
                 if (host.isLoopbackAddress) return
 
                 // TXT 记录的 name 字段(优先),回退到 mDNS 实例名
-                val name = info.getAttribute("name") ?: info.serviceName
+                val name = info.attributes["name"]?.toString(Charsets.UTF_8) ?: info.serviceName
 
                 val server = DiscoveredServer(
                     serviceName = info.serviceName,
@@ -327,7 +328,7 @@ class MdnsDiscovery(context: Context) {
      * @param transform 接收当前 server,返回更新后的 server(若返回值与原值相同则不会触发更新)
      * @return 更新后的 server,若服务已被移除则返回 null
      */
-    private synchronized fun updateStatus(
+    @Synchronized private fun updateStatus(
         serviceName: String,
         transform: (DiscoveredServer) -> DiscoveredServer,
     ): DiscoveredServer? {

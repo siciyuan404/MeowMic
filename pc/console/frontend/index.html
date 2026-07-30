@@ -799,7 +799,7 @@
 
                 // 显示当前版本
                 try {
-                    const ver = Tauri.app.getVersion();
+                    const ver = await Tauri.app.getVersion();
                     document.getElementById('versionText').textContent = '版本 ' + ver;
                 } catch(err) { console.warn('获取版本失败:', err); }
 
@@ -909,7 +909,7 @@
             btn.textContent = '检查中...';
             showUpdateStatus('', '');
             try {
-                const update = await Tauri.updater.check();
+                const update = await Tauri.updater.checkForUpdate();
                 if (update && update.available) {
                     pendingUpdate = update;
                     const ver = update.version || '新版本';

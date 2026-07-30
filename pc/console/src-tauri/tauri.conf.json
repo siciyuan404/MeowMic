@@ -37,6 +37,12 @@
       "process": {
         "all": false,
         "relaunch": true
+      },
+      "app": {
+        "all": true
+      },
+      "updater": {
+        "all": true
       }
     },
     "updater": {
