@@ -40,9 +40,6 @@
       },
       "app": {
         "all": true
-      },
-      "updater": {
-        "all": true
       }
     },
     "updater": {
