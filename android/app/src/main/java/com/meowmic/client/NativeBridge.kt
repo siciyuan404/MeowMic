@@ -23,12 +23,40 @@ object NativeBridge {
     fun isLoaded(): Boolean = loaded
 
     /**
+     * 设置配对状态文件所在目录(由 Kotlin 通过 Context.getFilesDir() 传入)
+     * 必须在 nativeConnect 之前调用
+     */
+    external fun nativeSetStateDir(path: String)
+
+    /**
      * 连接到服务端
      * @param serverAddr 形如 "192.168.1.100:28900" (control 端口,touch/audio 自动 +1/+2)
      * @param clientName 客户端名称,用于服务端日志识别
-     * @return true 表示连接握手成功
+     * @return 0=失败, 1=已连接, 2=需要配对(等待 nativeCompletePairing)
      */
-    external fun nativeConnect(serverAddr: String, clientName: String): Boolean
+    external fun nativeConnect(serverAddr: String, clientName: String): Int
+
+    /**
+     * 直接用已配对身份连接(跳过 Hello,直接发送 HelloPaired)
+     * @return 0=失败, 1=已连接
+     */
+    external fun nativeConnectPaired(serverAddr: String, clientName: String): Int
+
+    /**
+     * 完成配对(用户输入 PIN 后调用)
+     * @param pin 用户输入的 PIN
+     * @return 0=失败, 1=配对成功并已连接
+     */
+    external fun nativeCompletePairing(pin: String): Int
+
+    /** 取消 pending 配对状态(断开连接) */
+    external fun nativeCancelPairing()
+
+    /**
+     * 查询是否已配对该服务端
+     * @param serverPubkeyB64 服务端公钥的 base64 字符串
+     */
+    external fun nativeIsServerPaired(serverPubkeyB64: String): Boolean
 
     /**
      * 发送触摸事件

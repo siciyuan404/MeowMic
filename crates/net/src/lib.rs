@@ -7,12 +7,24 @@
 //!
 //! P0 阶段:基础 tokio UDP + TCP,时钟同步 EWMA
 //! 后续:SO_TIMESTAMPING、SO_BUSY_LOOP、独立高优先级线程
+//!
+//! ## 服务发现
+//! 服务端可启用 mDNS 广播(参考 Moonlight+Sunshine 的发现机制),
+//! 客户端通过监听 `_meowmic._tcp.` 自动发现局域网内的服务端。
+//! 详见 [`discovery`] 模块。
 
 pub mod client;
+pub mod discovery;
+pub mod pairing;
 pub mod server;
 pub mod sync;
 
 pub use client::{Client, ClientEvent};
+pub use discovery::{DiscoveryError, MdnsAdvertiser, DEFAULT_INSTANCE_NAME, PROTOCOL_VERSION, SERVICE_TYPE};
+pub use pairing::{
+    generate_nonce, generate_pin, ClientPairingState, PairedClient, PairingError, PairingManager,
+    PairingState,
+};
 pub use server::{Server, ServerEvent};
 pub use sync::ClockSynchronizer;
 

@@ -30,8 +30,14 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tokio = { version = "1", features = ["full"] }
 zerocopy = { version = "0.7", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 bincode = "1"
 anyhow = "1"
+# 配对密钥(Ed25519)
+ed25519-dalek = { version = "2", features = ["rand_core"] }
+rand = "0.8"
+base64 = "0.22"
+sha2 = "0.10"
 
 [profile.release]
 opt-level = 3

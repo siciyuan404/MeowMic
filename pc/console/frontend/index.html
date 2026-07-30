@@ -485,6 +485,122 @@
             color: var(--text-secondary);
             border-color: var(--border-neutral-l1);
         }
+
+        /* ============ 配对面板 ============ */
+        .pairing-pin-block {
+            background: var(--bg-overlay-l1);
+            border-radius: var(--radius-8);
+            padding: 12px;
+            margin-bottom: 12px;
+        }
+        .pairing-pin-label {
+            font-size: 12px;
+            color: var(--text-tertiary);
+            margin-bottom: 6px;
+        }
+        .pairing-pin-row {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            justify-content: space-between;
+        }
+        .pairing-pin-value {
+            font-family: 'JetBrains Mono', 'Cascadia Code', Consolas, monospace;
+            font-size: 32px;
+            font-weight: 600;
+            letter-spacing: 6px;
+            color: var(--bg-brand);
+            line-height: 1.1;
+            transition: opacity .2s ease;
+        }
+        .pairing-pin-value.empty {
+            color: var(--text-tertiary);
+            font-size: 18px;
+            letter-spacing: 0;
+        }
+        .pairing-clients-block {
+            margin-top: 8px;
+        }
+        .pairing-clients-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 8px;
+        }
+        .pairing-clients-title {
+            font-size: 13px;
+            font-weight: 500;
+            color: var(--text-secondary);
+        }
+        .pairing-reset-btn {
+            height: 24px;
+            font-size: 12px;
+            padding: 0 10px;
+        }
+        .pairing-clients-list {
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+        }
+        .pairing-client-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 8px 12px;
+            background: var(--bg-overlay-l1);
+            border-radius: var(--radius-8);
+            transition: background .12s ease;
+        }
+        .pairing-client-item:hover {
+            background: var(--bg-overlay-l2);
+        }
+        .pairing-client-info {
+            display: flex;
+            flex-direction: column;
+            gap: 2px;
+            min-width: 0;
+            flex: 1;
+        }
+        .pairing-client-name {
+            font-size: 13px;
+            color: var(--text-default);
+            font-weight: 500;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .pairing-client-meta {
+            font-size: 11px;
+            color: var(--text-tertiary);
+        }
+        .pairing-client-unpair {
+            height: 22px;
+            font-size: 11px;
+            padding: 0 8px;
+            color: var(--status-error-default);
+            background: transparent;
+            border: 1px solid rgba(232, 70, 58, 0.24);
+        }
+        .pairing-client-unpair:hover {
+            background: rgba(232, 70, 58, 0.08);
+            border-color: rgba(232, 70, 58, 0.4);
+        }
+        .pairing-empty {
+            font-size: 12px;
+            color: var(--text-tertiary);
+            text-align: center;
+            padding: 16px 8px;
+            background: var(--bg-overlay-l1);
+            border-radius: var(--radius-8);
+        }
+        .pairing-pin-value.flash {
+            animation: pinFlash .4s ease;
+        }
+        @keyframes pinFlash {
+            0% { transform: scale(1); opacity: 1; }
+            50% { transform: scale(1.04); opacity: 0.9; }
+            100% { transform: scale(1); opacity: 1; }
+        }
     </style>
 </head>
 <body>
@@ -609,6 +725,35 @@
                 <span class="ds-check__box"></span>
                 <span>启动控制台时自动启动服务</span>
             </label>
+        </div>
+
+        <!-- 配对面板 -->
+        <div class="ds-card">
+            <div class="settings-title">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="11" x="3" y="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+                <span>设备配对</span>
+            </div>
+            <div id="pairingContent">
+                <!-- PIN 显示区 -->
+                <div class="pairing-pin-block">
+                    <div class="pairing-pin-label">当前 PIN(新设备配对码)</div>
+                    <div class="pairing-pin-row">
+                        <div id="pairingPin" class="pairing-pin-value">------</div>
+                        <button class="ds-btn ds-btn--secondary" type="button" onclick="refreshPairing()" id="refreshPairingBtn">刷新</button>
+                    </div>
+                    <p class="form-hint">手机端首次连接时输入此 PIN 完成配对,配对成功后 PIN 自动失效</p>
+                </div>
+                <!-- 已配对设备列表 -->
+                <div class="pairing-clients-block">
+                    <div class="pairing-clients-header">
+                        <span class="pairing-clients-title">已配对设备</span>
+                        <button class="ds-btn ds-btn--secondary pairing-reset-btn" type="button" onclick="resetPairing()" id="resetPairingBtn">重置配对</button>
+                    </div>
+                    <div id="pairingClients" class="pairing-clients-list">
+                        <div class="pairing-empty">服务未启动</div>
+                    </div>
+                </div>
+            </div>
         </div>
 
         <!-- 关于与更新 -->
@@ -922,9 +1067,114 @@
                 } else {
                     touchesCard.classList.remove('glow');
                 }
+
+                // 服务运行中时同步刷新配对状态(每次轮询都拉取,保持 PIN/列表最新)
+                if (status.running) {
+                    refreshPairing();
+                } else {
+                    renderPairingState(null);
+                }
             } catch(e) {
                 console.error(e);
             }
+        }
+
+        // ============ 配对管理 ============
+        let lastPairingPin = null;
+
+        async function refreshPairing() {
+            const Tauri = window.__TAURI__;
+            try {
+                const state = await Tauri.invoke('get_pairing_state');
+                renderPairingState(state);
+            } catch(e) {
+                renderPairingState(null, String(e));
+            }
+        }
+
+        function renderPairingState(state, errMsg) {
+            const pinEl = document.getElementById('pairingPin');
+            const clientsEl = document.getElementById('pairingClients');
+
+            if (!state) {
+                pinEl.textContent = errMsg ? '服务未启动' : '------';
+                pinEl.classList.add('empty');
+                clientsEl.innerHTML = '<div class="pairing-empty">' + (errMsg || '服务未启动') + '</div>';
+                lastPairingPin = null;
+                return;
+            }
+
+            // PIN 显示
+            if (state.pin) {
+                pinEl.textContent = state.pin;
+                pinEl.classList.remove('empty');
+                // PIN 变化时闪烁
+                if (lastPairingPin !== state.pin) {
+                    pinEl.classList.remove('flash');
+                    void pinEl.offsetWidth;
+                    pinEl.classList.add('flash');
+                    lastPairingPin = state.pin;
+                }
+            } else {
+                pinEl.textContent = '已配对·无 PIN';
+                pinEl.classList.add('empty');
+                lastPairingPin = null;
+            }
+
+            // 已配对设备列表
+            if (!state.paired_clients || state.paired_clients.length === 0) {
+                clientsEl.innerHTML = '<div class="pairing-empty">暂无已配对设备</div>';
+            } else {
+                clientsEl.innerHTML = state.paired_clients.map(c => {
+                    const date = new Date(c.paired_at * 1000);
+                    const dateStr = date.toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });
+                    const safeName = escapeHtml(c.client_name);
+                    const safeKey = escapeHtml(c.pubkey_b64);
+                    return '<div class="pairing-client-item">' +
+                        '<div class="pairing-client-info">' +
+                            '<span class="pairing-client-name" title="' + safeKey + '">' + safeName + '</span>' +
+                            '<span class="pairing-client-meta">配对于 ' + dateStr + '</span>' +
+                        '</div>' +
+                        '<button class="ds-btn pairing-client-unpair" type="button" onclick="unpairClient(\'' + safeKey + '\', \'' + safeName + '\')">移除</button>' +
+                    '</div>';
+                }).join('');
+            }
+        }
+
+        async function resetPairing() {
+            const Tauri = window.__TAURI__;
+            if (!confirm('确定要重置配对吗?所有已配对设备将被移除,需要重新配对才能连接。')) return;
+            try {
+                await Tauri.invoke('reset_pairing');
+                await refreshPairing();
+                showError('配对已重置,新 PIN 已生成', true);
+                setTimeout(() => {
+                    const el = document.getElementById('errorMsg');
+                    if (el.textContent === '配对已重置,新 PIN 已生成') showError('');
+                }, 1500);
+            } catch(e) {
+                showError(String(e));
+            }
+        }
+
+        async function unpairClient(pubkeyB64, clientName) {
+            const Tauri = window.__TAURI__;
+            if (!confirm('确定要移除设备 "' + clientName + '" 吗?该设备需要重新配对才能连接。')) return;
+            try {
+                await Tauri.invoke('unpair_client', { pubkeyB64: pubkeyB64 });
+                await refreshPairing();
+            } catch(e) {
+                showError(String(e));
+            }
+        }
+
+        function escapeHtml(s) {
+            return String(s)
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;')
+                .replace(/'/g, '&#39;');
         }
 
         function setStatValue(id, value) {

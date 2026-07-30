@@ -66,6 +66,12 @@ impl Stats {
         self.current_connections = self.current_connections.saturating_sub(1);
     }
 
+    /// 只读快照(不重置窗口),供 /serverinfo 用
+    /// 返回 (current_connections, uptime_secs)
+    pub fn snapshot_info(&self) -> (u32, u64) {
+        (self.current_connections, self.started_at.elapsed().as_secs())
+    }
+
     /// 快照当前统计并重置窗口计数
     /// 返回 (connections, touches_per_sec, audio_frames_per_sec, uptime_secs)
     pub fn snapshot_and_reset(&mut self) -> (u32, u32, u32, u64) {

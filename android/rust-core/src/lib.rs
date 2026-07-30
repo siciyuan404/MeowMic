@@ -7,26 +7,33 @@
 //! - Touch/Audio 同步发送(block_on),Control 接收在后台 task
 //! - Audio encoder 在 Rust 端,Kotlin 传 i16 PCM 数组过来
 //!
-//! 线程模型:
-//! - JNI 调用线程:Kotlin UI/Audio 线程
-//! - Tokio runtime:独立线程池,跑控制接收 + 时钟同步
-//! - block_on 调用 UDP send(非阻塞 socket,实际几乎不阻塞)
+//! 配对流程:
+//! 1. nativeConnect 返回 1=已连接 / 2=需要配对 / 0=失败
+//! 2. 若需要配对,Kotlin 弹出 PIN 输入框,调用 nativeCompletePairing(pin)
+//! 3. 配对成功后自动重连(发送 HelloPaired),返回 1=已连接 / 0=失败
+//! 4. 后续连接若已配对该服务端,nativeConnect 自动发送 HelloPaired
 
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicU16, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
+use base64::Engine;
 use jni::objects::{JClass, JPrimitiveArray, JString, JShortArray};
-use jni::sys::{jboolean, jfloat, jint, jshort, jshortArray, jstring, JNI_FALSE, JNI_TRUE};
+use jni::sys::{jboolean, jfloat, jint, jshortArray, jstring, JNI_FALSE, JNI_TRUE};
 use jni::JNIEnv;
 use log::LevelFilter;
 use once_cell::sync::OnceCell;
 use tokio::runtime::Runtime;
 
 use meowmic_audio::{AudioConfig, AudioEncoder, make_encoder};
-use meowmic_net::Client;
+use meowmic_net::pairing::ClientPairingState;
+use meowmic_net::{Client, ClientEvent};
 use meowmic_protocol::TouchEventType;
 
-/// 全局状态
+/// base64 标准编码引擎
+const B64: base64::engine::general_purpose::GeneralPurpose = base64::engine::general_purpose::STANDARD;
+
+/// 已连接状态
 struct State {
     rt: Runtime,
     client: Arc<Client>,
@@ -38,7 +45,21 @@ struct State {
     audio_sent: AtomicU64,
 }
 
+/// 配对中状态(收到 PairRequired 后保存,等待用户输入 PIN)
+struct PendingPairing {
+    rt: Runtime,
+    client: Arc<Client>,
+    event_rx: tokio::sync::mpsc::Receiver<ClientEvent>,
+    server_pubkey: Vec<u8>,
+    server_nonce: u64,
+    client_state: ClientPairingState,
+    server_addr: String,
+    client_name: String,
+}
+
 static STATE: OnceLock<Mutex<Option<State>>> = OnceLock::new();
+static PENDING_PAIRING: OnceLock<Mutex<Option<PendingPairing>>> = OnceLock::new();
+static STATE_DIR: OnceCell<PathBuf> = OnceCell::new();
 static LOGGER_INIT: OnceCell<()> = OnceCell::new();
 
 fn init_logger() {
@@ -55,22 +76,71 @@ fn state() -> &'static Mutex<Option<State>> {
     STATE.get_or_init(|| Mutex::new(None))
 }
 
-/// Java: boolean nativeConnect(String serverAddr, String clientName)
+fn pending_pairing() -> &'static Mutex<Option<PendingPairing>> {
+    PENDING_PAIRING.get_or_init(|| Mutex::new(None))
+}
+
+/// 客户端配对状态文件路径
+fn pairing_state_path() -> Option<PathBuf> {
+    STATE_DIR.get().map(|d| d.join("client-pairing.json"))
+}
+
+/// 加载或创建客户端配对状态
+fn load_client_pairing_state() -> Option<ClientPairingState> {
+    let path = pairing_state_path()?;
+    match ClientPairingState::load_or_create(&path) {
+        Ok(s) => Some(s),
+        Err(e) => {
+            log::warn!("加载客户端配对状态失败: {}", e);
+            None
+        }
+    }
+}
+
+/// 持久化客户端配对状态
+fn save_client_pairing_state(state: &ClientPairingState) {
+    if let Some(path) = pairing_state_path() {
+        if let Err(e) = state.save(&path) {
+            log::warn!("持久化客户端配对状态失败: {}", e);
+        }
+    }
+}
+
+/// Java: void nativeSetStateDir(String path)
+/// 设置配对状态文件所在目录(由 Kotlin 通过 Context.getFilesDir() 传入)
+#[no_mangle]
+pub extern "system" fn Java_com_meowmic_client_NativeBridge_nativeSetStateDir(
+    mut env: JNIEnv,
+    _class: JClass,
+    path: JString,
+) {
+    init_logger();
+    let path_str: String = match env.get_string(&path) {
+        Ok(s) => s.into(),
+        Err(_) => return,
+    };
+    let path_buf = PathBuf::from(&path_str);
+    log::info!("配对状态目录: {}", path_buf.display());
+    let _ = STATE_DIR.set(path_buf);
+}
+
+/// Java: int nativeConnect(String serverAddr, String clientName)
+/// 返回值: 0=失败, 1=已连接, 2=需要配对(等待 nativeCompletePairing)
 #[no_mangle]
 pub extern "system" fn Java_com_meowmic_client_NativeBridge_nativeConnect(
     mut env: JNIEnv,
     _class: JClass,
     server_addr: JString,
     client_name: JString,
-) -> jboolean {
+) -> jint {
     init_logger();
     let server_addr: String = match env.get_string(&server_addr) {
         Ok(s) => s.into(),
-        Err(_) => return JNI_FALSE,
+        Err(_) => return 0,
     };
     let client_name: String = match env.get_string(&client_name) {
         Ok(s) => s.into(),
-        Err(_) => return JNI_FALSE,
+        Err(_) => return 0,
     };
 
     log::info!("nativeConnect: {} as {}", server_addr, client_name);
@@ -80,11 +150,11 @@ pub extern "system" fn Java_com_meowmic_client_NativeBridge_nativeConnect(
         Ok(rt) => rt,
         Err(e) => {
             log::error!("创建 runtime 失败: {}", e);
-            return JNI_FALSE;
+            return 0;
         }
     };
 
-    // 在 runtime 中连接
+    // 连接并发送 Hello
     let (event_tx, mut event_rx) = tokio::sync::mpsc::channel(64);
     let client_result = rt.block_on(async {
         Client::connect(&server_addr, &client_name, event_tx).await
@@ -94,39 +164,449 @@ pub extern "system" fn Java_com_meowmic_client_NativeBridge_nativeConnect(
         Ok(c) => Arc::new(c),
         Err(e) => {
             log::error!("连接失败: {}", e);
-            return JNI_FALSE;
+            return 0;
         }
     };
 
-    // 后台消费事件(防止 channel 满)
-    rt.spawn(async move {
-        while let Some(ev) = event_rx.recv().await {
-            log::debug!("client event: {:?}", ev);
-        }
+    // 等待第一条事件(HelloAck 或 PairRequired),5 秒超时
+    let first_event = rt.block_on(async {
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            event_rx.recv(),
+        ).await
     });
 
-    let audio_cfg = AudioConfig::default();
-    let encoder = Mutex::new(make_encoder(&audio_cfg));
+    match first_event {
+        Ok(Some(ClientEvent::HelloAck { .. })) => {
+            // 已连接(服务端未启用配对,或已配对但发送的是普通 Hello 被放行)
+            log::info!("握手成功(HelloAck)");
+            // 启动后台事件消费
+            rt.spawn(async move {
+                while let Some(ev) = event_rx.recv().await {
+                    log::debug!("client event: {:?}", ev);
+                }
+            });
+            let new_state = State {
+                rt,
+                client: client.clone(),
+                encoder: Mutex::new(make_encoder(&AudioConfig::default())),
+                audio_cfg: AudioConfig::default(),
+                touch_seq: AtomicU16::new(0),
+                audio_seq: AtomicU16::new(0),
+                touch_sent: AtomicU64::new(0),
+                audio_sent: AtomicU64::new(0),
+            };
+            let mut guard = state().lock().unwrap();
+            if guard.is_some() {
+                log::warn!("已有连接,先断开旧连接");
+                *guard = None;
+            }
+            *guard = Some(new_state);
+            1
+        }
+        Ok(Some(ClientEvent::PairRequired { server_pubkey, server_nonce })) => {
+            // 需要配对,保存 pending 状态
+            log::info!("服务端要求配对: server_nonce={}", server_nonce);
+            let client_state = match load_client_pairing_state() {
+                Some(s) => s,
+                None => {
+                    log::error!("无法加载客户端配对状态");
+                    return 0;
+                }
+            };
+            // 检查是否已配对该服务端
+            let server_pubkey_b64 = base64::engine::general_purpose::STANDARD.encode(&server_pubkey);
+            if client_state.is_paired_with(&server_pubkey_b64) {
+                // 已配对该服务端,但服务端要求重新配对(可能服务端重置了配对列表)
+                // 尝试用 HelloPaired 重连
+                log::info!("已配对该服务端,尝试用 HelloPaired 重连");
+                // drop 当前 client(断开 TCP)
+                drop(client);
+                drop(event_rx);
+                return reconnect_paired(rt, &server_addr, &client_name, &client_state);
+            }
 
-    let new_state = State {
-        rt,
-        client: client.clone(),
-        encoder,
-        audio_cfg,
-        touch_seq: AtomicU16::new(0),
-        audio_seq: AtomicU16::new(0),
-        touch_sent: AtomicU64::new(0),
-        audio_sent: AtomicU64::new(0),
+            // 保存 pending 状态,等待 Kotlin 提供 PIN
+            let pending = PendingPairing {
+                rt,
+                client,
+                event_rx,
+                server_pubkey,
+                server_nonce,
+                client_state,
+                server_addr,
+                client_name,
+            };
+            let mut guard = pending_pairing().lock().unwrap();
+            if guard.is_some() {
+                log::warn!("已有 pending 配对,覆盖");
+            }
+            *guard = Some(pending);
+            2
+        }
+        Ok(Some(ev)) => {
+            log::warn!("意外的首条事件: {:?}", ev);
+            0
+        }
+        Ok(None) => {
+            log::warn!("事件通道关闭");
+            0
+        }
+        Err(_) => {
+            log::warn!("等待握手响应超时(5s)");
+            0
+        }
+    }
+}
+
+/// 用 HelloPaired 重新连接(接收 rt 所有权)
+/// 返回 1=已连接 / 0=失败
+fn reconnect_paired(
+    rt: Runtime,
+    server_addr: &str,
+    client_name: &str,
+    client_state: &ClientPairingState,
+) -> jint {
+    let nonce = meowmic_net::pairing::generate_nonce();
+    let (client_pubkey_vec, signature) = match client_state.sign_paired_hello(client_name, nonce) {
+        Ok((pk, sig)) => (pk, sig),
+        Err(e) => {
+            log::error!("签名 HelloPaired 失败: {}", e);
+            return 0;
+        }
     };
 
-    let mut guard = state().lock().unwrap();
-    if guard.is_some() {
-        log::warn!("已有连接,先断开旧连接");
-        // drop 旧的
-        *guard = None;
+    let (event_tx, mut event_rx) = tokio::sync::mpsc::channel(64);
+    let client_result = rt.block_on(async {
+        Client::connect_paired(
+            server_addr,
+            client_name,
+            client_pubkey_vec,
+            nonce,
+            signature,
+            event_tx,
+        ).await
+    });
+
+    let client = match client_result {
+        Ok(c) => Arc::new(c),
+        Err(e) => {
+            log::error!("HelloPaired 连接失败: {}", e);
+            return 0;
+        }
+    };
+
+    // 等待 HelloAck
+    let first_event = rt.block_on(async {
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            event_rx.recv(),
+        ).await
+    });
+
+    match first_event {
+        Ok(Some(ClientEvent::HelloAck { .. })) => {
+            log::info!("HelloPaired 握手成功");
+            rt.spawn(async move {
+                while let Some(ev) = event_rx.recv().await {
+                    log::debug!("client event: {:?}", ev);
+                }
+            });
+            let new_state = State {
+                rt,
+                client: client.clone(),
+                encoder: Mutex::new(make_encoder(&AudioConfig::default())),
+                audio_cfg: AudioConfig::default(),
+                touch_seq: AtomicU16::new(0),
+                audio_seq: AtomicU16::new(0),
+                touch_sent: AtomicU64::new(0),
+                audio_sent: AtomicU64::new(0),
+            };
+            let mut guard = state().lock().unwrap();
+            *guard = Some(new_state);
+            1
+        }
+        Ok(Some(ev)) => {
+            log::warn!("HelloPaired 后意外事件: {:?}", ev);
+            0
+        }
+        _ => {
+            log::warn!("HelloPaired 等待 HelloAck 超时");
+            0
+        }
     }
-    *guard = Some(new_state);
-    JNI_TRUE
+}
+
+/// Java: int nativeCompletePairing(String pin)
+/// 返回值: 0=失败, 1=配对成功并已连接
+#[no_mangle]
+pub extern "system" fn Java_com_meowmic_client_NativeBridge_nativeCompletePairing(
+    mut env: JNIEnv,
+    _class: JClass,
+    pin: JString,
+) -> jint {
+    init_logger();
+    let pin: String = match env.get_string(&pin) {
+        Ok(s) => s.into(),
+        Err(_) => return 0,
+    };
+
+    // 取出 pending 配对状态(解构获取所有字段的所有权)
+    let pending = {
+        let mut guard = pending_pairing().lock().unwrap();
+        match guard.take() {
+            Some(p) => p,
+            None => {
+                log::error!("无 pending 配对状态");
+                return 0;
+            }
+        }
+    };
+
+    log::info!("nativeCompletePairing: pin={}", pin);
+
+    // 解构 pending,获取所有字段的所有权
+    let PendingPairing {
+        rt,
+        client,
+        mut event_rx,
+        server_pubkey: _,
+        server_nonce,
+        client_state,
+        server_addr,
+        client_name,
+    } = pending;
+
+    // 1. 用客户端私钥签名 server_nonce
+    let client_pubkey = match client_state.pubkey() {
+        Ok(p) => p,
+        Err(e) => {
+            log::error!("获取客户端公钥失败: {}", e);
+            return 0;
+        }
+    };
+    let signature = match client_state.sign_server_nonce(server_nonce) {
+        Ok(s) => s,
+        Err(e) => {
+            log::error!("签名 server_nonce 失败: {}", e);
+            return 0;
+        }
+    };
+
+    // 2. 发送 PairRequest
+    let send_result = rt.handle().block_on(
+        client.send_pair_request(
+            client_pubkey.to_vec(),
+            client_name.clone(),
+            pin,
+            server_nonce,
+            signature,
+        ),
+    );
+    if let Err(e) = send_result {
+        log::error!("发送 PairRequest 失败: {}", e);
+        return 0;
+    }
+
+    // 3. 等待 PairResponse(5 秒超时)
+    let response = rt.block_on(async {
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            event_rx.recv(),
+        ).await
+    });
+
+    match response {
+        Ok(Some(ClientEvent::PairResponse { success, server_pubkey, error_msg })) => {
+            if !success {
+                log::warn!("配对失败: {}", error_msg);
+                return 0;
+            }
+            log::info!("配对成功!");
+
+            // 4. 保存 server_pubkey 到客户端配对状态
+            let server_pubkey_b64 = base64::engine::general_purpose::STANDARD.encode(&server_pubkey);
+            let mut new_client_state = client_state.clone();
+            new_client_state.add_paired_server(server_pubkey_b64);
+            save_client_pairing_state(&new_client_state);
+
+            // 5. 断开当前连接,用 HelloPaired 重连
+            // drop client(断开 TCP)
+            drop(client);
+            drop(event_rx);
+
+            // 用 reconnect_paired 重连(传入 rt 所有权)
+            reconnect_paired(rt, &server_addr, &client_name, &new_client_state)
+        }
+        Ok(Some(ev)) => {
+            log::warn!("期望 PairResponse,收到: {:?}", ev);
+            0
+        }
+        Ok(None) => {
+            log::warn!("事件通道关闭");
+            0
+        }
+        Err(_) => {
+            log::warn!("等待 PairResponse 超时");
+            0
+        }
+    }
+}
+
+/// Java: void nativeCancelPairing()
+/// 取消 pending 配对状态
+#[no_mangle]
+pub extern "system" fn Java_com_meowmic_client_NativeBridge_nativeCancelPairing(
+    _env: JNIEnv,
+    _class: JClass,
+) {
+    init_logger();
+    log::info!("nativeCancelPairing");
+    let mut guard = pending_pairing().lock().unwrap();
+    if let Some(pending) = guard.take() {
+        // 断开连接(drop client 和 rt)
+        let _ = pending.rt.handle().block_on(pending.client.disconnect());
+    }
+}
+
+/// Java: boolean nativeIsServerPaired(String serverPubkeyB64)
+/// 查询是否已配对该服务端
+#[no_mangle]
+pub extern "system" fn Java_com_meowmic_client_NativeBridge_nativeIsServerPaired(
+    mut env: JNIEnv,
+    _class: JClass,
+    server_pubkey_b64: JString,
+) -> jboolean {
+    init_logger();
+    let pubkey_b64: String = match env.get_string(&server_pubkey_b64) {
+        Ok(s) => s.into(),
+        Err(_) => return JNI_FALSE,
+    };
+    let Some(client_state) = load_client_pairing_state() else {
+        return JNI_FALSE;
+    };
+    if client_state.is_paired_with(&pubkey_b64) {
+        JNI_TRUE
+    } else {
+        JNI_FALSE
+    }
+}
+
+/// Java: int nativeConnectPaired(String serverAddr, String clientName)
+/// 直接用已配对身份连接(跳过 Hello,直接发送 HelloPaired)
+/// 返回值: 0=失败, 1=已连接
+#[no_mangle]
+pub extern "system" fn Java_com_meowmic_client_NativeBridge_nativeConnectPaired(
+    mut env: JNIEnv,
+    _class: JClass,
+    server_addr: JString,
+    client_name: JString,
+) -> jint {
+    init_logger();
+    let server_addr: String = match env.get_string(&server_addr) {
+        Ok(s) => s.into(),
+        Err(_) => return 0,
+    };
+    let client_name: String = match env.get_string(&client_name) {
+        Ok(s) => s.into(),
+        Err(_) => return 0,
+    };
+
+    log::info!("nativeConnectPaired: {} as {}", server_addr, client_name);
+
+    let Some(client_state) = load_client_pairing_state() else {
+        log::error!("无法加载客户端配对状态");
+        return 0;
+    };
+
+    let rt = match Runtime::new() {
+        Ok(rt) => rt,
+        Err(e) => {
+            log::error!("创建 runtime 失败: {}", e);
+            return 0;
+        }
+    };
+
+    let nonce = meowmic_net::pairing::generate_nonce();
+    let (client_pubkey_vec, signature) = match client_state.sign_paired_hello(&client_name, nonce) {
+        Ok((pk, sig)) => (pk, sig),
+        Err(e) => {
+            log::error!("签名 HelloPaired 失败: {}", e);
+            return 0;
+        }
+    };
+
+    let (event_tx, mut event_rx) = tokio::sync::mpsc::channel(64);
+    let client_result = rt.block_on(async {
+        Client::connect_paired(
+            &server_addr,
+            &client_name,
+            client_pubkey_vec,
+            nonce,
+            signature,
+            event_tx,
+        ).await
+    });
+
+    let client = match client_result {
+        Ok(c) => Arc::new(c),
+        Err(e) => {
+            log::error!("HelloPaired 连接失败: {}", e);
+            return 0;
+        }
+    };
+
+    let first_event = rt.block_on(async {
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            event_rx.recv(),
+        ).await
+    });
+
+    match first_event {
+        Ok(Some(ClientEvent::HelloAck { .. })) => {
+            log::info!("HelloPaired 握手成功");
+            rt.spawn(async move {
+                while let Some(ev) = event_rx.recv().await {
+                    log::debug!("client event: {:?}", ev);
+                }
+            });
+            let new_state = State {
+                rt,
+                client: client.clone(),
+                encoder: Mutex::new(make_encoder(&AudioConfig::default())),
+                audio_cfg: AudioConfig::default(),
+                touch_seq: AtomicU16::new(0),
+                audio_seq: AtomicU16::new(0),
+                touch_sent: AtomicU64::new(0),
+                audio_sent: AtomicU64::new(0),
+            };
+            let mut guard = state().lock().unwrap();
+            if guard.is_some() {
+                log::warn!("已有连接,先断开旧连接");
+                *guard = None;
+            }
+            *guard = Some(new_state);
+            1
+        }
+        Ok(Some(ClientEvent::PairResponse { success, error_msg, .. })) => {
+            // 服务端拒绝 HelloPaired(可能配对已被重置)
+            if success {
+                log::warn!("HelloPaired 返回 PairResponse success=true(异常)");
+            } else {
+                log::warn!("HelloPaired 被拒绝: {}", error_msg);
+            }
+            0
+        }
+        Ok(Some(ev)) => {
+            log::warn!("HelloPaired 后意外事件: {:?}", ev);
+            0
+        }
+        _ => {
+            log::warn!("HelloPaired 等待 HelloAck 超时");
+            0
+        }
+    }
 }
 
 /// Java: boolean nativeSendTouch(int eventType, float dx, float dy)
@@ -192,7 +672,7 @@ pub extern "system" fn Java_com_meowmic_client_NativeBridge_nativeSendTouchWithB
 /// Java: boolean nativeSendAudioFrame(short[] pcm)
 #[no_mangle]
 pub extern "system" fn Java_com_meowmic_client_NativeBridge_nativeSendAudioFrame(
-    mut env: JNIEnv,
+    env: JNIEnv,
     _class: JClass,
     pcm_array: jshortArray,
 ) -> jboolean {
@@ -269,6 +749,11 @@ pub extern "system" fn Java_com_meowmic_client_NativeBridge_nativeDisconnect(
         let _ = s.rt.handle().block_on(s.client.disconnect());
         // runtime drop 在持有 guard 时进行,确保任务清理
     }
+    // 同时清理 pending pairing
+    let mut pending_guard = pending_pairing().lock().unwrap();
+    if let Some(pending) = pending_guard.take() {
+        let _ = pending.rt.handle().block_on(pending.client.disconnect());
+    }
 }
 
 /// Java: boolean nativeSetMuteSpeaker(boolean muted)
@@ -321,7 +806,7 @@ pub extern "system" fn Java_com_meowmic_client_NativeBridge_nativeSendKey(
 /// Java: String nativeGetStats()
 #[no_mangle]
 pub extern "system" fn Java_com_meowmic_client_NativeBridge_nativeGetStats(
-    mut env: JNIEnv,
+    env: JNIEnv,
     _class: JClass,
 ) -> jstring {
     let (touch_sent, audio_sent) = {

@@ -20,6 +20,15 @@ sealed class ConnectionState {
 }
 
 /**
+ * 配对所需状态:nativeConnect 返回 2 时进入此状态,
+ * UI 弹出 PIN 输入对话框,用户输入后调用 completePairing。
+ */
+data class PairingRequiredState(
+    val serverAddr: String,
+    val clientName: String,
+)
+
+/**
  * 快捷音频 slot 数据
  * @param index slot 索引(0..N-1)
  * @param name  显示名称(tag 文字)
@@ -50,6 +59,13 @@ class MeowMicViewModel : ViewModel() {
     private val _connectionState = MutableStateFlow<ConnectionState>(ConnectionState.Disconnected)
     val connectionState: StateFlow<ConnectionState> = _connectionState.asStateFlow()
 
+    // ============ 配对状态 ============
+    private val _pairingRequired = MutableStateFlow<PairingRequiredState?>(null)
+    val pairingRequired: StateFlow<PairingRequiredState?> = _pairingRequired.asStateFlow()
+
+    private val _pairingSubmitting = MutableStateFlow(false)
+    val pairingSubmitting: StateFlow<Boolean> = _pairingSubmitting.asStateFlow()
+
     private val _stats = MutableStateFlow("暂无数据")
     val stats: StateFlow<String> = _stats.asStateFlow()
 
@@ -58,6 +74,11 @@ class MeowMicViewModel : ViewModel() {
 
     private val _lastAddr = MutableStateFlow("")
     val lastAddr: StateFlow<String> = _lastAddr.asStateFlow()
+
+    // ============ mDNS 自动发现 ============
+    private val _discoveredServers = MutableStateFlow<Set<DiscoveredServer>>(emptySet())
+    val discoveredServers: StateFlow<Set<DiscoveredServer>> = _discoveredServers.asStateFlow()
+    private var mdnsDiscovery: MdnsDiscovery? = null
 
     private var audioCapture: AudioCapture? = null
     private var touchHandler: TouchHandler? = null
@@ -95,6 +116,39 @@ class MeowMicViewModel : ViewModel() {
         updateChecker = UpdateChecker(context.applicationContext)
         loadHistory()
         loadAudioPanel()
+
+        // 设置配对状态文件目录(必须在 nativeConnect 之前)
+        try {
+            val stateDir = context.applicationContext.filesDir.absolutePath
+            NativeBridge.nativeSetStateDir(stateDir)
+        } catch (e: UnsatisfiedLinkError) {
+            Log.w(TAG, "nativeSetStateDir 失败: ${e.message}")
+        }
+
+        // 初始化 mDNS 发现,并在内部订阅 servers Flow 推送到 _discoveredServers
+        val ctx = context.applicationContext
+        val discovery = MdnsDiscovery(ctx)
+        mdnsDiscovery = discovery
+        viewModelScope.launch {
+            discovery.servers.collect { servers ->
+                _discoveredServers.value = servers
+            }
+        }
+    }
+
+    /**
+     * 启动 mDNS 自动发现(在 ConnectScreen 进入时调用)。
+     * 必须在主线程调用(NsdManager 要求)。
+     */
+    fun startDiscovery() {
+        mdnsDiscovery?.startDiscovery()
+    }
+
+    /**
+     * 停止 mDNS 发现(在 ConnectScreen 离开时调用)。
+     */
+    fun stopDiscovery() {
+        mdnsDiscovery?.stopDiscovery()
     }
 
     private fun loadHistory() {
@@ -121,8 +175,10 @@ class MeowMicViewModel : ViewModel() {
 
     fun connect(serverAddr: String, clientName: String = "Android-Client") {
         if (_connectionState.value is ConnectionState.Connecting) return
+        if (_pairingSubmitting.value) return
 
         _connectionState.value = ConnectionState.Connecting
+        _pairingRequired.value = null
 
         viewModelScope.launch(Dispatchers.IO) {
             if (!NativeBridge.isLoaded()) {
@@ -131,18 +187,19 @@ class MeowMicViewModel : ViewModel() {
             }
 
             // 带超时的连接检测
+            // 返回值: 0=失败, 1=已连接, 2=需要配对
             val result = withContext(Dispatchers.Default) {
-                val connectResult = java.util.concurrent.atomic.AtomicReference<Boolean?>(null)
+                val connectResult = java.util.concurrent.atomic.AtomicReference<Int?>(null)
                 val thread = Thread {
                     try {
                         connectResult.set(NativeBridge.nativeConnect(serverAddr, clientName))
                     } catch (e: UnsatisfiedLinkError) {
                         Log.e(TAG, "Native 错误", e)
-                        connectResult.set(false)
+                        connectResult.set(0)
                     }
                 }
                 thread.start()
-                thread.join(5000)
+                thread.join(8000)
                 if (thread.isAlive) {
                     thread.interrupt()
                     null // 超时
@@ -156,24 +213,104 @@ class MeowMicViewModel : ViewModel() {
                 return@launch
             }
 
-            if (result != true) {
-                _connectionState.value = ConnectionState.Error("连接失败,检查地址或防火墙")
+            when (result) {
+                1 -> {
+                    // 已连接
+                    val audio = AudioCapture()
+                    if (!audio.init()) {
+                        Log.w(TAG, "音频初始化失败,继续连接(仅触控)")
+                    } else {
+                        audioCapture = audio
+                    }
+                    touchHandler = TouchHandler()
+                    _connectionState.value = ConnectionState.Connected(serverAddr)
+                    saveHistory(serverAddr)
+                    startStatsPolling()
+                }
+                2 -> {
+                    // 需要配对,暴露状态给 UI
+                    _connectionState.value = ConnectionState.Disconnected
+                    _pairingRequired.value = PairingRequiredState(serverAddr, clientName)
+                }
+                else -> {
+                    _connectionState.value = ConnectionState.Error("连接失败,检查地址或防火墙")
+                }
+            }
+        }
+    }
+
+    /**
+     * 用户输入 PIN 后完成配对
+     * @return true 表示配对成功并已连接
+     */
+    fun completePairing(pin: String) {
+        val pending = _pairingRequired.value ?: return
+        if (_pairingSubmitting.value) return
+
+        _pairingSubmitting.value = true
+
+        viewModelScope.launch(Dispatchers.IO) {
+            val result = withContext(Dispatchers.Default) {
+                val pairResult = java.util.concurrent.atomic.AtomicReference<Int?>(null)
+                val thread = Thread {
+                    try {
+                        pairResult.set(NativeBridge.nativeCompletePairing(pin))
+                    } catch (e: UnsatisfiedLinkError) {
+                        Log.e(TAG, "Native 错误", e)
+                        pairResult.set(0)
+                    }
+                }
+                thread.start()
+                thread.join(8000)
+                if (thread.isAlive) {
+                    thread.interrupt()
+                    null
+                } else {
+                    pairResult.get()
+                }
+            }
+
+            _pairingSubmitting.value = false
+
+            if (result == null) {
+                _connectionState.value = ConnectionState.Error("配对超时")
+                _pairingRequired.value = null
                 return@launch
             }
 
-            val audio = AudioCapture()
-            if (!audio.init()) {
-                Log.w(TAG, "音频初始化失败,继续连接(仅触控)")
+            if (result == 1) {
+                // 配对成功并已连接
+                _pairingRequired.value = null
+                val audio = AudioCapture()
+                if (!audio.init()) {
+                    Log.w(TAG, "音频初始化失败,继续连接(仅触控)")
+                } else {
+                    audioCapture = audio
+                }
+                touchHandler = TouchHandler()
+                _connectionState.value = ConnectionState.Connected(pending.serverAddr)
+                saveHistory(pending.serverAddr)
+                startStatsPolling()
             } else {
-                // 仅初始化,不主动 start。由 PTT/实时模式按需启动。
-                audioCapture = audio
+                // 配对失败:PIN 错误或其他原因,保持 pairingRequired 状态以便用户重试
+                _connectionState.value = ConnectionState.Error("配对失败,PIN 错误或服务端拒绝")
             }
+        }
+    }
 
-            touchHandler = TouchHandler()
-
-            _connectionState.value = ConnectionState.Connected(serverAddr)
-            saveHistory(serverAddr)
-            startStatsPolling()
+    /**
+     * 取消配对(用户关闭 PIN 对话框)
+     */
+    fun cancelPairing() {
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                NativeBridge.nativeCancelPairing()
+            } catch (e: UnsatisfiedLinkError) {
+                Log.w(TAG, "nativeCancelPairing 失败: ${e.message}")
+            }
+            _pairingRequired.value = null
+            _pairingSubmitting.value = false
+            _connectionState.value = ConnectionState.Disconnected
         }
     }
 
@@ -507,8 +644,14 @@ class MeowMicViewModel : ViewModel() {
         _connectionState.value = ConnectionState.Disconnected
     }
 
+    /** 连接到发现到的服务端(快捷方法) */
+    fun connectDiscovered(server: DiscoveredServer, clientName: String = "Android-Client") {
+        connect(server.addrString, clientName)
+    }
+
     override fun onCleared() {
         super.onCleared()
+        stopDiscovery()
         disconnect()
     }
 }

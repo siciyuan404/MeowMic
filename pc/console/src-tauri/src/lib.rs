@@ -50,6 +50,22 @@ struct StatsResponse {
     pub audio_frames_per_sec: u32,
 }
 
+/// 配对状态响应(GET /pairing)
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct PairingState {
+    /// 当前 PIN(null 表示无 PIN,服务端未启动或配对未启用)
+    pub pin: Option<String>,
+    /// 已配对客户端列表
+    pub paired_clients: Vec<PairedClientInfo>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct PairedClientInfo {
+    pub pubkey_b64: String,
+    pub client_name: String,
+    pub paired_at: u64,
+}
+
 pub struct ServiceManager {
     process: Option<Child>,
     started_at: Option<std::time::Instant>,
@@ -85,6 +101,11 @@ impl ServiceManager {
             Some(p) => matches!(p.try_wait(), Ok(None)),
             None => false,
         }
+    }
+
+    /// 当前服务绑定的基础端口(服务未运行时返回 None)
+    pub fn base_port(&self) -> Option<u16> {
+        self.base_port
     }
 
     pub fn status(&mut self) -> ServiceStatus {
@@ -231,6 +252,55 @@ fn send_mute_http(base_port: u16, muted: bool) -> Result<(), String> {
     Ok(())
 }
 
+/// 通过 HTTP GET 拉取 server 的 /pairing 配对状态接口。
+/// 失败返回 Err(供前端显示"服务未启动"等提示)。
+fn fetch_pairing_state(base_port: u16) -> Result<PairingState, String> {
+    let port = base_port.checked_add(5).ok_or("端口溢出")?;
+    let addr = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, port));
+
+    let mut stream = TcpStream::connect_timeout(&addr, Duration::from_secs(1))
+        .map_err(|e| format!("连接 server 失败(服务未启动?): {}", e))?;
+    stream.set_read_timeout(Some(Duration::from_secs(1))).map_err(|e| e.to_string())?;
+    stream.set_write_timeout(Some(Duration::from_secs(1))).map_err(|e| e.to_string())?;
+
+    let request = "GET /pairing HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n";
+    stream.write_all(request.as_bytes()).map_err(|e| e.to_string())?;
+
+    let mut response = String::new();
+    stream.read_to_string(&mut response).map_err(|e| e.to_string())?;
+
+    let body = response.split("\r\n\r\n").nth(1).ok_or("HTTP 响应缺少 body")?;
+    serde_json::from_str(body).map_err(|e| format!("解析配对状态失败: {}", e))
+}
+
+/// 通过 HTTP POST 调用 server 的配对管理接口
+/// - path: "/pairing/reset" 或 "/pairing/unpair?pubkey=..."
+fn post_pairing_action(base_port: u16, path: &str) -> Result<String, String> {
+    let port = base_port.checked_add(5).ok_or("端口溢出")?;
+    let addr = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, port));
+
+    let mut stream = TcpStream::connect_timeout(&addr, Duration::from_secs(1))
+        .map_err(|e| format!("连接 server 失败: {}", e))?;
+    stream.set_read_timeout(Some(Duration::from_secs(1))).map_err(|e| e.to_string())?;
+    stream.set_write_timeout(Some(Duration::from_secs(1))).map_err(|e| e.to_string())?;
+
+    let request = format!(
+        "POST {} HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+        path
+    );
+    stream.write_all(request.as_bytes()).map_err(|e| e.to_string())?;
+
+    let mut response = String::new();
+    stream.read_to_string(&mut response).map_err(|e| e.to_string())?;
+
+    let status_line = response.lines().next().unwrap_or("");
+    if !status_line.contains("200 OK") {
+        let body = response.split("\r\n\r\n").nth(1).unwrap_or("");
+        return Err(format!("server 响应异常: {} {}", status_line, body));
+    }
+    Ok(response.split("\r\n\r\n").nth(1).unwrap_or("").to_string())
+}
+
 fn find_server_executable() -> Result<PathBuf, String> {
     let exe_dir = env::current_exe()
         .map_err(|e| e.to_string())?
@@ -373,6 +443,58 @@ fn set_mute_speaker(state: State<AppState>, muted: bool) -> Result<(), String> {
     Ok(())
 }
 
+/// 查询当前配对状态(PIN + 已配对客户端列表)
+/// 服务未运行时返回错误,前端显示提示
+#[tauri::command]
+fn get_pairing_state(state: State<AppState>) -> Result<PairingState, String> {
+    let mut svc = state.service.lock().unwrap();
+    if !svc.is_running() {
+        return Err("服务未启动".into());
+    }
+    let base_port = svc.base_port().ok_or("服务未启动")?;
+    fetch_pairing_state(base_port)
+}
+
+/// 重置配对:清空所有已配对客户端并重新生成 PIN
+#[tauri::command]
+fn reset_pairing(state: State<AppState>) -> Result<String, String> {
+    let mut svc = state.service.lock().unwrap();
+    if !svc.is_running() {
+        return Err("服务未启动".into());
+    }
+    let base_port = svc.base_port().ok_or("服务未启动")?;
+    post_pairing_action(base_port, "/pairing/reset")
+}
+
+/// 移除指定公钥的已配对客户端
+#[tauri::command]
+fn unpair_client(state: State<AppState>, pubkey_b64: String) -> Result<String, String> {
+    let mut svc = state.service.lock().unwrap();
+    if !svc.is_running() {
+        return Err("服务未启动".into());
+    }
+    let base_port = svc.base_port().ok_or("服务未启动")?;
+    // URL 编码 base64(含 +/= 等特殊字符)
+    let encoded = url_encode(&pubkey_b64);
+    let path = format!("/pairing/unpair?pubkey={}", encoded);
+    post_pairing_action(base_port, &path)
+}
+
+/// 简易 URL 编码(仅处理 base64 中可能出现的特殊字符 + / =)
+fn url_encode(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for b in s.bytes() {
+        match b {
+            b'+' => out.push_str("%2B"),
+            b'/' => out.push_str("%2F"),
+            b'=' => out.push_str("%3D"),
+            b if b.is_ascii_alphanumeric() || b == b'-' || b == b'_' => out.push(b as char),
+            _ => out.push_str(&format!("%{:02X}", b)),
+        }
+    }
+    out
+}
+
 pub fn run() {
     let config = load_config();
     let state = AppState {
@@ -394,6 +516,9 @@ pub fn run() {
             get_status,
             get_output_devices,
             set_mute_speaker,
+            get_pairing_state,
+            reset_pairing,
+            unpair_client,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

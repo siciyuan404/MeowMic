@@ -274,6 +274,50 @@ pub enum ControlMessage {
         audio_channels: u8,
         audio_frame_ms: u16,
     },
+    /// 已配对客户端的 Hello:带公钥 + 签名证明身份
+    ///
+    /// 签名内容 = SHA256(client_name || client_pubkey || nonce)
+    /// 服务端查白名单匹配 client_pubkey,验证签名后放行
+    HelloPaired {
+        client_name: String,
+        protocol_version: u32,
+        client_pubkey: Vec<u8>,
+        nonce: u64,
+        signature: Vec<u8>,
+        audio_sample_rate: u32,
+        audio_channels: u8,
+        audio_frame_ms: u16,
+    },
+    /// 服务端要求客户端先完成配对
+    /// server_pubkey:服务端 Ed25519 公钥(base64 解码后的原始 32 字节)
+    /// server_nonce:服务端生成的随机 nonce,客户端需在 PairRequest 中回传签名
+    PairRequired {
+        server_pubkey: Vec<u8>,
+        server_nonce: u64,
+    },
+    /// 客户端发起配对请求(首次连接或重新配对)
+    ///
+    /// - client_pubkey:客户端 Ed25519 公钥(32 字节)
+    /// - client_name:设备名(用于服务端白名单显示)
+    /// - pin:用户在 PC 端看到的 6 位 PIN
+    /// - signature:对 server_nonce 的 Ed25519 签名(用客户端私钥)
+    ///   验证签名可以证明客户端确实持有对应私钥,防止公钥冒充
+    PairRequest {
+        client_pubkey: Vec<u8>,
+        client_name: String,
+        pin: String,
+        server_nonce: u64,
+        signature: Vec<u8>,
+    },
+    /// 服务端配对响应
+    ///
+    /// - success=true:配对成功,server_pubkey 可用于后续验证服务端身份
+    /// - success=false:配对失败(PIN 错误/已配对满/服务端关闭配对),error_msg 描述原因
+    PairResponse {
+        success: bool,
+        server_pubkey: Vec<u8>,
+        error_msg: String,
+    },
     SyncReq { client_ts_ns: u64 },
     SyncResp {
         client_ts_ns: u64,

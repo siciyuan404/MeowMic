@@ -32,6 +32,17 @@ pub enum ClientEvent {
         audio_channels: u8,
         audio_frame_ms: u16,
     },
+    /// 服务端要求客户端先完成配对(收到 PairRequired)
+    PairRequired {
+        server_pubkey: Vec<u8>,
+        server_nonce: u64,
+    },
+    /// 配对响应(收到 PairResponse)
+    PairResponse {
+        success: bool,
+        server_pubkey: Vec<u8>,
+        error_msg: String,
+    },
     ClockSynced {
         offset_ms: f64,
         rtt_ms: f64,
@@ -56,13 +67,55 @@ pub struct Client {
 }
 
 impl Client {
-    /// 连接到服务端
+    /// 连接到服务端(发送普通 Hello)
     ///
     /// - server_control_addr: 服务端 TCP 控制地址(如 "192.168.1.100:28900")
     /// - 自动推导 touch/audio 端口(control+1, control+2)
     pub async fn connect(
         server_control_addr: &str,
         client_name: &str,
+        event_tx: mpsc::Sender<ClientEvent>,
+    ) -> Result<Self, NetError> {
+        let msg = ControlMessage::Hello {
+            client_name: client_name.into(),
+            protocol_version: 1,
+            audio_sample_rate: 48000,
+            audio_channels: 1,
+            audio_frame_ms: 20,
+        };
+        Self::connect_with_first_msg(server_control_addr, msg, event_tx).await
+    }
+
+    /// 以已配对身份连接服务端(发送 HelloPaired)
+    ///
+    /// - `client_pubkey`: 客户端 Ed25519 公钥(32 字节)
+    /// - `nonce`: 随机 nonce(每次连接不同)
+    /// - `signature`: 客户端私钥对 SHA256(client_name || client_pubkey || nonce_le) 的签名(64 字节)
+    pub async fn connect_paired(
+        server_control_addr: &str,
+        client_name: &str,
+        client_pubkey: Vec<u8>,
+        nonce: u64,
+        signature: Vec<u8>,
+        event_tx: mpsc::Sender<ClientEvent>,
+    ) -> Result<Self, NetError> {
+        let msg = ControlMessage::HelloPaired {
+            client_name: client_name.into(),
+            protocol_version: 1,
+            client_pubkey,
+            nonce,
+            signature,
+            audio_sample_rate: 48000,
+            audio_channels: 1,
+            audio_frame_ms: 20,
+        };
+        Self::connect_with_first_msg(server_control_addr, msg, event_tx).await
+    }
+
+    /// 内部:连接服务端并发送第一条控制消息,启动后台任务
+    async fn connect_with_first_msg(
+        server_control_addr: &str,
+        first_msg: ControlMessage,
         event_tx: mpsc::Sender<ClientEvent>,
     ) -> Result<Self, NetError> {
         let control_addr: SocketAddr = server_control_addr
@@ -97,14 +150,8 @@ impl Client {
             audio_seq: Arc::new(Mutex::new(0)),
         };
 
-        // 发送 Hello
-        client.send_control(ControlMessage::Hello {
-            client_name: client_name.into(),
-            protocol_version: 1,
-            audio_sample_rate: 48000,
-            audio_channels: 1,
-            audio_frame_ms: 20,
-        }).await?;
+        // 发送第一条消息(Hello 或 HelloPaired)
+        client.send_control(first_msg).await?;
 
         // 启动控制消息接收循环
         let stream_clone = client.control_stream.clone();
@@ -219,6 +266,31 @@ impl Client {
         self.send_control(ControlMessage::SetMuteSpeaker { muted }).await
     }
 
+    /// 发送配对请求(首次连接收到 PairRequired 后调用)
+    ///
+    /// - `client_pubkey`: 客户端 Ed25519 公钥(32 字节)
+    /// - `client_name`: 客户端设备名
+    /// - `pin`: 服务端显示的 6 位 PIN
+    /// - `server_nonce`: 服务端在 PairRequired 中返回的 nonce
+    /// - `signature`: 客户端私钥对 server_nonce.to_le_bytes() 的 Ed25519 签名(64 字节)
+    pub async fn send_pair_request(
+        &self,
+        client_pubkey: Vec<u8>,
+        client_name: String,
+        pin: String,
+        server_nonce: u64,
+        signature: Vec<u8>,
+    ) -> Result<(), NetError> {
+        self.send_control(ControlMessage::PairRequest {
+            client_pubkey,
+            client_name,
+            pin,
+            server_nonce,
+            signature,
+        })
+        .await
+    }
+
     /// 发送键盘事件(走 TCP 控制通道,可靠传递)
     ///
     /// - key_code: Windows VK code(如 0x11=Ctrl, 0x43=C)
@@ -282,6 +354,30 @@ async fn run_control_recv(
                                 audio_sample_rate,
                                 audio_channels,
                                 audio_frame_ms,
+                            })
+                            .await;
+                    }
+                    ControlMessage::PairRequired {
+                        server_pubkey,
+                        server_nonce,
+                    } => {
+                        let _ = event_tx
+                            .send(ClientEvent::PairRequired {
+                                server_pubkey,
+                                server_nonce,
+                            })
+                            .await;
+                    }
+                    ControlMessage::PairResponse {
+                        success,
+                        server_pubkey,
+                        error_msg,
+                    } => {
+                        let _ = event_tx
+                            .send(ClientEvent::PairResponse {
+                                success,
+                                server_pubkey,
+                                error_msg,
                             })
                             .await;
                     }

@@ -35,7 +35,7 @@ impl AudioPlayer {
         let supported = device
             .supported_output_configs()?
             .find(|c| {
-                c.channels() == cfg.channels.into()
+                c.channels() == u16::from(cfg.channels)
                     && (c.min_sample_rate().0..=c.max_sample_rate().0)
                         .contains(&cfg.sample_rate)
             })

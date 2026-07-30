@@ -1,7 +1,7 @@
 //! 服务端网络层
 //!
 //! 监听:
-//! - TCP Control 端口:握手、时钟同步、统计
+//! - TCP Control 端口:握手、时钟同步、统计、配对
 //! - UDP Touch 端口:接收触摸包
 //! - UDP Audio 端口:接收 Opus 音频包
 
@@ -16,6 +16,7 @@ use meowmic_protocol::{
 };
 
 use crate::{NetError, PortLayout};
+use crate::pairing::{PairingManager, generate_nonce};
 use crate::sync::ClockSynchronizer;
 
 /// 服务端收到的事件
@@ -57,6 +58,8 @@ pub enum ServerEvent {
         key_code: u16,
         is_down: bool,
     },
+    /// 客户端配对成功(通知 UI 更新)
+    ClientPaired { client_name: String },
     /// 错误
     Error(NetError),
 }
@@ -64,6 +67,8 @@ pub enum ServerEvent {
 pub struct Server {
     ports: PortLayout,
     sync: ClockSynchronizer,
+    /// 配对管理器(可选:测试或无配对需求时为 None)
+    pairing: Option<Arc<PairingManager>>,
 }
 
 impl Server {
@@ -71,7 +76,14 @@ impl Server {
         Self {
             ports,
             sync: ClockSynchronizer::new(),
+            pairing: None,
         }
+    }
+
+    /// 启用配对机制
+    pub fn with_pairing(mut self, pairing: Arc<PairingManager>) -> Self {
+        self.pairing = Some(pairing);
+        self
     }
 
     pub fn clock_sync(&self) -> ClockSynchronizer {
@@ -110,13 +122,15 @@ impl Server {
 
         // TCP 接受循环
         let sync = self.sync.clone();
+        let pairing = self.pairing.clone();
         loop {
             match tcp.accept().await {
                 Ok((stream, peer)) => {
                     let sync = sync.clone();
                     let event_tx = event_tx.clone();
+                    let pairing = pairing.clone();
                     tokio::spawn(async move {
-                        if let Err(e) = handle_control_conn(stream, peer, sync, event_tx).await {
+                        if let Err(e) = handle_control_conn(stream, peer, sync, event_tx, pairing).await {
                             tracing::warn!("控制连接处理失败: {}", e);
                         }
                     });
@@ -188,6 +202,7 @@ async fn handle_control_conn(
     peer: SocketAddr,
     sync: ClockSynchronizer,
     event_tx: mpsc::Sender<ServerEvent>,
+    pairing: Option<Arc<PairingManager>>,
 ) -> Result<(), NetError> {
     tracing::info!("控制连接来自 {}", peer);
 
@@ -195,6 +210,8 @@ async fn handle_control_conn(
     let mut audio_cfg = (48000u32, 1u8, 20u16);
     let mut read_buf = Vec::with_capacity(4096);
     let mut frame = Vec::with_capacity(4096);
+    // 每个连接独立 nonce(用于本次 PairRequired 握手)
+    let mut pending_nonce: Option<u64> = None;
 
     loop {
         let mut tmp = [0u8; 4096];
@@ -230,6 +247,8 @@ async fn handle_control_conn(
                         &sync,
                         &peer,
                         &event_tx,
+                        pairing.as_deref(),
+                        &mut pending_nonce,
                     )
                     .await
                     {
@@ -246,6 +265,7 @@ async fn handle_control_conn(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn handle_control_msg(
     msg: &ControlMessage,
     client_id: &mut u32,
@@ -253,6 +273,8 @@ async fn handle_control_msg(
     _sync: &ClockSynchronizer,
     peer: &SocketAddr,
     event_tx: &mpsc::Sender<ServerEvent>,
+    pairing: Option<&PairingManager>,
+    pending_nonce: &mut Option<u64>,
 ) -> Option<ControlMessage> {
     match msg {
         ControlMessage::Hello {
@@ -262,6 +284,22 @@ async fn handle_control_msg(
             audio_channels,
             audio_frame_ms,
         } => {
+            // 若启用配对机制,普通 Hello 必须先走配对流程
+            if let Some(pm) = pairing {
+                // 生成 nonce 并返回 PairRequired
+                let nonce = generate_nonce();
+                *pending_nonce = Some(nonce);
+                tracing::info!(
+                    "握手: client={} 未配对,要求先完成配对 nonce={}",
+                    client_name,
+                    nonce
+                );
+                return Some(ControlMessage::PairRequired {
+                    server_pubkey: pm.server_pubkey().to_vec(),
+                    server_nonce: nonce,
+                });
+            }
+            // 无配对机制:直接放行(兼容旧客户端)
             *client_id = monotonic_ns() as u32;
             *audio_cfg = (*audio_sample_rate, *audio_channels, *audio_frame_ms);
             tracing::info!(
@@ -288,6 +326,103 @@ async fn handle_control_msg(
                 audio_sample_rate: *audio_sample_rate,
                 audio_channels: *audio_channels,
                 audio_frame_ms: *audio_frame_ms,
+            })
+        }
+        ControlMessage::HelloPaired {
+            client_name,
+            protocol_version,
+            client_pubkey,
+            nonce,
+            signature,
+            audio_sample_rate,
+            audio_channels,
+            audio_frame_ms,
+        } => {
+            let pm = pairing?;
+            // 验证签名 + 白名单
+            match pm
+                .verify_paired_hello(client_pubkey, client_name, *nonce, signature)
+                .await
+            {
+                Ok(()) => {
+                    *client_id = monotonic_ns() as u32;
+                    *audio_cfg = (*audio_sample_rate, *audio_channels, *audio_frame_ms);
+                    tracing::info!(
+                        "已配对握手成功: client={} proto={} audio={}/{}/{}ms",
+                        client_name,
+                        protocol_version,
+                        audio_sample_rate,
+                        audio_channels,
+                        audio_frame_ms
+                    );
+                    let _ = event_tx
+                        .send(ServerEvent::ClientConnected {
+                            client_id: *client_id,
+                            peer: *peer,
+                            audio_sample_rate: *audio_sample_rate,
+                            audio_channels: *audio_channels,
+                            audio_frame_ms: *audio_frame_ms,
+                        })
+                        .await;
+                    Some(ControlMessage::HelloAck {
+                        server_name: "MeowMic-Server".into(),
+                        protocol_version: 1,
+                        client_id: *client_id,
+                        audio_sample_rate: *audio_sample_rate,
+                        audio_channels: *audio_channels,
+                        audio_frame_ms: *audio_frame_ms,
+                    })
+                }
+                Err(e) => {
+                    tracing::warn!("已配对握手失败: client={} err={}", client_name, e);
+                    Some(ControlMessage::PairResponse {
+                        success: false,
+                        server_pubkey: pm.server_pubkey().to_vec(),
+                        error_msg: format!("认证失败: {}", e),
+                    })
+                }
+            }
+        }
+        ControlMessage::PairRequest {
+            client_pubkey,
+            client_name,
+            pin,
+            server_nonce,
+            signature,
+        } => {
+            let pm = pairing?;
+            // 校验 nonce 是否匹配本连接发出的
+            if let Some(expected) = *pending_nonce {
+                if expected != *server_nonce {
+                    return Some(ControlMessage::PairResponse {
+                        success: false,
+                        server_pubkey: pm.server_pubkey().to_vec(),
+                        error_msg: "nonce 不匹配".into(),
+                    });
+                }
+            }
+            let (success, server_pubkey, err) = pm
+                .handle_pair_request(
+                    client_pubkey.clone(),
+                    client_name.clone(),
+                    pin.clone(),
+                    *server_nonce,
+                    signature.clone(),
+                )
+                .await;
+            if success {
+                let _ = event_tx
+                    .send(ServerEvent::ClientPaired {
+                        client_name: client_name.clone(),
+                    })
+                    .await;
+                // 清除 nonce(本次配对完成)
+                *pending_nonce = None;
+            }
+            Some(ControlMessage::PairResponse {
+                success,
+                server_pubkey,
+                error_msg: err,
             })
         }
         ControlMessage::SyncReq { client_ts_ns } => {
