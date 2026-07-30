@@ -601,6 +601,10 @@
             50% { transform: scale(1.04); opacity: 0.9; }
             100% { transform: scale(1); opacity: 1; }
         }
+        @keyframes updateIndeterminate {
+            0% { transform: translateX(-100%); }
+            100% { transform: translateX(350%); }
+        }
     </style>
 </head>
 <body>
@@ -886,8 +890,8 @@
             try { await Tauri.window.getCurrent().close(); } catch(err) { console.error(err); }
         }
 
-        // ============ 自动更新 ============
-        let pendingUpdate = null;  // 待安装的更新对象
+        // ============ 自动更新 (Tauri 1.x API) ============
+        let updateUnlisten = null;  // 更新事件监听取消函数
 
         function showUpdateStatus(text, color) {
             const el = document.getElementById('updateStatus');
@@ -895,11 +899,24 @@
             el.style.color = color || 'var(--text-tertiary)';
         }
 
-        function setUpdateProgress(visible, percent) {
+        function setUpdateProgress(visible, indeterminate) {
             const bar = document.getElementById('updateProgress');
             const fill = document.getElementById('updateProgressBar');
             bar.style.display = visible ? 'block' : 'none';
-            if (visible) fill.style.width = (percent || 0) + '%';
+            if (visible) {
+                if (indeterminate) {
+                    fill.style.width = '30%';
+                    fill.style.transition = 'none';
+                    fill.style.animation = 'updateIndeterminate 1.2s ease-in-out infinite';
+                } else {
+                    fill.style.animation = 'none';
+                    fill.style.transition = 'width .2s';
+                    fill.style.width = '100%';
+                }
+            } else {
+                fill.style.animation = 'none';
+                fill.style.transition = 'width .2s';
+            }
         }
 
         async function checkForUpdate() {
@@ -909,13 +926,14 @@
             btn.textContent = '检查中...';
             showUpdateStatus('', '');
             try {
-                const update = await Tauri.updater.checkForUpdate();
-                if (update && update.available) {
-                    pendingUpdate = update;
-                    const ver = update.version || '新版本';
-                    showUpdateStatus('发现新版本 v' + ver + (update.body ? '\n' + update.body : ''), 'var(--text-secondary)');
-                    btn.textContent = '下载更新';
-                    btn.onclick = downloadUpdate;
+                const update = await Tauri.updater.checkUpdate();
+                if (update && update.shouldUpdate) {
+                    const manifest = update.manifest || {};
+                    const ver = manifest.version || '新版本';
+                    const body = manifest.body || '';
+                    showUpdateStatus('发现新版本 v' + ver + (body ? '\n' + body : ''), 'var(--text-secondary)');
+                    btn.textContent = '下载并安装';
+                    btn.onclick = downloadAndInstallUpdate;
                 } else {
                     showUpdateStatus('已是最新版本', 'var(--text-tertiary)');
                     btn.textContent = '检查更新';
@@ -929,47 +947,46 @@
             }
         }
 
-        async function downloadUpdate() {
-            if (!pendingUpdate) return;
+        async function downloadAndInstallUpdate() {
+            const Tauri = window.__TAURI__;
             const btn = document.getElementById('checkUpdateBtn');
             btn.disabled = true;
-            btn.textContent = '下载中...';
-            setUpdateProgress(true, 0);
-            showUpdateStatus('正在下载...', '');
-            let lastEmit = 0;
+            btn.textContent = '下载安装中...';
+            setUpdateProgress(true, true);
+            showUpdateStatus('正在下载并安装,请稍候...', '');
             try {
-                await pendingUpdate.downloadAndInstall(event => {
-                    const now = Date.now();
-                    if (event.event === 'Downloading' && now - lastEmit > 100) {
-                        lastEmit = now;
-                        if (event.data && event.data.contentLength) {
-                            const pct = Math.round((event.data.downloaded / event.data.contentLength) * 100);
-                            setUpdateProgress(true, pct);
-                        }
-                    } else if (event.event === 'Downloaded') {
-                        setUpdateProgress(true, 100);
+                // 监听更新状态事件(PENDING/DONE/ERROR)
+                if (updateUnlisten) { try { await updateUnlisten(); } catch(e) {} updateUnlisten = null; }
+                updateUnlisten = await Tauri.updater.onUpdaterEvent(({ status, error }) => {
+                    if (status === 'ERROR') {
+                        showUpdateStatus('安装失败: ' + (error || '未知错误'), 'var(--status-error-default)');
+                    } else if (status === 'DONE') {
+                        showUpdateStatus('安装完成,等待重启...', 'var(--status-success-default)');
                     }
                 });
-                // 下载完成,显示重启按钮
-                setUpdateProgress(false, 0);
+                // 下载并安装(Tauri 1.x: installUpdate 包含下载和安装)
+                await Tauri.updater.installUpdate();
+                // 完成,显示重启按钮
+                if (updateUnlisten) { try { await updateUnlisten(); } catch(e) {} updateUnlisten = null; }
+                setUpdateProgress(false, false);
                 btn.style.display = 'none';
                 document.getElementById('installUpdateBtn').style.display = 'block';
-                showUpdateStatus('下载完成,点击重启以完成安装', 'var(--status-success-default)');
+                showUpdateStatus('安装完成,点击重启以应用更新', 'var(--status-success-default)');
             } catch(err) {
-                setUpdateProgress(false, 0);
-                showUpdateStatus('下载失败: ' + (err.message || err), 'var(--status-error-default)');
+                if (updateUnlisten) { try { await updateUnlisten(); } catch(e) {} updateUnlisten = null; }
+                setUpdateProgress(false, false);
+                showUpdateStatus('安装失败: ' + (err.message || err), 'var(--status-error-default)');
                 btn.disabled = false;
-                btn.textContent = '重试下载';
+                btn.textContent = '重试';
             }
         }
 
         async function installUpdate() {
             const Tauri = window.__TAURI__;
             try {
-                // Tauri 1.x: 下载并安装后需手动重启
                 await Tauri.process.relaunch();
             } catch(err) {
-                showUpdateStatus('安装失败: ' + (err.message || err), 'var(--status-error-default)');
+                showUpdateStatus('重启失败: ' + (err.message || err), 'var(--status-error-default)');
             }
         }
 
