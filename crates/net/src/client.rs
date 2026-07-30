@@ -12,7 +12,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU16, Ordering};
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::{TcpStream, UdpSocket};
+use tokio::net::{TcpStream, UdpSocket, tcp::OwnedWriteHalf};
 use tokio::sync::{Mutex, mpsc};
 
 use meowmic_protocol::{
@@ -53,8 +53,11 @@ pub enum ClientEvent {
 
 pub struct Client {
     sync: ClockSynchronizer,
-    /// TCP 控制流(线程安全写入)
-    control_stream: Arc<Mutex<TcpStream>>,
+    /// TCP 控制流写入端(线程安全,read 端由后台 task 独占)
+    ///
+    /// 使用 into_split 分离读写,避免 run_control_recv 持有 Mutex 在 read 上挂起
+    /// 导致 send_control 永久死锁。
+    control_write: Arc<Mutex<OwnedWriteHalf>>,
     touch_sock: Arc<UdpSocket>,
     /// 同步触摸发送 socket(与 touch_sock 共享同一 fd,用于绕过 block_on)
     touch_sock_sync: Arc<std::net::UdpSocket>,
@@ -131,6 +134,10 @@ impl Client {
         let stream = TcpStream::connect(control_addr).await?;
         stream.set_nodelay(true)?;
 
+        // 分离读写半部:read_half 独占给后台接收 task,write_half 用 Mutex 保护
+        // 避免之前的死锁:run_control_recv 持有 Mutex 在 read 上挂起,send_control 永远拿不到锁
+        let (read_half, write_half) = stream.into_split();
+
         // 本地 UDP socket:绑定任意端口
         // touch_sock 使用 std 创建后 try_clone,一份转 tokio(异步接收),一份留作同步发送
         let touch_sock_std = std::net::UdpSocket::bind("0.0.0.0:0")?;
@@ -139,9 +146,10 @@ impl Client {
         let audio_sock = UdpSocket::bind("0.0.0.0:0").await?;
 
         let sync = ClockSynchronizer::new();
+        let control_write = Arc::new(Mutex::new(write_half));
         let client = Self {
             sync: sync.clone(),
-            control_stream: Arc::new(Mutex::new(stream)),
+            control_write: control_write.clone(),
             touch_sock: Arc::new(touch_sock),
             touch_sock_sync,
             audio_sock: Arc::new(audio_sock),
@@ -153,16 +161,15 @@ impl Client {
         // 发送第一条消息(Hello 或 HelloPaired)
         client.send_control(first_msg).await?;
 
-        // 启动控制消息接收循环
-        let stream_clone = client.control_stream.clone();
+        // 启动控制消息接收循环(read_half 独占,无需 Mutex)
         let sync_clone = sync.clone();
         let event_tx_clone = event_tx.clone();
         tokio::spawn(async move {
-            run_control_recv(stream_clone, sync_clone, event_tx_clone).await;
+            run_control_recv(read_half, sync_clone, event_tx_clone).await;
         });
 
         // 启动时钟同步循环
-        let stream_for_sync = client.control_stream.clone();
+        let stream_for_sync = control_write.clone();
         let sync_for_loop = sync.clone();
         tokio::spawn(async move {
             run_sync_loop(stream_for_sync, sync_for_loop).await;
@@ -248,7 +255,7 @@ impl Client {
 
     /// 发送控制消息
     pub async fn send_control(&self, msg: ControlMessage) -> Result<(), NetError> {
-        let mut stream = self.control_stream.lock().await;
+        let mut stream = self.control_write.lock().await;
         let mut frame = Vec::with_capacity(256);
         encode_control(&msg, &mut frame).map_err(NetError::Protocol)?;
         stream.write_all(&frame).await?;
@@ -301,32 +308,29 @@ impl Client {
 }
 
 async fn run_control_recv(
-    stream: Arc<Mutex<TcpStream>>,
+    mut read_half: tokio::net::tcp::OwnedReadHalf,
     sync: ClockSynchronizer,
     event_tx: mpsc::Sender<ClientEvent>,
 ) {
     let mut read_buf = Vec::with_capacity(4096);
     loop {
         let mut tmp = [0u8; 4096];
-        let n = {
-            let mut s = stream.lock().await;
-            match s.read(&mut tmp).await {
-                Ok(n) => {
-                    if n == 0 {
-                        let _ = event_tx.send(ClientEvent::Disconnected).await;
-                        return;
-                    }
-                    n
-                }
-                Err(e) => {
-                    let _ = event_tx
-                        .send(ClientEvent::Error(NetError::Io(e)))
-                        .await;
+        // read_half 独占,无需 Mutex,不会阻塞 send_control 的写入
+        match read_half.read(&mut tmp).await {
+            Ok(n) => {
+                if n == 0 {
+                    let _ = event_tx.send(ClientEvent::Disconnected).await;
                     return;
                 }
+                read_buf.extend_from_slice(&tmp[..n]);
             }
-        };
-        read_buf.extend_from_slice(&tmp[..n]);
+            Err(e) => {
+                let _ = event_tx
+                    .send(ClientEvent::Error(NetError::Io(e)))
+                    .await;
+                return;
+            }
+        }
 
         loop {
             if read_buf.len() < 4 {
@@ -416,7 +420,7 @@ fn decode_control_safe(
     meowmic_protocol::decode_control(buf)
 }
 
-async fn run_sync_loop(stream: Arc<Mutex<TcpStream>>, _sync: ClockSynchronizer) {
+async fn run_sync_loop(write_half: Arc<Mutex<OwnedWriteHalf>>, _sync: ClockSynchronizer) {
     let mut ticker = tokio::time::interval(Duration::from_secs(2));
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     let mut frame = Vec::with_capacity(64);
@@ -428,7 +432,7 @@ async fn run_sync_loop(stream: Arc<Mutex<TcpStream>>, _sync: ClockSynchronizer) 
             tracing::warn!("SyncReq 编码失败: {}", e);
             continue;
         }
-        let mut s = stream.lock().await;
+        let mut s = write_half.lock().await;
         if s.write_all(&frame).await.is_err() {
             return;
         }

@@ -168,16 +168,35 @@ pub extern "system" fn Java_com_meowmic_client_NativeBridge_nativeConnect(
         }
     };
 
-    // 等待第一条事件(HelloAck 或 PairRequired),5 秒超时
-    let first_event = rt.block_on(async {
-        tokio::time::timeout(
-            std::time::Duration::from_secs(5),
-            event_rx.recv(),
-        ).await
+    // 等待握手响应(HelloAck 或 PairRequired),8 秒超时
+    // 循环跳过 ClockSynced 等非目标事件(后台 sync_loop 每 2s 产生一次)
+    enum Handshake {
+        Ack,
+        PairRequired { server_pubkey: Vec<u8>, server_nonce: u64 },
+        Failed(&'static str),
+    }
+
+    let handshake = rt.block_on(async {
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(8);
+        loop {
+            match tokio::time::timeout_at(deadline, event_rx.recv()).await {
+                Ok(Some(ClientEvent::HelloAck { .. })) => break Handshake::Ack,
+                Ok(Some(ClientEvent::PairRequired { server_pubkey, server_nonce })) => {
+                    break Handshake::PairRequired { server_pubkey, server_nonce };
+                }
+                Ok(Some(ev)) => {
+                    // 跳过 ClockSynced/Error/Disconnected 等非目标事件,继续等待
+                    log::debug!("握手阶段跳过事件: {:?}", ev);
+                    continue;
+                }
+                Ok(None) => break Handshake::Failed("事件通道关闭"),
+                Err(_) => break Handshake::Failed("等待握手响应超时(8s)"),
+            }
+        }
     });
 
-    match first_event {
-        Ok(Some(ClientEvent::HelloAck { .. })) => {
+    match handshake {
+        Handshake::Ack => {
             // 已连接(服务端未启用配对,或已配对但发送的是普通 Hello 被放行)
             log::info!("握手成功(HelloAck)");
             // 启动后台事件消费
@@ -204,7 +223,7 @@ pub extern "system" fn Java_com_meowmic_client_NativeBridge_nativeConnect(
             *guard = Some(new_state);
             1
         }
-        Ok(Some(ClientEvent::PairRequired { server_pubkey, server_nonce })) => {
+        Handshake::PairRequired { server_pubkey, server_nonce } => {
             // 需要配对,保存 pending 状态
             log::info!("服务端要求配对: server_nonce={}", server_nonce);
             let client_state = match load_client_pairing_state() {
@@ -244,16 +263,8 @@ pub extern "system" fn Java_com_meowmic_client_NativeBridge_nativeConnect(
             *guard = Some(pending);
             2
         }
-        Ok(Some(ev)) => {
-            log::warn!("意外的首条事件: {:?}", ev);
-            0
-        }
-        Ok(None) => {
-            log::warn!("事件通道关闭");
-            0
-        }
-        Err(_) => {
-            log::warn!("等待握手响应超时(5s)");
+        Handshake::Failed(msg) => {
+            log::warn!("{}", msg);
             0
         }
     }
@@ -296,45 +307,51 @@ fn reconnect_paired(
         }
     };
 
-    // 等待 HelloAck
-    let first_event = rt.block_on(async {
-        tokio::time::timeout(
-            std::time::Duration::from_secs(5),
-            event_rx.recv(),
-        ).await
+    // 等待 HelloAck,8 秒超时,循环跳过 ClockSynced 等非目标事件
+    let got_ack = rt.block_on(async {
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(8);
+        loop {
+            match tokio::time::timeout_at(deadline, event_rx.recv()).await {
+                Ok(Some(ClientEvent::HelloAck { .. })) => break true,
+                Ok(Some(ev)) => {
+                    log::debug!("HelloPaired 握手阶段跳过事件: {:?}", ev);
+                    continue;
+                }
+                Ok(None) => {
+                    log::warn!("事件通道关闭");
+                    break false;
+                }
+                Err(_) => {
+                    log::warn!("HelloPaired 等待 HelloAck 超时(8s)");
+                    break false;
+                }
+            }
+        }
     });
 
-    match first_event {
-        Ok(Some(ClientEvent::HelloAck { .. })) => {
-            log::info!("HelloPaired 握手成功");
-            rt.spawn(async move {
-                while let Some(ev) = event_rx.recv().await {
-                    log::debug!("client event: {:?}", ev);
-                }
-            });
-            let new_state = State {
-                rt,
-                client: client.clone(),
-                encoder: Mutex::new(make_encoder(&AudioConfig::default())),
-                audio_cfg: AudioConfig::default(),
-                touch_seq: AtomicU16::new(0),
-                audio_seq: AtomicU16::new(0),
-                touch_sent: AtomicU64::new(0),
-                audio_sent: AtomicU64::new(0),
-            };
-            let mut guard = state().lock().unwrap();
-            *guard = Some(new_state);
-            1
-        }
-        Ok(Some(ev)) => {
-            log::warn!("HelloPaired 后意外事件: {:?}", ev);
-            0
-        }
-        _ => {
-            log::warn!("HelloPaired 等待 HelloAck 超时");
-            0
-        }
+    if !got_ack {
+        return 0;
     }
+
+    log::info!("HelloPaired 握手成功");
+    rt.spawn(async move {
+        while let Some(ev) = event_rx.recv().await {
+            log::debug!("client event: {:?}", ev);
+        }
+    });
+    let new_state = State {
+        rt,
+        client: client.clone(),
+        encoder: Mutex::new(make_encoder(&AudioConfig::default())),
+        audio_cfg: AudioConfig::default(),
+        touch_seq: AtomicU16::new(0),
+        audio_seq: AtomicU16::new(0),
+        touch_sent: AtomicU64::new(0),
+        audio_sent: AtomicU64::new(0),
+    };
+    let mut guard = state().lock().unwrap();
+    *guard = Some(new_state);
+    1
 }
 
 /// Java: int nativeCompletePairing(String pin)
@@ -408,49 +425,54 @@ pub extern "system" fn Java_com_meowmic_client_NativeBridge_nativeCompletePairin
         return 0;
     }
 
-    // 3. 等待 PairResponse(5 秒超时)
+    // 3. 等待 PairResponse,8 秒超时,循环跳过 ClockSynced 等非目标事件
     let response = rt.block_on(async {
-        tokio::time::timeout(
-            std::time::Duration::from_secs(5),
-            event_rx.recv(),
-        ).await
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(8);
+        loop {
+            match tokio::time::timeout_at(deadline, event_rx.recv()).await {
+                Ok(Some(ClientEvent::PairResponse { success, server_pubkey, error_msg })) => {
+                    break Some((success, server_pubkey, error_msg));
+                }
+                Ok(Some(ev)) => {
+                    log::debug!("配对阶段跳过事件: {:?}", ev);
+                    continue;
+                }
+                Ok(None) => {
+                    log::warn!("事件通道关闭");
+                    break None;
+                }
+                Err(_) => {
+                    log::warn!("等待 PairResponse 超时(8s)");
+                    break None;
+                }
+            }
+        }
     });
 
-    match response {
-        Ok(Some(ClientEvent::PairResponse { success, server_pubkey, error_msg })) => {
-            if !success {
-                log::warn!("配对失败: {}", error_msg);
-                return 0;
-            }
-            log::info!("配对成功!");
+    let (success, server_pubkey, error_msg) = match response {
+        Some(t) => t,
+        None => return 0,
+    };
 
-            // 4. 保存 server_pubkey 到客户端配对状态
-            let server_pubkey_b64 = base64::engine::general_purpose::STANDARD.encode(&server_pubkey);
-            let mut new_client_state = client_state.clone();
-            new_client_state.add_paired_server(server_pubkey_b64);
-            save_client_pairing_state(&new_client_state);
-
-            // 5. 断开当前连接,用 HelloPaired 重连
-            // drop client(断开 TCP)
-            drop(client);
-            drop(event_rx);
-
-            // 用 reconnect_paired 重连(传入 rt 所有权)
-            reconnect_paired(rt, &server_addr, &client_name, &new_client_state)
-        }
-        Ok(Some(ev)) => {
-            log::warn!("期望 PairResponse,收到: {:?}", ev);
-            0
-        }
-        Ok(None) => {
-            log::warn!("事件通道关闭");
-            0
-        }
-        Err(_) => {
-            log::warn!("等待 PairResponse 超时");
-            0
-        }
+    if !success {
+        log::warn!("配对失败: {}", error_msg);
+        return 0;
     }
+    log::info!("配对成功!");
+
+    // 4. 保存 server_pubkey 到客户端配对状态
+    let server_pubkey_b64 = base64::engine::general_purpose::STANDARD.encode(&server_pubkey);
+    let mut new_client_state = client_state.clone();
+    new_client_state.add_paired_server(server_pubkey_b64);
+    save_client_pairing_state(&new_client_state);
+
+    // 5. 断开当前连接,用 HelloPaired 重连
+    // drop client(断开 TCP)
+    drop(client);
+    drop(event_rx);
+
+    // 用 reconnect_paired 重连(传入 rt 所有权)
+    reconnect_paired(rt, &server_addr, &client_name, &new_client_state)
 }
 
 /// Java: void nativeCancelPairing()
@@ -556,15 +578,33 @@ pub extern "system" fn Java_com_meowmic_client_NativeBridge_nativeConnectPaired(
         }
     };
 
-    let first_event = rt.block_on(async {
-        tokio::time::timeout(
-            std::time::Duration::from_secs(5),
-            event_rx.recv(),
-        ).await
+    // 等待 HelloAck 或 PairResponse,8 秒超时,循环跳过 ClockSynced 等非目标事件
+    enum HelloPairedResult {
+        Ack,
+        Rejected { success: bool, error_msg: String },
+        Failed(&'static str),
+    }
+
+    let result = rt.block_on(async {
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(8);
+        loop {
+            match tokio::time::timeout_at(deadline, event_rx.recv()).await {
+                Ok(Some(ClientEvent::HelloAck { .. })) => break HelloPairedResult::Ack,
+                Ok(Some(ClientEvent::PairResponse { success, error_msg, .. })) => {
+                    break HelloPairedResult::Rejected { success, error_msg };
+                }
+                Ok(Some(ev)) => {
+                    log::debug!("HelloPaired 阶段跳过事件: {:?}", ev);
+                    continue;
+                }
+                Ok(None) => break HelloPairedResult::Failed("事件通道关闭"),
+                Err(_) => break HelloPairedResult::Failed("HelloPaired 等待响应超时(8s)"),
+            }
+        }
     });
 
-    match first_event {
-        Ok(Some(ClientEvent::HelloAck { .. })) => {
+    match result {
+        HelloPairedResult::Ack => {
             log::info!("HelloPaired 握手成功");
             rt.spawn(async move {
                 while let Some(ev) = event_rx.recv().await {
@@ -589,8 +629,7 @@ pub extern "system" fn Java_com_meowmic_client_NativeBridge_nativeConnectPaired(
             *guard = Some(new_state);
             1
         }
-        Ok(Some(ClientEvent::PairResponse { success, error_msg, .. })) => {
-            // 服务端拒绝 HelloPaired(可能配对已被重置)
+        HelloPairedResult::Rejected { success, error_msg } => {
             if success {
                 log::warn!("HelloPaired 返回 PairResponse success=true(异常)");
             } else {
@@ -598,12 +637,8 @@ pub extern "system" fn Java_com_meowmic_client_NativeBridge_nativeConnectPaired(
             }
             0
         }
-        Ok(Some(ev)) => {
-            log::warn!("HelloPaired 后意外事件: {:?}", ev);
-            0
-        }
-        _ => {
-            log::warn!("HelloPaired 等待 HelloAck 超时");
+        HelloPairedResult::Failed(msg) => {
+            log::warn!("{}", msg);
             0
         }
     }
