@@ -1085,9 +1085,9 @@
                     touchesCard.classList.remove('glow');
                 }
 
-                // 服务运行中时同步刷新配对状态(每次轮询都拉取,保持 PIN/列表最新)
+                // 服务运行中时同步拉取配对状态(只查询不刷新 PIN)
                 if (status.running) {
-                    refreshPairing();
+                    loadPairingState();
                 } else {
                     renderPairingState(null);
                 }
@@ -1099,6 +1099,18 @@
         // ============ 配对管理 ============
         let lastPairingPin = null;
 
+        // 只查询配对状态(供轮询调用,不刷新 PIN)
+        async function loadPairingState() {
+            const Tauri = window.__TAURI__;
+            try {
+                const state = await Tauri.invoke('get_pairing_state');
+                renderPairingState(state);
+            } catch(e) {
+                renderPairingState(null, String(e));
+            }
+        }
+
+        // 手动刷新 PIN(用户点击"刷新"按钮调用)
         async function refreshPairing() {
             const Tauri = window.__TAURI__;
             try {
