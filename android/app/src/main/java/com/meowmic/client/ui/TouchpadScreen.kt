@@ -923,11 +923,31 @@ fun TouchpadScreen(
     val stickyMods = remember { mutableStateMapOf<Int, Boolean>() }
 
     fun fireKey(keyCode: Int) {
-        val activeMods = stickyMods.keys.filter { stickyMods[it] == true }
-        for (mod in activeMods) NativeBridge.sendKeyDown(mod)
-        NativeBridge.sendKeyPress(keyCode)
-        for (mod in activeMods.reversed()) NativeBridge.sendKeyUp(mod)
-        stickyMods.clear()
+        // 按 VK code 升序固定下发顺序,避免哈希表迭代顺序不确定
+        val activeMods = stickyMods.keys.filter { stickyMods[it] == true }.sorted()
+        val pressedMods = mutableListOf<Int>()
+        var allSuccess = true
+        // 顺序按下修饰键,记录已成功的以便失败时回滚
+        for (mod in activeMods) {
+            if (NativeBridge.sendKeyDown(mod)) {
+                pressedMods.add(mod)
+            } else {
+                allSuccess = false
+                break
+            }
+        }
+        // 仅在修饰键全部下发成功时才发主键,避免发出语义错误的裸键
+        if (allSuccess && !NativeBridge.sendKeyPress(keyCode)) {
+            allSuccess = false
+        }
+        // 逆序抬起已按下的修饰键,避免按键粘住
+        for (mod in pressedMods.asReversed()) {
+            NativeBridge.sendKeyUp(mod)
+        }
+        // 仅在全部成功时清空 stickyMods,失败时保留以允许重试
+        if (allSuccess) {
+            stickyMods.clear()
+        }
     }
 
     @Composable
@@ -975,7 +995,12 @@ fun TouchpadScreen(
                     MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f),
                     RoundedCornerShape(8.dp),
                 )
-                .clickable { NativeBridge.sendKeyCombo(*keyCodes) },
+                .clickable {
+                    NativeBridge.sendKeyCombo(*keyCodes)
+                    // 组合键按钮自带修饰键,发送后清空粘滞状态,
+                    // 避免与后续按键叠加(与 KeyBtn → fireKey 路径行为一致)
+                    stickyMods.clear()
+                },
             contentAlignment = Alignment.Center,
         ) {
             Text(

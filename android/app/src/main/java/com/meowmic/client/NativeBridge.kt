@@ -194,9 +194,17 @@ object NativeBridge {
      */
     fun sendKeyCombo(vararg keyCodes: Int): Boolean {
         if (keyCodes.isEmpty()) return false
-        // 顺序按下
+        // 顺序按下,记录已成功的以便失败时回滚
+        val pressed = mutableListOf<Int>()
         for (kc in keyCodes) {
-            if (!sendKeyDown(kc)) return false
+            if (!sendKeyDown(kc)) {
+                // 失败回滚:逆序抬起已按下的键,避免按键在服务端粘住
+                for (down in pressed.asReversed()) {
+                    sendKeyUp(down)
+                }
+                return false
+            }
+            pressed.add(kc)
         }
         // 逆序抬起
         for (kc in keyCodes.reversedArray()) {
