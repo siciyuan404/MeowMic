@@ -466,6 +466,18 @@ fn reset_pairing(state: State<AppState>) -> Result<String, String> {
     post_pairing_action(base_port, "/pairing/reset")
 }
 
+/// 刷新 PIN:旧 PIN 失效,生成新 PIN(不影响已配对客户端)
+/// 用于多客户端场景:配对完一批设备后刷新 PIN 防止泄露
+#[tauri::command]
+fn refresh_pairing(state: State<AppState>) -> Result<String, String> {
+    let mut svc = state.service.lock().unwrap();
+    if !svc.is_running() {
+        return Err("服务未启动".into());
+    }
+    let base_port = svc.base_port().ok_or("服务未启动")?;
+    post_pairing_action(base_port, "/pairing/refresh")
+}
+
 /// 移除指定公钥的已配对客户端
 #[tauri::command]
 fn unpair_client(state: State<AppState>, pubkey_b64: String) -> Result<String, String> {
@@ -518,6 +530,7 @@ pub fn run() {
             set_mute_speaker,
             get_pairing_state,
             reset_pairing,
+            refresh_pairing,
             unpair_client,
         ])
         .run(tauri::generate_context!())

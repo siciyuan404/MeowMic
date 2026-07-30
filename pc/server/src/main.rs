@@ -560,6 +560,13 @@ async fn run_pairing_server(pairing: Option<Arc<PairingManager>>, addr: SocketAd
                         ("500 Internal Server Error", body)
                     }
                 }
+            } else if method == "POST" && path == "/pairing/refresh" {
+                // 刷新 PIN:旧 PIN 失效,生成新 PIN(不影响已配对客户端)
+                // 用于多客户端场景:配对完一批设备后刷新 PIN 防止泄露
+                let pm = pairing.as_ref().unwrap();
+                let pin = pm.refresh_pin().await;
+                let body = format!(r#"{{"ok":true,"new_pin":"{}"}}"#, pin);
+                ("200 OK", body)
             } else if method == "POST" && path == "/pairing/unpair" {
                 let pm = pairing.as_ref().unwrap();
                 // 解析 pubkey=<b64>

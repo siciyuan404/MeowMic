@@ -745,7 +745,7 @@
                         <div id="pairingPin" class="pairing-pin-value">------</div>
                         <button class="ds-btn ds-btn--secondary" type="button" onclick="refreshPairing()" id="refreshPairingBtn">刷新</button>
                     </div>
-                    <p class="form-hint">手机端首次连接时输入此 PIN 完成配对,配对成功后 PIN 自动失效</p>
+                    <p class="form-hint">手机端首次连接时输入此 PIN 完成配对。PIN 在服务端运行期间持续有效,可配对多台手机;点击"刷新"可使旧 PIN 失效</p>
                 </div>
                 <!-- 已配对设备列表 -->
                 <div class="pairing-clients-block">
@@ -1102,8 +1102,14 @@
         async function refreshPairing() {
             const Tauri = window.__TAURI__;
             try {
+                await Tauri.invoke('refresh_pairing');
                 const state = await Tauri.invoke('get_pairing_state');
                 renderPairingState(state);
+                showError('PIN 已刷新,旧 PIN 失效', true);
+                setTimeout(() => {
+                    const el = document.getElementById('errorMsg');
+                    if (el.textContent === 'PIN 已刷新,旧 PIN 失效') showError('');
+                }, 1500);
             } catch(e) {
                 renderPairingState(null, String(e));
             }
@@ -1133,7 +1139,8 @@
                     lastPairingPin = state.pin;
                 }
             } else {
-                pinEl.textContent = '已配对·无 PIN';
+                // PIN 为 null:服务端未生成 PIN(理论上不会出现,因为启动时 ensure_pin)
+                pinEl.textContent = '未生成';
                 pinEl.classList.add('empty');
                 lastPairingPin = null;
             }

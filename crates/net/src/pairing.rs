@@ -155,6 +155,15 @@ impl PairingManager {
         pin
     }
 
+    /// 强制刷新 PIN(无论当前是否有 PIN,都生成新的)
+    /// 用于 PC 控制台"刷新 PIN"按钮:旧 PIN 失效,正在配对的设备需要重新输入
+    pub async fn refresh_pin(&self) -> String {
+        let mut pin_guard = self.current_pin.lock().await;
+        let pin = format!("{:06}", rand::thread_rng().gen_range(0..1_000_000u32));
+        *pin_guard = Some(pin.clone());
+        pin
+    }
+
     /// 配对成功后清空 PIN(下次配对需要重新生成)
     pub async fn clear_pin(&self) {
         *self.current_pin.lock().await = None;
@@ -249,10 +258,13 @@ impl PairingManager {
             tracing::warn!("配对状态持久化失败: {}", e);
         }
 
-        // 清空 PIN(配对成功后下次需重新生成)
-        *self.current_pin.lock().await = None;
+        // PIN 保持有效,支持多手机用同一 PIN 依次配对
+        // PIN 仅在以下情况清空:
+        //   1. 服务端退出
+        //   2. 用户手动"重置配对"(reset_paired_clients)
+        //   3. 用户手动"刷新 PIN"(通过 /pairing/refresh 端点)
 
-        tracing::info!("客户端配对成功: {}", client_name);
+        tracing::info!("客户端配对成功: {} (PIN 保持有效,可继续配对其他设备)", client_name);
         (true, server_pubkey, String::new())
     }
 
@@ -490,17 +502,17 @@ mod tests {
         let pin = server.ensure_pin().await;
         let nonce = generate_nonce();
 
-        // 模拟客户端
+        // 模拟客户端 1
         let client_path = tmp_dir.join("client-pairing.json");
         let mut client_state = ClientPairingState::load_or_create(&client_path).unwrap();
         let client_pubkey = client_state.pubkey().unwrap();
         let signature = client_state.sign_server_nonce(nonce).unwrap();
 
-        // 客户端发起配对
+        // 客户端 1 发起配对
         let (success, server_pubkey, err) = server
             .handle_pair_request(
                 client_pubkey.to_vec(),
-                "TestClient".into(),
+                "TestClient1".into(),
                 pin.clone(),
                 nonce,
                 signature,
@@ -514,9 +526,9 @@ mod tests {
 
         // 验证 HelloPaired 签名
         let hello_nonce = generate_nonce();
-        let (client_pubkey2, hello_sig) = client_state.sign_paired_hello("TestClient", hello_nonce).unwrap();
+        let (client_pubkey2, hello_sig) = client_state.sign_paired_hello("TestClient1", hello_nonce).unwrap();
         server
-            .verify_paired_hello(&client_pubkey2, "TestClient", hello_nonce, &hello_sig)
+            .verify_paired_hello(&client_pubkey2, "TestClient1", hello_nonce, &hello_sig)
             .await
             .unwrap();
 
@@ -525,6 +537,33 @@ mod tests {
         client_state.save(&client_path).unwrap();
         let reloaded = ClientPairingState::load_or_create(&client_path).unwrap();
         assert_eq!(reloaded.paired_servers.len(), 1);
+
+        // ============ 多客户端配对测试 ============
+        // 同一 PIN 应能继续配对第二个客户端(PIN 保持有效)
+        let client2_path = tmp_dir.join("client2-pairing.json");
+        let client2_state = ClientPairingState::load_or_create(&client2_path).unwrap();
+        let client2_pubkey = client2_state.pubkey().unwrap();
+        let nonce2 = generate_nonce();
+        let signature2 = client2_state.sign_server_nonce(nonce2).unwrap();
+
+        let (success2, _, err2) = server
+            .handle_pair_request(
+                client2_pubkey.to_vec(),
+                "TestClient2".into(),
+                pin.clone(), // 同一个 PIN
+                nonce2,
+                signature2,
+            )
+            .await;
+        assert!(success2, "第二个客户端配对应成功, err={}", err2);
+        assert!(server.is_client_paired(&client2_pubkey).await);
+
+        // 验证白名单中有 2 个客户端
+        let paired = server.paired_clients().await;
+        assert_eq!(paired.len(), 2, "白名单应有 2 个客户端");
+
+        // 验证 PIN 仍可用(未被清空)
+        assert_eq!(server.current_pin().await, Some(pin));
 
         // 清理
         let _ = std::fs::remove_dir_all(&tmp_dir);
