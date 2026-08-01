@@ -1,0 +1,17 @@
+# MeowMic 更新代理 Worker 配置
+#
+# 部署步骤:
+#   1. 安装 Node.js 18+
+#   2. 登录 Cloudflare: `npx wrangler login`
+#   3. 部署: `npx wrangler deploy`
+#   4. 部署完成后会输出 https://meowmic-update-proxy.<your-subdomain>.workers.dev
+#   5. 把该 URL 填入 pc/console/src-tauri/tauri.conf.json 的 updater.endpoints[0]
+#      (替换占位符 https://meowmic-update-proxy.workers.dev)
+#   6. 验证:浏览器访问 https://<your-worker>/latest.json 应返回 JSON
+
+name = "meowmic-update-proxy"
+main = "worker.js"
+compatibility_date = "2024-11-01"
+
+# 免费版足够(每天 10 万次请求),无需付费计划
+# 大文件下载会消耗子请求数,但每个请求仅 1 个子请求,在限额内

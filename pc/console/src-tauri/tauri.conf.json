@@ -45,6 +45,7 @@
     "updater": {
       "active": true,
       "endpoints": [
+        "https://meowmic-update-proxy.siciyuan404.workers.dev/latest.json",
         "https://github.com/siciyuan404/MeowMic/releases/latest/download/latest.json"
       ],
       "dialog": false,

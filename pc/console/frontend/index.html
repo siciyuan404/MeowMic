@@ -716,6 +716,10 @@
         .mm-update-status.success { color: var(--mm-state-success); }
         .mm-update-status.error { color: var(--mm-state-error); }
         .mm-update-status.warning { color: var(--mm-state-warning); }
+        .mm-update-actions {
+            display: flex;
+            gap: 6px;
+        }
 
         .mm-progress-bar {
             display: none;
@@ -1137,10 +1141,16 @@
                             <span class="mm-update-label">检查更新</span>
                             <span class="mm-update-status" id="updateStatusText">尚未检查</span>
                         </div>
-                        <button class="mm-btn mm-btn-secondary" type="button" onclick="checkForUpdate()" id="checkUpdateBtn">
-                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" x2="12" y1="15" y2="3"/></svg>
-                            <span>检查更新</span>
-                        </button>
+                        <div class="mm-update-actions">
+                            <button class="mm-btn mm-btn-secondary" type="button" onclick="checkForUpdate()" id="checkUpdateBtn">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" x2="12" y1="15" y2="3"/></svg>
+                                <span>检查更新</span>
+                            </button>
+                            <button class="mm-btn mm-btn-secondary" type="button" id="manualDownloadBtn" style="display:none;" onclick="openReleasePage()" title="在系统浏览器中打开 Release 页面手动下载">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" x2="21" y1="14" y2="3"/></svg>
+                                <span>浏览器下载</span>
+                            </button>
+                        </div>
                     </div>
                     <div class="mm-progress-bar" id="updateProgress">
                         <div class="mm-progress-fill" id="updateProgressFill"></div>
@@ -1716,6 +1726,7 @@
                     logEl.classList.add('show');
                     // 显示标题栏更新按钮
                     showUpdateButton();
+                    hideManualDownloadBtn();
                     if (!silent) {
                         // 改变按钮为"下载并安装"
                         btn.disabled = false;
@@ -1729,6 +1740,7 @@
                     statusEl.className = 'mm-update-status success';
                     document.getElementById('updateLog').classList.remove('show');
                     hideUpdateButton();
+                    hideManualDownloadBtn();
                     if (!silent) {
                         btn.disabled = false;
                         btn.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" x2="12" y1="15" y2="3"/></svg><span>检查更新</span>';
@@ -1738,6 +1750,7 @@
             } catch(err) {
                 statusEl.textContent = '检查失败: ' + (err.message || err);
                 statusEl.className = 'mm-update-status error';
+                showManualDownloadBtn();
                 if (!silent) {
                     btn.disabled = false;
                     btn.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" x2="12" y1="15" y2="3"/></svg><span>检查更新</span>';
@@ -1816,6 +1829,7 @@
 
                 aboutBtn.style.display = 'none';
                 document.getElementById('installBtn').style.display = 'inline-flex';
+                hideManualDownloadBtn();
                 statusEl.textContent = '安装完成,点击重启以应用更新';
                 statusEl.className = 'mm-update-status success';
 
@@ -1834,13 +1848,14 @@
                 popoverActions.style.display = 'flex';
                 statusEl.textContent = '安装失败: ' + (err.message || err);
                 statusEl.className = 'mm-update-status error';
+                showManualDownloadBtn();
                 aboutBtn.disabled = false;
                 aboutBtn.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" x2="12" y1="15" y2="3"/></svg><span>重试</span>';
                 aboutBtn.onclick = downloadAndInstallUpdate;
                 isUpdateDownloading = false;
                 btn.classList.add('mm-update-available');
                 btn.classList.remove('mm-update-downloading');
-                showToast('更新失败,请重试');
+                showToast('更新失败,可点击「浏览器下载」手动获取');
             }
         }
 
@@ -1851,6 +1866,30 @@
             } catch(err) {
                 showError('重启失败: ' + (err.message || err));
             }
+        }
+
+        // 兜底:在系统浏览器中打开 GitHub Release 页面,供自动更新失败时手动下载
+        // 场景:防火墙导致 latest.json / .nsis.zip 404 或超时
+        async function openReleasePage() {
+            const url = 'https://github.com/siciyuan404/MeowMic/releases/latest';
+            const Tauri = window.__TAURI__;
+            try {
+                if (Tauri && Tauri.shell && Tauri.shell.open) {
+                    await Tauri.shell.open(url);
+                    return;
+                }
+            } catch(e) {
+                console.warn('Tauri.shell.open 失败,降级 window.open:', e);
+            }
+            window.open(url, '_blank', 'noopener');
+        }
+
+        function showManualDownloadBtn() {
+            document.getElementById('manualDownloadBtn').style.display = 'inline-flex';
+        }
+
+        function hideManualDownloadBtn() {
+            document.getElementById('manualDownloadBtn').style.display = 'none';
         }
 
         init();
