@@ -98,7 +98,21 @@ impl ServiceManager {
 
     pub fn is_running(&mut self) -> bool {
         match &mut self.process {
-            Some(p) => matches!(p.try_wait(), Ok(None)),
+            Some(p) => match p.try_wait() {
+                Ok(None) => true,
+                Ok(Some(status)) => {
+                    // server 进程已退出,记录退出码用于诊断
+                    self.status.last_error = Some(format!(
+                        "server 进程已退出(退出码: {})",
+                        status
+                    ));
+                    false
+                }
+                Err(e) => {
+                    self.status.last_error = Some(format!("检查 server 状态失败: {}", e));
+                    false
+                }
+            },
             None => false,
         }
     }
@@ -156,8 +170,10 @@ impl ServiceManager {
             cmd.arg("--output-device").arg(&config.output_device);
         }
 
-        cmd.stdout(Stdio::piped());
-        cmd.stderr(Stdio::piped());
+        // stdout/stderr 用 null 而非 piped:piped 但不读取会导致 4KB 缓冲区填满后
+        // server 的日志写入阻塞,进而无法接受新连接(表现:手机连接超时)
+        cmd.stdout(Stdio::null());
+        cmd.stderr(Stdio::null());
         cmd.stdin(Stdio::null());
 
         // Windows 下隐藏 meowmic-server 子进程的命令行窗口
@@ -536,6 +552,25 @@ fn check_firewall_rule() -> Result<bool, String> {
     }
 }
 
+/// 获取本机所有局域网 IPv4 地址(排除 loopback)
+/// 用于前端显示,让用户知道手机端该输入什么地址
+#[tauri::command]
+fn get_local_ips() -> Result<Vec<String>, String> {
+    let ips = local_ip_address::list_afinet_netifas()
+        .map_err(|e| format!("获取本机 IP 失败: {}", e))?;
+    let result: Vec<String> = ips
+        .into_iter()
+        .filter_map(|(_name, ip)| {
+            if ip.is_ipv4() && !ip.is_loopback() {
+                Some(ip.to_string())
+            } else {
+                None
+            }
+        })
+        .collect();
+    Ok(result)
+}
+
 /// 修复 Windows 防火墙:为 meowmic-server.exe 添加入站放行规则
 /// 通过 PowerShell Start-Process -Verb RunAs 以管理员权限运行(会弹 UAC)
 #[tauri::command]
@@ -618,6 +653,7 @@ pub fn run() {
             unpair_client,
             check_firewall_rule,
             fix_firewall_rule,
+            get_local_ips,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

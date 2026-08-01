@@ -462,6 +462,38 @@
         }
         .mm-firewall-banner .mm-firewall-fix:hover { filter: brightness(1.08); }
         .mm-firewall-banner .mm-firewall-fix:disabled { opacity: 0.6; cursor: wait; }
+        .mm-server-addr {
+            display: none;
+            align-items: center;
+            gap: 8px;
+            background: color-mix(in srgb, var(--mm-state-success, #22c55e) 8%, transparent);
+            border: 1px solid color-mix(in srgb, var(--mm-state-success, #22c55e) 20%, transparent);
+            border-radius: var(--mm-radius-md);
+            padding: 10px 12px;
+            font-size: 12px;
+            line-height: 1.5;
+        }
+        .mm-server-addr.show { display: flex; }
+        .mm-server-addr svg { flex-shrink: 0; color: var(--mm-state-success, #22c55e); }
+        .mm-server-addr .mm-addr-label { color: var(--mm-secondary-foreground); }
+        .mm-server-addr .mm-addr-value {
+            font-family: var(--mm-mono, ui-monospace, "Cascadia Code", "Fira Code", monospace);
+            font-weight: 600;
+            color: var(--mm-foreground);
+            user-select: all;
+            cursor: text;
+        }
+        .mm-server-addr .mm-addr-copy {
+            flex-shrink: 0;
+            background: transparent;
+            border: 1px solid var(--mm-border);
+            border-radius: var(--mm-radius-sm);
+            padding: 2px 8px;
+            font-size: 11px;
+            cursor: pointer;
+            color: var(--mm-secondary-foreground);
+        }
+        .mm-server-addr .mm-addr-copy:hover { background: var(--mm-muted); }
 
         /* ============ Settings + Pairing (Two Column) ============ */
         .mm-two-col {
@@ -1068,6 +1100,12 @@
                     <span class="mm-firewall-text">Windows 防火墙可能拦截了手机连接。手机与 PC 同一局域网却连不上时,点此一键放行 meowmic-server(会弹 UAC 授权)</span>
                     <button class="mm-firewall-fix" type="button" id="firewallFixBtn" onclick="fixFirewall()">一键放行</button>
                 </div>
+                <div id="serverAddrBanner" class="mm-server-addr">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:16px;height:16px;flex-shrink:0;"><path d="M5 12.55a11 11 0 0 1 14.08 0"/><path d="M1.42 9a16 16 0 0 1 21.16 0"/><path d="M8.53 16.11a6 6 0 0 1 6.95 0"/><line x1="12" x2="12.01" y1="20" y2="20"/></svg>
+                    <span class="mm-addr-label">手机请连接:</span>
+                    <span class="mm-addr-value" id="serverAddrValue"></span>
+                    <button class="mm-addr-copy" type="button" onclick="copyServerAddr()">复制</button>
+                </div>
             </section>
         </div>
 
@@ -1483,12 +1521,15 @@
                 }
 
                 if (status.last_error && !status.running) {
-                    // 服务停止时如果有错误,显示在错误区
+                    // server 进程退出时显示退出码,帮助诊断崩溃原因
+                    showError(status.last_error);
                 }
 
                 // 防火墙诊断:服务运行但无连接时,检查防火墙规则(节流 30s)
                 // 场景:Windows 首次运行 meowmic-server 弹窗被关闭/拒绝,端口被静默拦截
                 checkFirewallIfNeeded(status.running, status.connections);
+                // 显示局域网 IP,让用户知道手机端该输入什么地址
+                updateServerAddrBanner(status.running);
             } catch(e) {
                 console.error(e);
             }
@@ -1553,6 +1594,63 @@
             } finally {
                 btn.disabled = false;
                 btn.textContent = oldText;
+            }
+        }
+
+        // ============ Server Address Display ============
+        let cachedLocalIps = null;
+        let lastAddrUpdate = 0;
+
+        async function updateServerAddrBanner(running) {
+            const banner = document.getElementById('serverAddrBanner');
+            if (!running) {
+                banner.classList.remove('show');
+                return;
+            }
+            // 节流 10s 更新一次 IP(IP 不会频繁变化)
+            const now = Date.now();
+            if (cachedLocalIps && now - lastAddrUpdate < 10000) {
+                renderServerAddr(cachedLocalIps);
+                return;
+            }
+            lastAddrUpdate = now;
+            try {
+                const ips = await window.__TAURI__.invoke('get_local_ips');
+                cachedLocalIps = ips;
+                renderServerAddr(ips);
+            } catch(e) {
+                console.warn('获取本机 IP 失败:', e);
+            }
+        }
+
+        function renderServerAddr(ips) {
+            const banner = document.getElementById('serverAddrBanner');
+            const value = document.getElementById('serverAddrValue');
+            if (!ips || ips.length === 0) {
+                banner.classList.remove('show');
+                return;
+            }
+            // 读取当前配置的端口
+            const port = document.getElementById('tcpPort')?.value || '28900';
+            // 如果有多个 IP,用逗号分隔显示
+            const addrs = ips.map(ip => `${ip}:${port}`);
+            value.textContent = addrs.join('  /  ');
+            banner.classList.add('show');
+        }
+
+        async function copyServerAddr() {
+            const value = document.getElementById('serverAddrValue');
+            if (!value.textContent) return;
+            try {
+                await navigator.clipboard.writeText(value.textContent);
+                showToast('已复制: ' + value.textContent);
+            } catch(e) {
+                // 降级:选中文本让用户手动复制
+                const range = document.createRange();
+                range.selectNode(value);
+                window.getSelection().removeAllRanges();
+                window.getSelection().addRange(range);
+                showToast('请 Ctrl+C 复制选中文本');
             }
         }
 
