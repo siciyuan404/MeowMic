@@ -160,6 +160,15 @@ impl ServiceManager {
         cmd.stderr(Stdio::piped());
         cmd.stdin(Stdio::null());
 
+        // Windows 下隐藏 meowmic-server 子进程的命令行窗口
+        // CREATE_NO_WINDOW = 0x08000000,避免控制台程序弹出黑色 cmd 窗口
+        #[cfg(target_os = "windows")]
+        {
+            use std::os::windows::process::CommandExt;
+            const CREATE_NO_WINDOW: u32 = 0x08000000;
+            cmd.creation_flags(CREATE_NO_WINDOW);
+        }
+
         match cmd.spawn() {
             Ok(child) => {
                 self.process = Some(child);
