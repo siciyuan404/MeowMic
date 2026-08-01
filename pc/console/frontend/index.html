@@ -434,6 +434,34 @@
             background: var(--mm-muted);
             color: var(--mm-secondary-foreground);
         }
+        .mm-firewall-banner {
+            display: none;
+            align-items: center;
+            gap: 8px;
+            background: color-mix(in srgb, var(--mm-state-warning) 12%, transparent);
+            color: var(--mm-state-warning);
+            border: 1px solid color-mix(in srgb, var(--mm-state-warning) 30%, transparent);
+            border-radius: var(--mm-radius-md);
+            padding: 10px 12px;
+            font-size: 12px;
+            line-height: 1.5;
+        }
+        .mm-firewall-banner.show { display: flex; }
+        .mm-firewall-banner svg { flex-shrink: 0; }
+        .mm-firewall-banner .mm-firewall-text { flex: 1; min-width: 0; }
+        .mm-firewall-banner .mm-firewall-fix {
+            flex-shrink: 0;
+            background: var(--mm-state-warning);
+            color: #fff;
+            border: none;
+            border-radius: var(--mm-radius-sm);
+            padding: 4px 10px;
+            font-size: 12px;
+            cursor: pointer;
+            white-space: nowrap;
+        }
+        .mm-firewall-banner .mm-firewall-fix:hover { filter: brightness(1.08); }
+        .mm-firewall-banner .mm-firewall-fix:disabled { opacity: 0.6; cursor: wait; }
 
         /* ============ Settings + Pairing (Two Column) ============ */
         .mm-two-col {
@@ -1035,6 +1063,11 @@
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:14px;height:14px;"><circle cx="12" cy="12" r="10"/><line x1="12" x2="12" y1="8" y2="12"/><line x1="12" x2="12.01" y1="16" y2="16"/></svg>
                     <span id="errorMsgText"></span>
                 </div>
+                <div id="firewallBanner" class="mm-firewall-banner">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:16px;height:16px;flex-shrink:0;"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+                    <span class="mm-firewall-text">Windows 防火墙可能拦截了手机连接。手机与 PC 同一局域网却连不上时,点此一键放行 meowmic-server(会弹 UAC 授权)</span>
+                    <button class="mm-firewall-fix" type="button" id="firewallFixBtn" onclick="fixFirewall()">一键放行</button>
+                </div>
             </section>
         </div>
 
@@ -1452,8 +1485,74 @@
                 if (status.last_error && !status.running) {
                     // 服务停止时如果有错误,显示在错误区
                 }
+
+                // 防火墙诊断:服务运行但无连接时,检查防火墙规则(节流 30s)
+                // 场景:Windows 首次运行 meowmic-server 弹窗被关闭/拒绝,端口被静默拦截
+                checkFirewallIfNeeded(status.running, status.connections);
             } catch(e) {
                 console.error(e);
+            }
+        }
+
+        // ============ Firewall Diagnostic ============
+        let lastFirewallCheck = 0;
+        let firewallCheckInProgress = false;
+        let firewallOk = null; // null=未知, true=已配置, false=未配置
+
+        async function checkFirewallIfNeeded(running, connections) {
+            // 服务停止:隐藏 banner,重置状态
+            if (!running) {
+                document.getElementById('firewallBanner').classList.remove('show');
+                firewallOk = null;
+                return;
+            }
+            // 已有连接:防火墙显然没拦,隐藏 banner
+            if (connections > 0) {
+                document.getElementById('firewallBanner').classList.remove('show');
+                firewallOk = true;
+                return;
+            }
+            // 节流:30s 内不重复检查;正在检查中则跳过
+            const now = Date.now();
+            if (now - lastFirewallCheck < 30000) return;
+            if (firewallCheckInProgress) return;
+            lastFirewallCheck = now;
+            firewallCheckInProgress = true;
+            try {
+                const ok = await window.__TAURI__.invoke('check_firewall_rule');
+                firewallOk = ok;
+                // 无连接且防火墙未配置:显示 banner
+                const banner = document.getElementById('firewallBanner');
+                if (!ok) {
+                    banner.classList.add('show');
+                } else {
+                    banner.classList.remove('show');
+                }
+            } catch(e) {
+                console.warn('防火墙检查失败:', e);
+            } finally {
+                firewallCheckInProgress = false;
+            }
+        }
+
+        async function fixFirewall() {
+            const Tauri = window.__TAURI__;
+            const btn = document.getElementById('firewallFixBtn');
+            btn.disabled = true;
+            const oldText = btn.textContent;
+            btn.textContent = '处理中...';
+            try {
+                const msg = await Tauri.invoke('fix_firewall_rule');
+                document.getElementById('firewallBanner').classList.remove('show');
+                firewallOk = true;
+                lastFirewallCheck = 0; // 立即允许下次检查
+                showToast(msg || '防火墙规则已添加');
+            } catch(e) {
+                showError(String(e));
+                showToast('修复失败,请手动在 wf.msc 添加规则');
+            } finally {
+                btn.disabled = false;
+                btn.textContent = oldText;
             }
         }
 

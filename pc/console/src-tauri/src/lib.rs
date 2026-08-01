@@ -516,7 +516,82 @@ fn url_encode(s: &str) -> String {
     out
 }
 
+/// 检查 Windows 防火墙是否已配置 MeowMic Server 入站规则
+/// 返回 true 表示规则已存在(手机可连接),false 表示未配置(可能被拦截)
+#[tauri::command]
+fn check_firewall_rule() -> Result<bool, String> {
+    #[cfg(target_os = "windows")]
+    {
+        let output = Command::new("netsh")
+            .args(["advfirewall", "firewall", "show", "rule", "name=MeowMic Server"])
+            .output()
+            .map_err(|e| format!("执行 netsh 失败: {}", e))?;
+        // netsh show rule 在规则不存在时退出码非 0
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        Ok(output.status.success() && stdout.contains("MeowMic Server"))
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        Ok(true)
+    }
+}
+
+/// 修复 Windows 防火墙:为 meowmic-server.exe 添加入站放行规则
+/// 通过 PowerShell Start-Process -Verb RunAs 以管理员权限运行(会弹 UAC)
+#[tauri::command]
+fn fix_firewall_rule() -> Result<String, String> {
+    #[cfg(target_os = "windows")]
+    {
+        let server_exe = find_server_executable()?;
+        let server_path = server_exe.to_string_lossy().to_string();
+
+        // 写临时 .bat 文件,避免 PowerShell 引号转义问题
+        let bat_path = env::temp_dir().join("meowmic-fix-firewall.bat");
+        let bat_content = format!(
+            "@echo off\r\n\
+             netsh advfirewall firewall delete rule name=\"MeowMic Server\" >nul 2>&1\r\n\
+             netsh advfirewall firewall add rule name=\"MeowMic Server\" dir=in action=allow program=\"{server}\" enable=yes profile=any\r\n\
+             echo OK\r\n",
+            server = server_path
+        );
+        fs::write(&bat_path, bat_content).map_err(|e| format!("写临时 bat 失败: {}", e))?;
+
+        // 用 PowerShell Start-Process -Verb RunAs 提权运行 bat(弹 UAC)
+        let bat_str = bat_path.to_string_lossy().to_string();
+        let ps_cmd = format!(
+            "Start-Process -FilePath '{}' -Verb RunAs -Wait",
+            bat_str
+        );
+        let output = Command::new("powershell")
+            .args(["-NoProfile", "-Command", &ps_cmd])
+            .output()
+            .map_err(|e| {
+                let _ = fs::remove_file(&bat_path);
+                format!("启动 PowerShell 失败: {}", e)
+            })?;
+
+        let _ = fs::remove_file(&bat_path);
+
+        if output.status.success() {
+            Ok("防火墙规则已添加,请重新尝试连接".into())
+        } else {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            let msg = if stderr.is_empty() {
+                "用户取消了 UAC 授权或添加失败".to_string()
+            } else {
+                format!("添加失败: {}", stderr)
+            };
+            Err(msg)
+        }
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        Ok("非 Windows 平台无需配置防火墙".into())
+    }
+}
+
 pub fn run() {
+
     let config = load_config();
     let state = AppState {
         service: std::sync::Mutex::new(ServiceManager::new()),
@@ -541,6 +616,8 @@ pub fn run() {
             reset_pairing,
             refresh_pairing,
             unpair_client,
+            check_firewall_rule,
+            fix_firewall_rule,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
