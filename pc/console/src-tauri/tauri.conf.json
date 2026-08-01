@@ -70,10 +70,10 @@
     "windows": [
       {
         "title": "MeowMic 控制台",
-        "width": 440,
-        "height": 580,
-        "minWidth": 440,
-        "minHeight": 580,
+        "width": 720,
+        "height": 640,
+        "minWidth": 480,
+        "minHeight": 560,
         "resizable": true,
         "fullscreen": false,
         "decorations": false,

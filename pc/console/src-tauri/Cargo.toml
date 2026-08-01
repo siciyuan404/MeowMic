@@ -7,7 +7,7 @@ edition.workspace = true
 tauri-build = { version = "1", features = [] }
 
 [dependencies]
-tauri = { version = "1", features = [ "shell-open",
+tauri = { version = "1", features = [ "app-all", "shell-open",
     "dialog-all",
     "fs-all",
     "path-all",
