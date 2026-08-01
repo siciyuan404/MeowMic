@@ -63,12 +63,7 @@
       "identifier": "com.meowmic.console",
       "resources": [
         "bin/*"
-      ],
-      "windows": {
-        "nsis": {
-          "installerHooks": "installer-hooks.nsh"
-        }
-      }
+      ]
     },
     "security": {
       "csp": null
