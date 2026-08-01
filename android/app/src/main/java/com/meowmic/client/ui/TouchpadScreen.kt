@@ -10,9 +10,11 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.*
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.detectTapGestures
@@ -59,11 +61,20 @@ private const val BTN_MIDDLE = 0x04
 
 // ============ Windows VK code 常量(用于模拟键盘) ============
 private object VK {
-    // 修饰键
+    // 修饰键(通用 code,用于 ComboBtn 预定义组合)
     const val CONTROL = 0x11
     const val SHIFT = 0x10
     const val MENU = 0x12       // Alt
     const val LWIN = 0x5B
+    // 修饰键 L/R 专用 code(借鉴 moonlight-android,用于粘滞/锁定状态)
+    // Windows 对部分快捷键区分左右(如右 Shift 长按=筛选键),用专用 code 行为更精确
+    const val LCONTROL = 0xA2
+    const val RCONTROL = 0xA3
+    const val LSHIFT = 0xA0
+    const val RSHIFT = 0xA1
+    const val LMENU = 0xA4      // Left Alt
+    const val RMENU = 0xA5      // Right Alt
+    const val RWIN = 0x5C
     // 字母
     const val C = 0x43; const val V = 0x56; const val X = 0x58
     const val Z = 0x5A; const val A = 0x41; const val S = 0x53
@@ -918,13 +929,26 @@ fun TouchpadScreen(
         }
     }
 
-    // ============ 键盘面板(快捷键 + 粘滞修饰键) ============
-    // 粘滞修饰键状态:点一下高亮保持,再点普通键时自动组合并清除
-    val stickyMods = remember { mutableStateMapOf<Int, Boolean>() }
+    // ============ 键盘面板(快捷键 + 三态修饰键) ============
+    // 修饰键三态(借鉴 Windows 粘滞键锁定语义):
+    //   0 / 不存在 = 未激活
+    //   1 = 粘滞: 与下一个普通键组合后自动清除(一次性)
+    //   2 = 锁定: 持续生效,连按多个普通键都带此修饰键,再次点击解锁
+    // 锁定模式支持「长按 Ctrl+Win 期间连按 ←/→ 切虚拟桌面」等场景。
+    val stickyMods = remember { mutableStateMapOf<Int, Int>() }
+
+    // 取所有激活(粘滞或锁定)的修饰键,按 VK code 升序固定下发顺序
+    fun activeMods(): List<Int> =
+        stickyMods.entries.filter { it.value > 0 }.map { it.key }.sorted()
+
+    // 清除所有粘滞(1)状态,保留锁定(2)状态
+    fun clearStickyOnly() {
+        val toRemove = stickyMods.entries.filter { it.value == 1 }.map { it.key }
+        for (k in toRemove) stickyMods.remove(k)
+    }
 
     fun fireKey(keyCode: Int) {
-        // 按 VK code 升序固定下发顺序,避免哈希表迭代顺序不确定
-        val activeMods = stickyMods.keys.filter { stickyMods[it] == true }.sorted()
+        val activeMods = activeMods()
         val pressedMods = mutableListOf<Int>()
         var allSuccess = true
         // 顺序按下修饰键,记录已成功的以便失败时回滚
@@ -944,39 +968,64 @@ fun TouchpadScreen(
         for (mod in pressedMods.asReversed()) {
             NativeBridge.sendKeyUp(mod)
         }
-        // 仅在全部成功时清空 stickyMods,失败时保留以允许重试
+        // 仅在全部成功时:清除粘滞态,保留锁定态;失败时全保留以允许重试
         if (allSuccess) {
-            stickyMods.clear()
+            clearStickyOnly()
         }
     }
 
+    @OptIn(ExperimentalFoundationApi::class)
     @Composable
     fun StickyModBtn(label: String, vkCode: Int, modifier: Modifier = Modifier) {
-        val active = stickyMods[vkCode] == true
-        val bgColor = if (active) MaterialTheme.colorScheme.primary
-            else MaterialTheme.colorScheme.surfaceVariant
-        val fgColor = if (active) Color.White
+        // state: 0=未激活, 1=粘滞, 2=锁定
+        val state = stickyMods[vkCode] ?: 0
+        val bgColor = when (state) {
+            2 -> MaterialTheme.colorScheme.tertiary         // 锁定:区别色
+            1 -> MaterialTheme.colorScheme.primary          // 粘滞:主色
+            else -> MaterialTheme.colorScheme.surfaceVariant
+        }
+        val fgColor = if (state > 0) Color.White
             else MaterialTheme.colorScheme.onSurfaceVariant
+        val borderColor = when (state) {
+            2 -> MaterialTheme.colorScheme.tertiary
+            1 -> MaterialTheme.colorScheme.primary
+            else -> MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f)
+        }
         Box(
             modifier = modifier
                 .height(36.dp)
                 .background(bgColor, RoundedCornerShape(8.dp))
                 .border(
                     1.dp,
-                    if (active) MaterialTheme.colorScheme.primary
-                    else MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f),
+                    borderColor,
                     RoundedCornerShape(8.dp),
                 )
-                .clickable {
-                    stickyMods[vkCode] = !(stickyMods[vkCode] ?: false)
-                },
+                .combinedClickable(
+                    onClick = {
+                        // 单击: 未激活→粘滞(1), 粘滞→取消, 锁定→解锁
+                        stickyMods[vkCode] = when (state) {
+                            0 -> 1
+                            1 -> 0
+                            else -> 0
+                        }
+                    },
+                    onDoubleClick = {
+                        // 双击: 进入锁定(2),支持连按多个主键
+                        stickyMods[vkCode] = 2
+                    },
+                    onLongClick = {
+                        // 长按: 清零(取消粘滞或解锁)
+                        stickyMods.remove(vkCode)
+                    },
+                ),
             contentAlignment = Alignment.Center,
         ) {
             Text(
-                label,
+                // 锁定态追加 🔒 视觉提示
+                text = if (state == 2) "$label 🔒" else label,
                 fontSize = 11.sp,
                 color = fgColor,
-                fontWeight = if (active) FontWeight.Bold else FontWeight.Medium,
+                fontWeight = if (state > 0) FontWeight.Bold else FontWeight.Medium,
             )
         }
     }
@@ -997,9 +1046,8 @@ fun TouchpadScreen(
                 )
                 .clickable {
                     NativeBridge.sendKeyCombo(*keyCodes)
-                    // 组合键按钮自带修饰键,发送后清空粘滞状态,
-                    // 避免与后续按键叠加(与 KeyBtn → fireKey 路径行为一致)
-                    stickyMods.clear()
+                    // 组合键按钮自带修饰键,发送后清粘滞(1),保留锁定(2)
+                    clearStickyOnly()
                 },
             contentAlignment = Alignment.Center,
         ) {
@@ -1048,14 +1096,14 @@ fun TouchpadScreen(
             modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp),
             verticalArrangement = Arrangement.spacedBy(6.dp),
         ) {
-            // 第 1 行:粘滞修饰键
+            // 第 1 行:三态修饰键(借鉴 moonlight-android 使用 L/R 专用 VK code)
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(6.dp),
             ) {
-                StickyModBtn("Ctrl", VK.CONTROL, Modifier.weight(1f))
-                StickyModBtn("Shift", VK.SHIFT, Modifier.weight(1f))
-                StickyModBtn("Alt", VK.MENU, Modifier.weight(1f))
+                StickyModBtn("Ctrl", VK.LCONTROL, Modifier.weight(1f))
+                StickyModBtn("Shift", VK.LSHIFT, Modifier.weight(1f))
+                StickyModBtn("Alt", VK.LMENU, Modifier.weight(1f))
                 StickyModBtn("Win", VK.LWIN, Modifier.weight(1f))
             }
             // 第 2 行:常用快捷组合(Ctrl 系列)
