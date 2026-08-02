@@ -46,6 +46,8 @@ pub enum PairingError {
     Ed25519(String),
     #[error("PIN 不正确")]
     BadPin,
+    #[error("PIN 格式非法: {0}")]
+    InvalidPin(String),
     #[error("签名验证失败")]
     BadSignature,
     #[error("已配对客户端数量已达上限({0})")]
@@ -162,6 +164,19 @@ impl PairingManager {
         let pin = format!("{:06}", rand::thread_rng().gen_range(0..1_000_000u32));
         *pin_guard = Some(pin.clone());
         pin
+    }
+
+    /// 设置期望 PIN(反向配对,Sunshine 方向)
+    ///
+    /// 手机端生成并显示 PIN,用户在 PC 控制台输入相同的 PIN;
+    /// 服务端将其作为期望 PIN,客户端随后用该 PIN 发起 PairRequest 即可通过校验。
+    /// 返回 Err 表示 PIN 格式非法(必须 6 位数字)。
+    pub async fn set_expected_pin(&self, pin: &str) -> Result<(), PairingError> {
+        if pin.len() != 6 || !pin.bytes().all(|b| b.is_ascii_digit()) {
+            return Err(PairingError::InvalidPin("PIN 必须为 6 位数字".into()));
+        }
+        *self.current_pin.lock().await = Some(pin.to_string());
+        Ok(())
     }
 
     /// 配对成功后清空 PIN(下次配对需要重新生成)

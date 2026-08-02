@@ -45,8 +45,10 @@ object NativeBridge {
 
     /**
      * 完成配对(用户输入 PIN 后调用)
-     * @param pin 用户输入的 PIN
-     * @return 0=失败, 1=配对成功并已连接
+     * @param pin 用户输入的 PIN(正向:PC 控制台显示的 PIN;反向:本机生成并显示的 PIN)
+     * @return 0=失败(连接已坏,需重新连接), 1=配对成功并已连接,
+     *         6=配对被拒绝(PIN 错误等,可用新 PIN 重试),
+     *         7=等待响应超时(可重试)
      */
     external fun nativeCompletePairing(pin: String): Int
 

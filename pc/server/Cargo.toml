@@ -18,6 +18,7 @@ tracing-subscriber = { workspace = true }
 anyhow = { workspace = true }
 clap = { version = "4", features = ["derive"] }
 gethostname = "0.5"
+mac_address = "1"
 
 # Windows 触控注入 + 音频播放 + 本地 IP(P0 阶段仅支持 Windows)
 [target.'cfg(windows)'.dependencies]

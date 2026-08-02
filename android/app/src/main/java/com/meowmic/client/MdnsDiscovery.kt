@@ -44,6 +44,7 @@ enum class ServerStatus {
  * @param pubkey      服务端 Ed25519 公钥 base64(身份标识,类 Sunshine uniqueid;
  *                    来自 mDNS TXT 的 pk 字段或 /serverinfo 探测,可能为空=未知)
  * @param paired      本客户端是否已配对该服务端;null=未知(服务端未返回 pair_status)
+ * @param mac         服务端网卡 MAC 地址列表(来自 /serverinfo,供 Wake-on-LAN)
  */
 data class DiscoveredServer(
     val serviceName: String,
@@ -53,6 +54,7 @@ data class DiscoveredServer(
     val status: ServerStatus = ServerStatus.UNKNOWN,
     val pubkey: String = "",
     val paired: Boolean? = null,
+    val mac: List<String> = emptyList(),
 ) {
     /** 完整连接地址,形如 "192.168.1.100:28900",可直接传给 [MeowMicViewModel.connect] */
     val addrString: String get() = "$host:$port"
@@ -289,6 +291,7 @@ class MdnsDiscovery(
                     name = result.name.takeIf { it.isNotBlank() } ?: current.name,
                     pubkey = result.serverPubkeyB64.takeIf { it.isNotBlank() } ?: current.pubkey,
                     paired = result.pairStatus ?: current.paired,
+                    mac = result.mac.ifEmpty { current.mac },
                 )
             } else {
                 val count = failureCount

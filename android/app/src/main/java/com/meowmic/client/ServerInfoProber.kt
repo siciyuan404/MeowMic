@@ -30,6 +30,7 @@ object ServerInfoProber {
      * @param uptimeSecs       服务端启动时长
      * @param serverPubkeyB64  服务端 Ed25519 公钥(身份标识,类 Sunshine uniqueid)
      * @param pairStatus       客户端是否已配对;null=服务端未返回(旧版本或未带 pubkey 查询)
+     * @param mac              服务端网卡 MAC 地址列表(供 Wake-on-LAN;旧版本服务端无此字段=空)
      */
     data class ServerInfoResult(
         val name: String,
@@ -41,6 +42,7 @@ object ServerInfoProber {
         val uptimeSecs: Long,
         val serverPubkeyB64: String,
         val pairStatus: Boolean?,
+        val mac: List<String> = emptyList(),
     )
 
     /**
@@ -101,6 +103,11 @@ object ServerInfoProber {
                 serverPubkeyB64 = json.optString("server_pubkey_b64", ""),
                 // 字段存在与否比 true/false 更重要:老版本服务端不返回该字段
                 pairStatus = if (json.has("pair_status")) json.optBoolean("pair_status") else null,
+                mac = json.optJSONArray("macs")?.let { arr ->
+                    (0 until arr.length())
+                        .map { arr.optString(it) }
+                        .filter { it.isNotBlank() }
+                } ?: emptyList(),
             )
         } catch (e: Exception) {
             Log.w(TAG, "解析 serverinfo 失败: ${e.message}")

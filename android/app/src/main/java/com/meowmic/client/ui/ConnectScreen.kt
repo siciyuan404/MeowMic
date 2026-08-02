@@ -30,6 +30,7 @@ import androidx.core.content.ContextCompat
 import com.meowmic.client.ConnectionState
 import com.meowmic.client.MeowMicViewModel
 import com.meowmic.client.NativeBridge
+import com.meowmic.client.PairingMode
 import com.meowmic.client.PcEntry
 import com.meowmic.client.ServerStatus
 import com.meowmic.client.UpdateState
@@ -48,6 +49,7 @@ fun ConnectScreen(
     val pcList by vm.pcList.collectAsState()
     val pairingRequired by vm.pairingRequired.collectAsState()
     val pairingSubmitting by vm.pairingSubmitting.collectAsState()
+    val wolFeedback by vm.wolFeedback.collectAsState()
 
     // 默认地址:优先用上次输入的,其次用历史第一条,最后留空(由用户输入或点选列表)
     var serverAddr by remember {
@@ -85,6 +87,14 @@ fun ConnectScreen(
     LaunchedEffect(connectionState) {
         if (connectionState is ConnectionState.Connected) {
             onConnected()
+        }
+    }
+
+    // WoL 唤醒结果一次性提示
+    LaunchedEffect(wolFeedback) {
+        wolFeedback?.let {
+            android.widget.Toast.makeText(context, it, android.widget.Toast.LENGTH_LONG).show()
+            vm.clearWolFeedback()
         }
     }
 
@@ -137,6 +147,7 @@ fun ConnectScreen(
                     vm.connectPc(entry, clientName)
                 },
                 onRemove = { entry -> vm.removeManualPc(entry.id) },
+                onWake = { entry -> vm.wakePc(entry) },
             )
             Spacer(Modifier.height(20.dp))
 
@@ -324,12 +335,17 @@ fun ConnectScreen(
     )
     }
 
-    // 配对 PIN 输入对话框
+    // 配对对话框(正向输入 / 反向显示双模式)
     pairingRequired?.let { state ->
-        PinInputDialog(
+        PinPairingDialog(
             serverAddr = state.serverAddr,
+            mode = state.mode,
+            reversePin = state.reversePin,
+            errorMessage = state.errorMessage,
             submitting = pairingSubmitting,
             onSubmit = { pin -> vm.completePairing(pin) },
+            onSwitchToReverse = { vm.startReversePairing() },
+            onSwitchToForward = { vm.backToForwardPairing() },
             onDismiss = { vm.cancelPairing() },
         )
     }
@@ -341,7 +357,8 @@ fun ConnectScreen(
  * 状态视觉:
  * - ONLINE:  绿色圆点 + "在线",正常可点
  * - UNKNOWN: 灰色圆点 + "检测中...",正常可点
- * - OFFLINE: 红色圆点 + "离线",整行 alpha 降低,仍可点(用户可手动重试)
+ * - OFFLINE: 红色圆点 + "离线",整行 alpha 降低,仍可点(用户可手动重试);
+ *   若已知 MAC(此前 serverinfo 收集),额外显示"唤醒"按钮(Wake-on-LAN)
  * - 配对徽标:绿色"已配对" / 橙色"未配对" / 未知不显示
  * - 手动添加的条目右侧显示删除按钮
  */
@@ -351,6 +368,7 @@ private fun PcListView(
     isConnecting: Boolean,
     onPick: (PcEntry) -> Unit,
     onRemove: (PcEntry) -> Unit,
+    onWake: (PcEntry) -> Unit,
 ) {
     Card(
         colors = CardDefaults.cardColors(
@@ -409,6 +427,21 @@ private fun PcListView(
                             fontSize = 12.sp,
                             color = MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = 0.7f * rowAlpha),
                         )
+                    }
+                    // OFFLINE 且已知 MAC:显示 WoL 唤醒按钮(整行点击仍是重连)
+                    if (entry.status == ServerStatus.OFFLINE && entry.mac.isNotEmpty()) {
+                        Text(
+                            text = "唤醒",
+                            fontSize = 12.sp,
+                            color = MaterialTheme.colorScheme.primary,
+                            fontWeight = FontWeight.Medium,
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(6.dp))
+                                .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.12f))
+                                .clickable(enabled = !isConnecting) { onWake(entry) }
+                                .padding(horizontal = 10.dp, vertical = 5.dp),
+                        )
+                        Spacer(Modifier.width(10.dp))
                     }
                     if (entry.manual) {
                         Icon(
@@ -596,25 +629,30 @@ private fun UpdatePanel(vm: MeowMicViewModel, modifier: Modifier = Modifier) {
 }
 
 /**
- * 配对 PIN 输入对话框
+ * 配对 PIN 对话框(双模式,借鉴 Sunshine 双向配对)
  *
- * 在首次连接未配对时弹出,用户输入 PC 端显示的 PIN 完成配对。
+ * - ENTER_PIN(正向,NVIDIA 方向):PC 控制台显示 PIN,手机端输入后提交
+ * - SHOW_PIN(反向,Sunshine 方向):手机生成并显示 PIN,用户在 PC 控制台输入;
+ *   手机后台自动重试提交,PC 确认后自动完成配对
+ *
  * 配对成功后,客户端会持久化服务端公钥,后续连接自动用 HelloPaired 跳过此对话框。
  */
 @Composable
-private fun PinInputDialog(
+private fun PinPairingDialog(
     serverAddr: String,
+    mode: PairingMode,
+    reversePin: String?,
+    errorMessage: String?,
     submitting: Boolean,
     onSubmit: (String) -> Unit,
+    onSwitchToReverse: () -> Unit,
+    onSwitchToForward: () -> Unit,
     onDismiss: () -> Unit,
 ) {
-    var pin by remember { mutableStateOf("") }
-    val isError = pin.isNotEmpty() && pin.length != 6
-
     AlertDialog(
         onDismissRequest = {
-            // 提交中不允许点外部关闭,避免状态错乱
-            if (!submitting) onDismiss()
+            // 正向提交中不允许点外部关闭,避免状态错乱;反向模式随时可关
+            if (mode == PairingMode.SHOW_PIN || !submitting) onDismiss()
         },
         title = {
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -635,62 +673,137 @@ private fun PinInputDialog(
                     fontSize = 13.sp,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
-                Spacer(Modifier.height(4.dp))
-                Text(
-                    "请在 PC 端控制台「设备配对」面板查看 6 位 PIN",
-                    fontSize = 12.sp,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
                 Spacer(Modifier.height(12.dp))
-                OutlinedTextField(
-                    value = pin,
-                    onValueChange = { value ->
-                        // 只允许数字,最多 6 位
-                        pin = value.filter { it.isDigit() }.take(6)
-                    },
-                    label = { Text("PIN") },
-                    singleLine = true,
-                    isError = isError,
-                    supportingText = {
-                        if (isError) {
-                            Text("PIN 为 6 位数字")
-                        } else {
-                            Text("6 位数字")
-                        }
-                    },
-                    keyboardOptions = KeyboardOptions(
-                        keyboardType = KeyboardType.NumberPassword,
-                    ),
-                    enabled = !submitting,
-                    modifier = Modifier.fillMaxWidth(),
-                )
+
+                if (mode == PairingMode.ENTER_PIN) {
+                    ForwardPinContent(
+                        errorMessage = errorMessage,
+                        submitting = submitting,
+                        onSubmit = onSubmit,
+                    )
+                } else {
+                    ReversePinContent(reversePin = reversePin ?: "------")
+                }
             }
         },
         confirmButton = {
-            Button(
-                onClick = { onSubmit(pin) },
-                enabled = !submitting && pin.length == 6,
-            ) {
-                if (submitting) {
-                    CircularProgressIndicator(
-                        modifier = Modifier.size(16.dp),
-                        strokeWidth = 2.dp,
-                        color = MaterialTheme.colorScheme.onPrimary,
-                    )
-                    Spacer(Modifier.width(8.dp))
-                    Text("配对中...")
-                } else {
-                    Text("配对")
-                }
+            // 模式切换入口(提交按钮内嵌在 ForwardPinContent 中,
+            // 因为 PIN 输入状态在子组件内;反向模式无需提交按钮)
+            TextButton(onClick = if (mode == PairingMode.ENTER_PIN) onSwitchToReverse else onSwitchToForward) {
+                Text(
+                    if (mode == PairingMode.ENTER_PIN) "让 PC 输入手机上的 PIN"
+                    else "改为输入 PC 上的 PIN",
+                    fontSize = 12.sp,
+                )
             }
         },
         dismissButton = {
             TextButton(
                 onClick = onDismiss,
-                enabled = !submitting,
+                enabled = mode == PairingMode.SHOW_PIN || !submitting,
             ) {
                 Text("取消")
             }
         },
     )
+}
+
+/** 正向配对内容:PIN 输入框 + 错误提示 + 提交按钮 */
+@Composable
+private fun ForwardPinContent(
+    errorMessage: String?,
+    submitting: Boolean,
+    onSubmit: (String) -> Unit,
+) {
+    var pin by remember { mutableStateOf("") }
+    val isError = pin.isNotEmpty() && pin.length != 6
+
+    Text(
+        "请在 PC 端控制台「设备配对」面板查看 6 位 PIN",
+        fontSize = 12.sp,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
+    Spacer(Modifier.height(12.dp))
+    OutlinedTextField(
+        value = pin,
+        onValueChange = { value ->
+            // 只允许数字,最多 6 位
+            pin = value.filter { it.isDigit() }.take(6)
+        },
+        label = { Text("PIN") },
+        singleLine = true,
+        isError = isError || errorMessage != null,
+        supportingText = {
+            when {
+                errorMessage != null -> Text(
+                    errorMessage,
+                    color = MaterialTheme.colorScheme.error,
+                )
+                isError -> Text("PIN 为 6 位数字")
+                else -> Text("6 位数字")
+            }
+        },
+        keyboardOptions = KeyboardOptions(
+            keyboardType = KeyboardType.NumberPassword,
+        ),
+        enabled = !submitting,
+        modifier = Modifier.fillMaxWidth(),
+    )
+    Spacer(Modifier.height(8.dp))
+    Button(
+        onClick = { onSubmit(pin) },
+        enabled = !submitting && pin.length == 6,
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        if (submitting) {
+            CircularProgressIndicator(
+                modifier = Modifier.size(16.dp),
+                strokeWidth = 2.dp,
+                color = MaterialTheme.colorScheme.onPrimary,
+            )
+            Spacer(Modifier.width(8.dp))
+            Text("配对中...")
+        } else {
+            Text("配对")
+        }
+    }
+}
+
+/** 反向配对内容:大字号显示本机 PIN + 等待确认动画 */
+@Composable
+private fun ReversePinContent(reversePin: String) {
+    Text(
+        "请在 PC 端控制台「设备配对」面板的「反向配对」输入框中输入:",
+        fontSize = 12.sp,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
+    Spacer(Modifier.height(16.dp))
+    // 3+3 分组显示,方便在 PC 侧对照输入
+    val grouped = reversePin.take(3) + " " + reversePin.drop(3)
+    Text(
+        text = grouped,
+        fontSize = 40.sp,
+        fontWeight = FontWeight.Bold,
+        letterSpacing = 4.sp,
+        color = MaterialTheme.colorScheme.primary,
+        modifier = Modifier.fillMaxWidth(),
+        textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+    )
+    Spacer(Modifier.height(16.dp))
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.Center,
+    ) {
+        CircularProgressIndicator(
+            modifier = Modifier.size(14.dp),
+            strokeWidth = 2.dp,
+        )
+        Spacer(Modifier.width(8.dp))
+        Text(
+            "等待 PC 确认…(自动重试中)",
+            fontSize = 12.sp,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
 }

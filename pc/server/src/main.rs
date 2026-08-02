@@ -432,6 +432,23 @@ fn url_decode(s: &str) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
+/// 收集本机所有网卡的 MAC 地址(去重、去全零),供 /serverinfo 暴露给客户端做 WoL
+fn local_mac_addresses() -> Vec<String> {
+    let mut macs: Vec<String> = match mac_address::MacAddressIterator::new() {
+        Ok(iter) => iter
+            .map(|m| m.to_string().to_uppercase())
+            .filter(|m| m != "00:00:00:00:00:00")
+            .collect(),
+        Err(e) => {
+            tracing::warn!("枚举 MAC 地址失败: {}", e);
+            Vec::new()
+        }
+    };
+    macs.sort();
+    macs.dedup();
+    macs
+}
+
 /// HTTP /serverinfo 服务:监听 0.0.0.0:port,GET /serverinfo 返回服务端状态 JSON
 ///
 /// 供手机端 mDNS 发现后做三态轮询(UNKNOWN/ONLINE/OFFLINE)。
@@ -448,6 +465,7 @@ fn url_decode(s: &str) -> String {
 /// - server_pubkey_b64:服务端 Ed25519 公钥(32 字节 base64,用于配对流程身份识别)
 /// - pair_status(可选):仅当 URL 带 `?pubkey=<客户端公钥base64>` 时返回,
 ///   表示该客户端是否已配对(参考 Sunshine 的 PairStatus)
+/// - macs:本机所有网卡 MAC 地址(客户端保存用于 Wake-on-LAN)
 async fn run_serverinfo_server(
     stats: Arc<Mutex<stats::Stats>>,
     hostname: String,
@@ -505,14 +523,22 @@ async fn run_serverinfo_server(
                     }
                     _ => String::new(),
                 };
+                // 本机所有 MAC 地址(供客户端 Wake-on-LAN 使用;
+                // 多网卡时不区分主次,客户端全部尝试,错误 MAC 的幻包无害)
+                let macs_json = local_mac_addresses()
+                    .iter()
+                    .map(|m| format!("\"{}\"", m))
+                    .collect::<Vec<_>>()
+                    .join(",");
                 // JSON 字段顺序稳定(便于客户端解析)
                 let body = format!(
-                    r#"{{"name":"MeowMic-Server","hostname":"{}","version":{},"state":"ONLINE","connected_clients":{},"max_clients":1,"uptime_secs":{},"server_pubkey_b64":"{}"{}}}"#,
+                    r#"{{"name":"MeowMic-Server","hostname":"{}","version":{},"state":"ONLINE","connected_clients":{},"max_clients":1,"uptime_secs":{},"server_pubkey_b64":"{}","macs":[{}]{}}}"#,
                     hostname,
                     meowmic_net::PROTOCOL_VERSION,
                     connected,
                     uptime,
                     pubkey_b64,
+                    macs_json,
                     pair_status_field,
                 );
                 ("200 OK", body)
@@ -622,6 +648,21 @@ async fn run_pairing_server(pairing: Option<Arc<PairingManager>>, addr: SocketAd
                 let pin = pm.refresh_pin().await;
                 let body = format!(r#"{{"ok":true,"new_pin":"{}"}}"#, pin);
                 ("200 OK", body)
+            } else if method == "POST" && path == "/pairing/expect" {
+                // 反向配对(Sunshine 方向):手机端显示 PIN,用户在 PC 控制台输入
+                // 服务端把该 PIN 设为期望值,客户端随后用其发起 PairRequest
+                let pm = pairing.as_ref().unwrap();
+                let pin = extract_query_param(query, "pin").unwrap_or_default();
+                match pm.set_expected_pin(&pin).await {
+                    Ok(()) => {
+                        info!("反向配对:已设置期望 PIN(来自 PC 控制台输入)");
+                        ("200 OK", r#"{"ok":true}"#.to_string())
+                    }
+                    Err(e) => {
+                        let body = format!(r#"{{"ok":false,"error":"{}"}}"#, e);
+                        ("400 Bad Request", body)
+                    }
+                }
             } else if method == "POST" && path == "/pairing/unpair" {
                 let pm = pairing.as_ref().unwrap();
                 // 解析 pubkey=<b64>

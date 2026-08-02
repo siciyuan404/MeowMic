@@ -375,7 +375,13 @@ fn reconnect_paired(
 }
 
 /// Java: int nativeCompletePairing(String pin)
-/// 返回值: 0=失败, 1=配对成功并已连接
+/// 返回值: 0=失败(连接已坏或无 pending,需重新连接), 1=配对成功并已连接,
+///         6=配对被拒绝(PIN 错误等,pending 已恢复,可换 PIN 重试),
+///         7=等待响应超时/通道关闭(pending 已恢复,可重试)
+///
+/// 反向 PIN(Sunshine 方向)依赖 6/7 的可重试语义:
+/// 手机显示自己生成的 PIN,用户在 PC 控制台输入;手机按固定间隔用同一连接
+/// 重复调用本函数,直到 PC 侧设置期望 PIN 后配对通过。
 #[no_mangle]
 pub extern "system" fn Java_com_meowmic_client_NativeBridge_nativeCompletePairing(
     mut env: JNIEnv,
@@ -388,7 +394,8 @@ pub extern "system" fn Java_com_meowmic_client_NativeBridge_nativeCompletePairin
         Err(_) => return 0,
     };
 
-    // 取出 pending 配对状态(解构获取所有字段的所有权)
+    // 取出 pending 配对状态;失败分支视情况放回,支持输错 PIN 后重试
+    // (服务端在配对失败后保持连接与 nonce,同一连接可重发 PairRequest)
     let pending = {
         let mut guard = pending_pairing().lock().unwrap();
         match guard.take() {
@@ -407,18 +414,36 @@ pub extern "system" fn Java_com_meowmic_client_NativeBridge_nativeCompletePairin
         rt,
         client,
         mut event_rx,
-        server_pubkey: _,
+        server_pubkey,
         server_nonce,
         client_state,
         server_addr,
         client_name,
     } = pending;
 
+    // 把 pending 状态放回全局,允许 Kotlin 用新 PIN 重试
+    macro_rules! restore_pending {
+        () => {{
+            let mut guard = pending_pairing().lock().unwrap();
+            *guard = Some(PendingPairing {
+                rt,
+                client,
+                event_rx,
+                server_pubkey,
+                server_nonce,
+                client_state,
+                server_addr,
+                client_name,
+            });
+        }};
+    }
+
     // 1. 用客户端私钥签名 server_nonce
     let client_pubkey = match client_state.pubkey() {
         Ok(p) => p,
         Err(e) => {
             log::error!("获取客户端公钥失败: {}", e);
+            restore_pending!();
             return 0;
         }
     };
@@ -426,6 +451,7 @@ pub extern "system" fn Java_com_meowmic_client_NativeBridge_nativeCompletePairin
         Ok(s) => s,
         Err(e) => {
             log::error!("签名 server_nonce 失败: {}", e);
+            restore_pending!();
             return 0;
         }
     };
@@ -441,7 +467,8 @@ pub extern "system" fn Java_com_meowmic_client_NativeBridge_nativeCompletePairin
         ),
     );
     if let Err(e) = send_result {
-        log::error!("发送 PairRequest 失败: {}", e);
+        // TCP 写失败 = 连接已坏,重试无意义,不恢复 pending(Kotlin 需重新连接)
+        log::error!("发送 PairRequest 失败(连接已断开): {}", e);
         return 0;
     }
 
@@ -469,19 +496,26 @@ pub extern "system" fn Java_com_meowmic_client_NativeBridge_nativeCompletePairin
         }
     });
 
-    let (success, server_pubkey, error_msg) = match response {
+    let (success, resp_server_pubkey, error_msg) = match response {
         Some(t) => t,
-        None => return 0,
+        None => {
+            // 超时/通道关闭:连接可能仍活着(后台 sync_loop 还在),恢复 pending 允许重试
+            log::warn!("等待 PairResponse 超时/通道关闭,恢复 pending 允许重试");
+            restore_pending!();
+            return 7;
+        }
     };
 
     if !success {
-        log::warn!("配对失败: {}", error_msg);
-        return 0;
+        // PIN 错误等服务端拒绝:连接与 nonce 保留,恢复 pending 允许换 PIN 重试
+        log::warn!("配对被拒绝: {} (恢复 pending 允许重试)", error_msg);
+        restore_pending!();
+        return 6;
     }
     log::info!("配对成功!");
 
-    // 4. 保存 server_pubkey 到客户端配对状态
-    let server_pubkey_b64 = base64::engine::general_purpose::STANDARD.encode(&server_pubkey);
+    // 4. 保存 server_pubkey 到客户端配对状态(优先用响应里的,与 PairRequired 阶段的一致)
+    let server_pubkey_b64 = base64::engine::general_purpose::STANDARD.encode(&resp_server_pubkey);
     let mut new_client_state = client_state.clone();
     new_client_state.add_paired_server(server_pubkey_b64);
     save_client_pairing_state(&new_client_state);

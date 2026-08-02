@@ -517,6 +517,21 @@ fn unpair_client(state: State<AppState>, pubkey_b64: String) -> Result<String, S
     post_pairing_action(base_port, &path)
 }
 
+/// 反向配对(Sunshine 方向):把手机端显示的 PIN 设为服务端期望 PIN
+/// 手机端随后用该 PIN 发起 PairRequest 即可通过校验
+#[tauri::command]
+fn submit_pair_pin(state: State<AppState>, pin: String) -> Result<String, String> {
+    let mut svc = state.service.lock().unwrap();
+    if !svc.is_running() {
+        return Err("服务未启动".into());
+    }
+    let base_port = svc.base_port().ok_or("服务未启动")?;
+    if pin.len() != 6 || !pin.bytes().all(|b| b.is_ascii_digit()) {
+        return Err("PIN 必须为 6 位数字".into());
+    }
+    post_pairing_action(base_port, &format!("/pairing/expect?pin={}", pin))
+}
+
 /// 简易 URL 编码(仅处理 base64 中可能出现的特殊字符 + / =)
 fn url_encode(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
@@ -651,6 +666,7 @@ pub fn run() {
             reset_pairing,
             refresh_pairing,
             unpair_client,
+            submit_pair_pin,
             check_firewall_rule,
             fix_firewall_rule,
             get_local_ips,

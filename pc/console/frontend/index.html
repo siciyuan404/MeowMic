@@ -1356,6 +1356,17 @@
                         </div>
                         <p class="mm-field-hint">手机端首次连接时输入此 PIN 完成配对。PIN 在服务端运行期间持续有效,可配对多台手机;点击"刷新"可使旧 PIN 失效</p>
                     </div>
+                    <div class="mm-pin-block">
+                        <label class="mm-field-label">反向配对(在手机端查看 PIN,在此输入)</label>
+                        <div class="mm-pin-row">
+                            <input id="reversePinInput" class="mm-input" type="text" inputmode="numeric" maxlength="6" placeholder="6 位数字 PIN" style="flex:1;letter-spacing:4px;font-weight:600;">
+                            <button class="mm-btn mm-btn-secondary mm-btn-sm" type="button" onclick="submitReversePin()" id="reversePinBtn">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>
+                                <span>提交</span>
+                            </button>
+                        </div>
+                        <p class="mm-field-hint">手机端配对对话框选择"在 PC 上输入"时会显示一个 PIN;在此提交后手机端自动完成配对</p>
+                    </div>
                     <div class="mm-paired-section">
                         <div class="mm-paired-header">
                             <span class="mm-paired-title">已配对设备</span>
@@ -1950,6 +1961,25 @@
                 showToast('PIN 已刷新,旧 PIN 失效');
             } catch(e) {
                 renderPairingState(null, String(e));
+            }
+        }
+
+        // 反向配对(Sunshine 方向):把手机端显示的 PIN 设为服务端期望 PIN
+        async function submitReversePin() {
+            const Tauri = window.__TAURI__;
+            const input = document.getElementById('reversePinInput');
+            const pin = (input.value || '').trim();
+            if (!/^\d{6}$/.test(pin)) {
+                showToast('请输入 6 位数字 PIN');
+                input.focus();
+                return;
+            }
+            try {
+                await Tauri.invoke('submit_pair_pin', { pin });
+                input.value = '';
+                showToast('已提交,等待手机端完成配对');
+            } catch(e) {
+                showToast('提交失败: ' + String(e));
             }
         }
 

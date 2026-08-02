@@ -25,12 +25,27 @@ sealed class ConnectionState {
 }
 
 /**
+ * 配对方向(借鉴 Sunshine:两个方向并存,用户任选)
+ */
+enum class PairingMode {
+    /** 正向(NVIDIA 方向):PC 控制台显示 PIN,手机端输入 */
+    ENTER_PIN,
+    /** 反向(Sunshine 方向):手机生成并显示 PIN,在 PC 控制台输入 */
+    SHOW_PIN,
+}
+
+/**
  * 配对所需状态:nativeConnect 返回 2 时进入此状态,
- * UI 弹出 PIN 输入对话框,用户输入后调用 completePairing。
+ * UI 弹出 PIN 对话框,用户输入(或反向展示)后完成配对。
  */
 data class PairingRequiredState(
     val serverAddr: String,
     val clientName: String,
+    val mode: PairingMode = PairingMode.ENTER_PIN,
+    /** SHOW_PIN 模式下本机生成的 6 位 PIN(显示给用户,后台自动重试提交) */
+    val reversePin: String? = null,
+    /** 上一次配对失败的原因(如 PIN 错误),供对话框提示 */
+    val errorMessage: String? = null,
 )
 
 /**
@@ -45,6 +60,7 @@ data class PairingRequiredState(
  * @param status    在线状态(UNKNOWN/ONLINE/OFFLINE)
  * @param paired    本客户端是否已配对;null=未知
  * @param manual    true=用户手动添加(持久化);false=mDNS 发现
+ * @param mac       服务端网卡 MAC 地址列表(来自 /serverinfo,供 Wake-on-LAN)
  */
 data class PcEntry(
     val id: String,
@@ -53,6 +69,7 @@ data class PcEntry(
     val status: ServerStatus,
     val paired: Boolean?,
     val manual: Boolean,
+    val mac: List<String> = emptyList(),
 ) {
     /** 首选连接地址 */
     val primaryAddr: String get() = addresses.first()
@@ -104,6 +121,11 @@ class MeowMicViewModel : ViewModel() {
         /** 手动 PC 轮询间隔(与 mDNS 轮询一致) */
         private const val MANUAL_POLL_INTERVAL_MS = 3000L
 
+        /** 反向配对:自动重试间隔(PC 侧输入 PIN 需要时间) */
+        private const val REVERSE_PAIRING_RETRY_MS = 3000L
+        /** 反向配对:总等待时长(超时后切回正向输入) */
+        private const val REVERSE_PAIRING_TIMEOUT_MS = 120_000L
+
         // 音频面板
         private const val KEY_AUDIO_HISTORY = "audio_history"
         private const val KEY_QUICK_SLOTS = "quick_slots"
@@ -120,6 +142,13 @@ class MeowMicViewModel : ViewModel() {
 
     private val _pairingSubmitting = MutableStateFlow(false)
     val pairingSubmitting: StateFlow<Boolean> = _pairingSubmitting.asStateFlow()
+
+    /** 反向配对自动重试协程(SHOW_PIN 模式下运行) */
+    private var reversePairingJob: Job? = null
+
+    /** WoL 唤醒结果反馈(一次性消息,UI 提示后清除) */
+    private val _wolFeedback = MutableStateFlow<String?>(null)
+    val wolFeedback: StateFlow<String?> = _wolFeedback.asStateFlow()
 
     private val _stats = MutableStateFlow("暂无数据")
     val stats: StateFlow<String> = _stats.asStateFlow()
@@ -203,6 +232,53 @@ class MeowMicViewModel : ViewModel() {
         }
         // 手动 PC 轮询(与 mDNS 三态轮询同权)
         startManualPolling()
+
+        // 自动重连上次 PC(借鉴 Moonlight 启动重连;仅 Disconnected 时触发一次)
+        autoReconnectLastPc()
+    }
+
+    /**
+     * 启动时自动重连上次成功连接的地址(借鉴 Moonlight)。
+     *
+     * 静默语义:失败只回 Disconnected,不弹错误——列表轮询会如实显示 PC 状态,
+     * 用户可手动再连。旋转屏幕等重建场景下 ViewModel 复用、连接仍在,不会重复触发。
+     */
+    private fun autoReconnectLastPc() {
+        if (_connectionState.value != ConnectionState.Disconnected) return
+        val addr = _lastAddr.value.takeIf { it.isNotBlank() } ?: return
+        if (normalizeAddress(addr) == null) return
+
+        Log.i(TAG, "自动重连上次 PC: $addr")
+        _connectionState.value = ConnectionState.Connecting
+        viewModelScope.launch(Dispatchers.IO) {
+            if (!NativeBridge.isLoaded()) {
+                _connectionState.value = ConnectionState.Disconnected
+                return@launch
+            }
+            when (val result = nativeConnectAttempt(addr, "Android-Client")) {
+                1 -> {
+                    val audio = AudioCapture()
+                    if (!audio.init()) {
+                        Log.w(TAG, "音频初始化失败,继续连接(仅触控)")
+                    } else {
+                        audioCapture = audio
+                    }
+                    touchHandler = TouchHandler()
+                    _connectionState.value = ConnectionState.Connected(addr)
+                    saveHistory(addr)
+                    startStatsPolling()
+                }
+                2 -> {
+                    // 需要配对:交给 UI 弹 PIN 对话框(服务端配对状态丢失时属正常)
+                    _connectionState.value = ConnectionState.Disconnected
+                    _pairingRequired.value = PairingRequiredState(addr, "Android-Client")
+                }
+                else -> {
+                    Log.i(TAG, "自动重连未成功(result=$result),回退到手动连接")
+                    _connectionState.value = ConnectionState.Disconnected
+                }
+            }
+        }
     }
 
     /** 读取本客户端公钥(供 serverinfo pair_status 查询);失败返回空串 */
@@ -378,8 +454,10 @@ class MeowMicViewModel : ViewModel() {
     }
 
     /**
-     * 用户输入 PIN 后完成配对
-     * @return true 表示配对成功并已连接
+     * 用户输入 PIN 后完成配对(正向模式)
+     *
+     * native 返回码:1=成功;6=被拒绝(PIN 错误等,可重试);
+     * 7=响应超时(可重试);0/null=连接已坏(需重新连接)
      */
     fun completePairing(pin: String) {
         val pending = _pairingRequired.value ?: return
@@ -388,60 +466,147 @@ class MeowMicViewModel : ViewModel() {
         _pairingSubmitting.value = true
 
         viewModelScope.launch(Dispatchers.IO) {
-            val result = withContext(Dispatchers.Default) {
-                val pairResult = java.util.concurrent.atomic.AtomicReference<Int?>(null)
-                val thread = Thread {
-                    try {
-                        pairResult.set(NativeBridge.nativeCompletePairing(pin))
-                    } catch (e: UnsatisfiedLinkError) {
-                        Log.e(TAG, "Native 错误", e)
-                        pairResult.set(0)
-                    }
-                }
-                thread.start()
-                thread.join(8000)
-                if (thread.isAlive) {
-                    thread.interrupt()
-                    null
-                } else {
-                    pairResult.get()
-                }
-            }
+            val result = nativeCompletePairingAttempt(pin)
 
             _pairingSubmitting.value = false
 
-            if (result == null) {
-                _connectionState.value = ConnectionState.Error("配对超时")
-                _pairingRequired.value = null
-                return@launch
-            }
-
-            if (result == 1) {
-                // 配对成功并已连接
-                _pairingRequired.value = null
-                val audio = AudioCapture()
-                if (!audio.init()) {
-                    Log.w(TAG, "音频初始化失败,继续连接(仅触控)")
-                } else {
-                    audioCapture = audio
+            when (result) {
+                1 -> onPairingConnected(pending.serverAddr)
+                6 -> {
+                    // PIN 错误:保留对话框,提示重新输入(无需重新连接)
+                    _pairingRequired.value = pending.copy(errorMessage = "PIN 不正确,请重新输入")
                 }
-                touchHandler = TouchHandler()
-                _connectionState.value = ConnectionState.Connected(pending.serverAddr)
-                saveHistory(pending.serverAddr)
-                // 配对状态已变化,刷新列表徽标
-                rebuildPcList()
-                startStatsPolling()
-            } else {
-                // 配对失败:PIN 错误或其他原因,保持 pairingRequired 状态以便用户重试
-                _connectionState.value = ConnectionState.Error("配对失败,PIN 错误或服务端拒绝")
+                7 -> {
+                    _pairingRequired.value = pending.copy(errorMessage = "配对响应超时,请重试")
+                }
+                else -> {
+                    // 连接已坏/看门狗超时:必须重新走连接流程
+                    _pairingRequired.value = null
+                    _connectionState.value = ConnectionState.Error("配对连接已断开,请重新连接")
+                }
             }
         }
     }
 
     /**
+     * 切换到反向配对(Sunshine 方向):手机生成并显示 PIN,
+     * 用户在 PC 控制台输入;本机按固定间隔自动重试提交,直到 PC 侧确认。
+     *
+     * 服务端在配对失败后保持连接与 nonce,同一连接可重发 PairRequest,
+     * 因此重试复用 pending 连接,无需重新 connect。
+     */
+    fun startReversePairing() {
+        val pending = _pairingRequired.value ?: return
+        if (pending.mode == PairingMode.SHOW_PIN) return
+
+        // PIN 是纯协商字符串,客户端本地生成即可(native 只负责提交)
+        val pin = "%06d".format(kotlin.random.Random.nextInt(0, 1_000_000))
+        _pairingRequired.value = pending.copy(
+            mode = PairingMode.SHOW_PIN,
+            reversePin = pin,
+            errorMessage = null,
+        )
+
+        reversePairingJob?.cancel()
+        reversePairingJob = viewModelScope.launch(Dispatchers.IO) {
+            val deadline = System.currentTimeMillis() + REVERSE_PAIRING_TIMEOUT_MS
+            while (isActive) {
+                // 对话框关闭或模式被切回 → 退出重试
+                val cur = _pairingRequired.value
+                if (cur == null || cur.mode != PairingMode.SHOW_PIN || cur.reversePin != pin) {
+                    return@launch
+                }
+                if (System.currentTimeMillis() > deadline) {
+                    _pairingRequired.value = cur.copy(
+                        mode = PairingMode.ENTER_PIN,
+                        reversePin = null,
+                        errorMessage = "等待超时:请在 PC 输入 PIN 后重试",
+                    )
+                    return@launch
+                }
+
+                when (val result = nativeCompletePairingAttempt(pin)) {
+                    1 -> {
+                        onPairingConnected(pending.serverAddr)
+                        return@launch
+                    }
+                    // 6=PIN 未确认(PC 还没输入完),7=响应超时:继续等待重试
+                    6, 7 -> delay(REVERSE_PAIRING_RETRY_MS)
+                    else -> {
+                        // 连接已坏;若用户未主动取消则提示重新连接
+                        if (_pairingRequired.value != null) {
+                            _pairingRequired.value = null
+                            _connectionState.value =
+                                ConnectionState.Error("配对连接已断开(result=$result),请重新连接")
+                        }
+                        return@launch
+                    }
+                }
+            }
+        }
+    }
+
+    /** 从反向配对切回正向输入(取消自动重试) */
+    fun backToForwardPairing() {
+        reversePairingJob?.cancel()
+        reversePairingJob = null
+        _pairingRequired.value = _pairingRequired.value?.copy(
+            mode = PairingMode.ENTER_PIN,
+            reversePin = null,
+            errorMessage = null,
+        )
+    }
+
+    /** 配对成功后的公共收尾:初始化音频/触控、进入已连接状态 */
+    private fun onPairingConnected(serverAddr: String) {
+        _pairingRequired.value = null
+        val audio = AudioCapture()
+        if (!audio.init()) {
+            Log.w(TAG, "音频初始化失败,继续连接(仅触控)")
+        } else {
+            audioCapture = audio
+        }
+        touchHandler = TouchHandler()
+        _connectionState.value = ConnectionState.Connected(serverAddr)
+        saveHistory(serverAddr)
+        // 配对状态已变化,刷新列表徽标
+        rebuildPcList()
+        startStatsPolling()
+    }
+
+    /**
+     * 在独立线程执行 nativeCompletePairing 并带看门狗超时。
+     * native 侧等待 PairResponse 超时 8s,join(12s) 只是兜底。
+     *
+     * @return native 返回码(0=失败,1=成功,6=被拒绝可重试,7=响应超时可重试);null=看门狗超时
+     */
+    private suspend fun nativeCompletePairingAttempt(pin: String): Int? =
+        withContext(Dispatchers.Default) {
+            val ref = java.util.concurrent.atomic.AtomicReference<Int?>(null)
+            val thread = Thread {
+                try {
+                    ref.set(NativeBridge.nativeCompletePairing(pin))
+                } catch (e: UnsatisfiedLinkError) {
+                    Log.e(TAG, "Native 错误", e)
+                    ref.set(0)
+                }
+            }
+            thread.start()
+            thread.join(12000)
+            if (thread.isAlive) {
+                thread.interrupt()
+                null
+            } else {
+                ref.get()
+            }
+        }
+
+    /**
      * 取消配对(用户关闭 PIN 对话框)
      */
     fun cancelPairing() {
+        reversePairingJob?.cancel()
+        reversePairingJob = null
         viewModelScope.launch(Dispatchers.IO) {
             try {
                 NativeBridge.nativeCancelPairing()
@@ -825,6 +990,65 @@ class MeowMicViewModel : ViewModel() {
         rebuildPcList()
     }
 
+    // ==================== Wake-on-LAN ====================
+
+    /**
+     * 向 OFFLINE 的 PC 发送唤醒幻包(借鉴 Moonlight 的 WoL 集成)。
+     *
+     * MAC 地址来自此前 /serverinfo 探测(PC 在线时收集并随注册表持久化);
+     * 唤醒后轮询协程会在 PC 开机上线时自动把条目标为 ONLINE,无需额外操作。
+     *
+     * 前提:PC 主板/网卡已启用 WoL,且与手机在同一二层广播域。
+     */
+    fun wakePc(entry: PcEntry) {
+        if (entry.mac.isEmpty()) return
+        viewModelScope.launch(Dispatchers.IO) {
+            val sent = entry.mac.count { sendMagicPacket(it) }
+            _wolFeedback.value = if (sent > 0) {
+                "已向 ${entry.name} 发送唤醒包,开机后会自动出现在列表中"
+            } else {
+                "唤醒包发送失败,请检查网络"
+            }
+        }
+    }
+
+    /** UI 展示反馈后清除(一次性消息) */
+    fun clearWolFeedback() {
+        _wolFeedback.value = null
+    }
+
+    /**
+     * 经典 WoL magic packet:6×0xFF + 16×MAC 重复,
+     * 广播到 UDP 9 与 7(双端口提高不同固件的命中率)。
+     */
+    private fun sendMagicPacket(mac: String): Boolean {
+        return try {
+            val parts = mac.split(":", "-")
+            if (parts.size != 6) return false
+            val macBytes = ByteArray(6) { parts[it].toInt(16).toByte() }
+            val packet = ByteArray(6 + 16 * 6)
+            for (i in 0 until 6) packet[i] = 0xFF.toByte()
+            for (i in 0 until 16) {
+                System.arraycopy(macBytes, 0, packet, 6 + i * 6, 6)
+            }
+            val socket = java.net.DatagramSocket()
+            try {
+                socket.broadcast = true
+                val broadcast = java.net.InetAddress.getByName("255.255.255.255")
+                for (port in listOf(9, 7)) {
+                    socket.send(java.net.DatagramPacket(packet, packet.size, broadcast, port))
+                }
+            } finally {
+                socket.close()
+            }
+            Log.i(TAG, "WoL 幻包已发送: $mac")
+            true
+        } catch (e: Exception) {
+            Log.w(TAG, "WoL 发送失败($mac): ${e.message}")
+            false
+        }
+    }
+
     /**
      * 合并 mDNS 发现与手动添加,生成统一的 PC 列表。
      *
@@ -853,6 +1077,7 @@ class MeowMicViewModel : ViewModel() {
                     status = s.status,
                     paired = s.paired ?: localPairedLookup(s.pubkey),
                     manual = false,
+                    mac = s.mac,
                 )
             } else {
                 val e = map.getValue(matchKey)
@@ -862,6 +1087,7 @@ class MeowMicViewModel : ViewModel() {
                     addresses = (listOf(s.addrString) + e.addresses).distinct(),
                     status = s.status,
                     paired = s.paired ?: e.paired,
+                    mac = s.mac.ifEmpty { e.mac },
                 )
                 if (pkId != null && matchKey != pkId) {
                     map.remove(matchKey)
@@ -915,6 +1141,12 @@ class MeowMicViewModel : ViewModel() {
                 val addrs = mutableListOf<String>()
                 for (j in 0 until addrArr.length()) addrs.add(addrArr.getString(j))
                 if (addrs.isEmpty()) continue
+                val macs = mutableListOf<String>()
+                obj.optJSONArray("mac")?.let { macArr ->
+                    for (j in 0 until macArr.length()) {
+                        macArr.optString(j).takeIf { it.isNotBlank() }?.let { macs.add(it) }
+                    }
+                }
                 list.add(
                     PcEntry(
                         id = obj.getString("id"),
@@ -923,6 +1155,7 @@ class MeowMicViewModel : ViewModel() {
                         status = ServerStatus.UNKNOWN, // 启动时未知,等轮询确认
                         paired = null,
                         manual = true,
+                        mac = macs,
                     )
                 )
             }
@@ -942,6 +1175,7 @@ class MeowMicViewModel : ViewModel() {
                 obj.put("id", e.id)
                 obj.put("name", e.name)
                 obj.put("addresses", JSONArray(e.addresses))
+                if (e.mac.isNotEmpty()) obj.put("mac", JSONArray(e.mac))
                 arr.put(obj)
             }
             prefs.edit().putString(KEY_MANUAL_PCS, arr.toString()).apply()
@@ -993,6 +1227,7 @@ class MeowMicViewModel : ViewModel() {
                 addresses = (listOf(hitAddr) + target.addresses).distinct(),
                 status = ServerStatus.ONLINE,
                 paired = result.pairStatus ?: target.paired,
+                mac = result.mac.ifEmpty { target.mac },
             )
         } else {
             target.copy(status = ServerStatus.OFFLINE)

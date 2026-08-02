@@ -87,4 +87,9 @@ CI 从 tag 提取版本号(如 `v0.6.0` → `0.6.0`),动态注入到:
 - **nativeConnect 返回码**:0=通用失败,1=已连接,2=需配对,3=地址无效,4=主机不可达(TCP 3s 超时),5=连接被拒绝
 - **客户端 TCP 连接超时**:`crates/net/src/client.rs` 的 `CONNECT_TIMEOUT_SECS`(3s),超时映射为 io `TimedOut`;Kotlin 看门狗 join 为 15s(仅兜底)
 - **地址规范化**:App 侧 `normalizeAddress()` 去空格/去 scheme、裸 IP 自动补 `:28900`;非法地址在 UI 即时提示,不发起连接
-- **手动 PC**:`MeowMicViewModel` 持久化于 SharedPreferences `manual_pcs`(JSON),与 mDNS 发现同权轮询(`ServerInfoProber` 共用探测逻辑)
+- **手动 PC**:`MeowMicViewModel` 持久化于 SharedPreferences `manual_pcs`(JSON,含 mac),与 mDNS 发现同权轮询(`ServerInfoProber` 共用探测逻辑)
+- **serverinfo mac 字段**:`macs`(字符串数组,本机所有网卡 MAC,大写冒号格式),供 App Wake-on-LAN;App 端 `PcEntry.mac` 随注册表持久化,OFFLINE 条目显示"唤醒"按钮(UDP 幻包 255.255.255.255:9/7)
+- **反向 PIN(Sunshine 方向)**:手机生成 PIN 显示 → 用户在 PC 控制台输入 → 控制台 POST `{base_port+5}/pairing/expect?pin=` 设为期望 PIN → 手机同连接自动重试 PairRequest(3s 间隔,120s 上限)。服务端配对失败后**保持连接与 nonce**(仅成功时清 nonce),同连接可重发 PairRequest
+- **nativeCompletePairing 返回码**:1=成功,6=被拒绝(PIN 错误等,pending 已恢复可重试),7=响应超时(可重试),0=连接已坏(需重新连接)
+- **自动重连**:App 启动时静默重连 `last_addr`(仅 Disconnected 时一次;失败不报错,回 Disconnected)
+- **Tauri `submit_pair_pin(pin)`**:控制台反向 PIN 提交命令,内部 POST `/pairing/expect`
