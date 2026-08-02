@@ -742,11 +742,221 @@
             font-family: var(--mm-font-mono);
             color: var(--mm-secondary-foreground);
             flex-shrink: 0;
+            border: none;
+            transition: all 0.2s ease;
+        }
+        .mm-version-clickable {
+            cursor: pointer;
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+        }
+        .mm-version-clickable:hover {
+            background: var(--mm-primary);
+            color: white;
+        }
+        .mm-version-clickable:hover svg {
+            animation: mm-update-spin 1s linear infinite;
+        }
+
+        /* About Default View */
+        .mm-about-view {
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+        }
+
+        /* Links & Contact */
+        .mm-links-section {
+            display: flex;
+            flex-direction: column;
+            gap: 2px;
+            border-top: 1px solid var(--mm-border);
+            padding-top: 12px;
+        }
+        .mm-link-item {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 8px;
+            border-radius: var(--mm-radius-md);
+            text-decoration: none;
+            color: inherit;
+            transition: background 0.2s ease;
+            cursor: pointer;
+        }
+        .mm-link-item:hover { background: var(--mm-muted); }
+        .mm-link-icon {
+            width: 32px;
+            height: 32px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            border-radius: var(--mm-radius-md);
+            background: var(--mm-muted);
+            color: var(--mm-primary);
+            flex-shrink: 0;
+        }
+        .mm-link-icon svg { width: 16px; height: 16px; }
+        .mm-link-text {
+            display: flex;
+            flex-direction: column;
+            gap: 2px;
+            min-width: 0;
+            flex: 1;
+        }
+        .mm-link-label {
+            font-size: 13px;
+            color: var(--mm-foreground);
+            font-weight: 500;
+        }
+        .mm-link-value {
+            font-size: 11px;
+            color: var(--mm-muted-foreground);
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        .mm-link-arrow {
+            width: 14px;
+            height: 14px;
+            color: var(--mm-muted-foreground);
+            flex-shrink: 0;
+        }
+
+        /* Update Panel View */
+        .mm-update-view {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+        .mm-update-view-header {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            border-bottom: 1px solid var(--mm-border);
+            padding-bottom: 8px;
+            margin-bottom: 4px;
+        }
+        .mm-back-btn {
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+            padding: 4px 8px;
+            background: transparent;
+            border: none;
+            color: var(--mm-muted-foreground);
+            font-size: 13px;
+            cursor: pointer;
+            border-radius: var(--mm-radius-md);
+            transition: all 0.2s ease;
+        }
+        .mm-back-btn:hover {
+            background: var(--mm-muted);
+            color: var(--mm-foreground);
+        }
+        .mm-update-view-title {
+            font-size: 14px;
+            font-weight: 600;
+            color: var(--mm-primary);
+        }
+
+        /* Proxy Settings */
+        .mm-proxy-section {
+            border-top: 1px solid var(--mm-border);
+            padding-top: 12px;
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+        .mm-proxy-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+        .mm-proxy-title-wrap {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            color: var(--mm-foreground);
+        }
+        .mm-proxy-title {
+            font-size: 13px;
+            font-weight: 500;
+        }
+        .mm-toggle {
+            position: relative;
+            display: inline-block;
+            width: 36px;
+            height: 20px;
+            flex-shrink: 0;
+        }
+        .mm-toggle input {
+            opacity: 0;
+            width: 0;
+            height: 0;
+        }
+        .mm-toggle-slider {
+            position: absolute;
+            cursor: pointer;
+            inset: 0;
+            background: var(--mm-muted);
+            border-radius: var(--mm-radius-full);
+            transition: 0.2s;
+        }
+        .mm-toggle-slider::before {
+            content: '';
+            position: absolute;
+            height: 14px;
+            width: 14px;
+            left: 3px;
+            bottom: 3px;
+            background: white;
+            border-radius: 50%;
+            transition: 0.2s;
+        }
+        .mm-toggle input:checked + .mm-toggle-slider {
+            background: var(--mm-primary);
+        }
+        .mm-toggle input:checked + .mm-toggle-slider::before {
+            transform: translateX(16px);
+        }
+        .mm-proxy-fields {
+            display: flex;
+            gap: 8px;
+        }
+        .mm-proxy-field {
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+            flex: 1;
+        }
+        .mm-proxy-field-port { flex: 0 0 90px; }
+        .mm-proxy-label {
+            font-size: 11px;
+            color: var(--mm-muted-foreground);
+        }
+        .mm-proxy-input {
+            height: 30px;
+            padding: 0 8px;
+            background: var(--mm-muted);
+            border: 1px solid var(--mm-border);
+            border-radius: var(--mm-radius-md);
+            color: var(--mm-foreground);
+            font-size: 13px;
+            font-family: var(--mm-font-mono);
+            outline: none;
+            transition: border-color 0.2s ease;
+        }
+        .mm-proxy-input:focus {
+            border-color: var(--mm-primary);
+        }
+        .mm-proxy-fields:has(.mm-toggle input:not(:checked)) {
+            opacity: 0.4;
+            pointer-events: none;
         }
 
         .mm-update-section {
-            border-top: 1px solid var(--mm-border);
-            padding-top: 12px;
             display: flex;
             flex-direction: column;
             gap: 8px;
@@ -817,21 +1027,6 @@
             display: none;
         }
         .mm-update-log.show { display: block; }
-
-        .mm-tech-info {
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 8px;
-            border-top: 1px solid var(--mm-border);
-            padding-top: 12px;
-        }
-        .mm-tech-item { display: flex; flex-direction: column; gap: 2px; }
-        .mm-tech-label { font-size: 11px; color: var(--mm-muted-foreground); }
-        .mm-tech-value {
-            font-size: 13px;
-            color: var(--mm-foreground);
-            font-family: var(--mm-font-mono);
-        }
 
         /* ============ Update Popover (标题栏更新按钮弹出) ============ */
         .mm-update-popover {
@@ -942,7 +1137,6 @@
         @media (max-width: 560px) {
             .mm-two-col { grid-template-columns: 1fr; }
             .mm-stats-grid { grid-template-columns: repeat(2, 1fr); }
-            .mm-tech-info { grid-template-columns: 1fr; }
             .mm-nav-tab span { display: none; }
             .mm-nav-tab { padding: 0 8px; }
         }
@@ -1202,14 +1396,41 @@
                             <div class="mm-app-tagline">跨平台远程控制工具</div>
                         </div>
                     </div>
-                    <span class="mm-version-badge" id="versionBadge">v...</span>
+                    <button class="mm-version-badge mm-version-clickable" id="versionBadge" type="button" title="点击检查更新">
+                        <span id="versionText">v...</span>
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:12px;height:12px;flex-shrink:0;"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/></svg>
+                    </button>
                 </div>
 
-                <!-- Update Section -->
-                <div class="mm-update-section">
+                <!-- About Default View -->
+                <div class="mm-about-view" id="aboutView">
+                    <!-- Contact -->
+                    <div class="mm-links-section">
+                        <a class="mm-link-item" href="https://t.me/MeowMic" target="_blank" rel="noopener">
+                            <div class="mm-link-icon">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14.5 9.5 10 14l-2.5-2.5L2 15"/><path d="M2 2l20 9-20 9 4-9z"/></svg>
+                            </div>
+                            <div class="mm-link-text">
+                                <span class="mm-link-label">Telegram</span>
+                                <span class="mm-link-value">t.me/MeowMic</span>
+                            </div>
+                            <svg class="mm-link-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M7 7h10v10"/><path d="M7 17 17 7"/></svg>
+                        </a>
+                    </div>
+                </div>
+
+                <!-- Update Panel View (hidden by default, shown when version badge clicked) -->
+                <div class="mm-update-view" id="updateView" style="display:none;">
+                    <div class="mm-update-view-header">
+                        <button class="mm-back-btn" id="backToAboutBtn" type="button" title="返回关于">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:16px;height:16px;"><path d="m12 19-7-7 7-7"/><path d="M19 12H5"/></svg>
+                            <span>返回</span>
+                        </button>
+                        <span class="mm-update-view-title">检查更新</span>
+                    </div>
                     <div class="mm-update-row">
                         <div class="mm-update-row-left">
-                            <span class="mm-update-label">检查更新</span>
+                            <span class="mm-update-label">当前版本</span>
                             <span class="mm-update-status" id="updateStatusText">尚未检查</span>
                         </div>
                         <div class="mm-update-actions">
@@ -1231,25 +1452,29 @@
                         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/></svg>
                         <span>重启并安装</span>
                     </button>
-                </div>
 
-                <!-- Tech Info -->
-                <div class="mm-tech-info">
-                    <div class="mm-tech-item">
-                        <span class="mm-tech-label">构建通道</span>
-                        <span class="mm-tech-value">stable</span>
-                    </div>
-                    <div class="mm-tech-item">
-                        <span class="mm-tech-label">更新源</span>
-                        <span class="mm-tech-value">GitHub Releases</span>
-                    </div>
-                    <div class="mm-tech-item">
-                        <span class="mm-tech-label">架构</span>
-                        <span class="mm-tech-value" id="archValue">x86_64</span>
-                    </div>
-                    <div class="mm-tech-item">
-                        <span class="mm-tech-label">许可证</span>
-                        <span class="mm-tech-value">MIT</span>
+                    <!-- Proxy Settings -->
+                    <div class="mm-proxy-section">
+                        <div class="mm-proxy-header">
+                            <div class="mm-proxy-title-wrap">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:14px;height:14px;flex-shrink:0;"><circle cx="12" cy="12" r="10"/><path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20"/><path d="M2 12h20"/></svg>
+                                <span class="mm-proxy-title">网络代理</span>
+                            </div>
+                            <label class="mm-toggle">
+                                <input type="checkbox" id="proxyEnabled">
+                                <span class="mm-toggle-slider"></span>
+                            </label>
+                        </div>
+                        <div class="mm-proxy-fields" id="proxyFields">
+                            <div class="mm-proxy-field">
+                                <label class="mm-proxy-label">地址</label>
+                                <input class="mm-proxy-input" type="text" id="proxyHost" placeholder="127.0.0.1" value="127.0.0.1">
+                            </div>
+                            <div class="mm-proxy-field mm-proxy-field-port">
+                                <label class="mm-proxy-label">端口</label>
+                                <input class="mm-proxy-input" type="text" id="proxyPort" placeholder="7890" value="7890">
+                            </div>
+                        </div>
                     </div>
                 </div>
             </section>
@@ -1287,17 +1512,13 @@
                 setupWindowState(Tauri);
                 setupNavTabs();
                 setupUpdatePopoverOutsideClick();
-
-                // 架构信息
-                try {
-                    const arch = await Tauri.app.getArchitecture ? await Tauri.app.getArchitecture() : null;
-                    if (arch) document.getElementById('archValue').textContent = arch;
-                } catch(e) {}
+                setupAboutUpdateToggle();
+                setupProxyToggle();
 
                 // 当前版本
                 try {
                     const ver = await Tauri.app.getVersion();
-                    document.getElementById('versionBadge').textContent = 'v' + ver;
+                    document.getElementById('versionText').textContent = 'v' + ver;
                 } catch(err) { console.warn('获取版本失败:', err); }
 
                 config = await Tauri.invoke('get_config');
@@ -1350,6 +1571,59 @@
             document.querySelectorAll('.mm-page').forEach(p => {
                 p.classList.toggle('mm-page-active', p.id === 'page-' + page);
             });
+        }
+
+        // ============ About / Update View Toggle ============
+        // 点击版本徽章在"关于默认视图"与"检查更新视图"之间切换
+        function setupAboutUpdateToggle() {
+            const badge = document.getElementById('versionBadge');
+            const backBtn = document.getElementById('backToAboutBtn');
+            if (badge) {
+                badge.addEventListener('click', () => showUpdateView(true));
+            }
+            if (backBtn) {
+                backBtn.addEventListener('click', () => showUpdateView(false));
+            }
+        }
+        function showUpdateView(show) {
+            const aboutView = document.getElementById('aboutView');
+            const updateView = document.getElementById('updateView');
+            if (!aboutView || !updateView) return;
+            aboutView.style.display = show ? 'none' : '';
+            updateView.style.display = show ? '' : 'none';
+            if (show) {
+                // 进入更新视图时,若尚未检查过则自动触发一次检查
+                const statusEl = document.getElementById('updateStatusText');
+                if (statusEl && statusEl.textContent === '尚未检查') {
+                    checkForUpdate(true);
+                }
+            }
+        }
+
+        // ============ Proxy Toggle (本地持久化,后端尚未接入) ============
+        function setupProxyToggle() {
+            const enabled = document.getElementById('proxyEnabled');
+            const host = document.getElementById('proxyHost');
+            const port = document.getElementById('proxyPort');
+            if (!enabled || !host || !port) return;
+            try {
+                const saved = JSON.parse(localStorage.getItem('mm_proxy') || '{}');
+                if (typeof saved.enabled === 'boolean') enabled.checked = saved.enabled;
+                if (saved.host) host.value = saved.host;
+                if (saved.port) port.value = saved.port;
+            } catch(e) {}
+            const persist = () => {
+                try {
+                    localStorage.setItem('mm_proxy', JSON.stringify({
+                        enabled: enabled.checked,
+                        host: host.value,
+                        port: port.value
+                    }));
+                } catch(e) {}
+            };
+            enabled.addEventListener('change', persist);
+            host.addEventListener('change', persist);
+            port.addEventListener('change', persist);
         }
 
         // ============ Titlebar Drag ============
