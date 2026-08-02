@@ -11,6 +11,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Computer
 import androidx.compose.material.icons.filled.SettingsEthernet
 import androidx.compose.material.icons.filled.Wifi
@@ -27,11 +28,12 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import com.meowmic.client.ConnectionState
-import com.meowmic.client.DiscoveredServer
 import com.meowmic.client.MeowMicViewModel
 import com.meowmic.client.NativeBridge
+import com.meowmic.client.PcEntry
 import com.meowmic.client.ServerStatus
 import com.meowmic.client.UpdateState
+import com.meowmic.client.normalizeAddress
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -43,14 +45,16 @@ fun ConnectScreen(
     val connectionState by vm.connectionState.collectAsState()
     val historyAddresses by vm.historyAddresses.collectAsState()
     val lastAddr by vm.lastAddr.collectAsState()
-    val discoveredServers by vm.discoveredServers.collectAsState()
+    val pcList by vm.pcList.collectAsState()
     val pairingRequired by vm.pairingRequired.collectAsState()
     val pairingSubmitting by vm.pairingSubmitting.collectAsState()
 
-    // 默认地址:优先用上次输入的,其次用历史第一条,最后用占位符
+    // 默认地址:优先用上次输入的,其次用历史第一条,最后留空(由用户输入或点选列表)
     var serverAddr by remember {
-        mutableStateOf(lastAddr.ifBlank { historyAddresses.firstOrNull() ?: "192.168.1.100:28900" })
+        mutableStateOf(lastAddr.ifBlank { historyAddresses.firstOrNull() ?: "" })
     }
+    // 地址实时校验:非空但无法规范化时提示(裸 IP 会自动补 :28900)
+    val addrInvalid = serverAddr.isNotBlank() && normalizeAddress(serverAddr) == null
     var clientName by remember { mutableStateOf("Android-Client") }
     var hasMicPermission by remember {
         mutableStateOf(
@@ -116,22 +120,23 @@ fun ConnectScreen(
 
         Spacer(Modifier.height(24.dp))
 
-        // 已发现的 PC 列表(自动发现,点击直连)
-        if (discoveredServers.isNotEmpty()) {
+        // 统一 PC 列表(mDNS 发现 + 手动添加,点击直连)
+        if (pcList.isNotEmpty()) {
             Text(
-                text = "已发现的 PC",
+                text = "我的电脑",
                 fontSize = 12.sp,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.fillMaxWidth(),
             )
             Spacer(Modifier.height(6.dp))
-            DiscoveredServerList(
-                servers = discoveredServers.toList(),
+            PcListView(
+                entries = pcList,
                 isConnecting = connectionState is ConnectionState.Connecting,
-                onPick = { server ->
-                    serverAddr = server.addrString
-                    vm.connectDiscovered(server, clientName)
+                onPick = { entry ->
+                    serverAddr = entry.primaryAddr
+                    vm.connectPc(entry, clientName)
                 },
+                onRemove = { entry -> vm.removeManualPc(entry.id) },
             )
             Spacer(Modifier.height(20.dp))
 
@@ -152,8 +157,14 @@ fun ConnectScreen(
                 value = serverAddr,
                 onValueChange = { serverAddr = it },
                 label = { Text("PC 端地址") },
-                placeholder = { Text("192.168.1.100:28900") },
+                placeholder = { Text("如 192.168.1.12(自动补 :28900)") },
                 singleLine = true,
+                isError = addrInvalid,
+                supportingText = {
+                    if (addrInvalid) {
+                        Text("格式:IP 或 IP:端口,如 192.168.1.12:28900")
+                    }
+                },
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
                 leadingIcon = { Icon(Icons.Default.SettingsEthernet, contentDescription = null) },
                 trailingIcon = {
@@ -252,9 +263,10 @@ fun ConnectScreen(
         }
 
         val isConnecting = connectionState is ConnectionState.Connecting
+        val addrValid = normalizeAddress(serverAddr) != null
         Button(
             onClick = { vm.connect(serverAddr, clientName) },
-            enabled = !isConnecting && serverAddr.isNotBlank(),
+            enabled = !isConnecting && addrValid,
             modifier = Modifier
                 .fillMaxWidth()
                 .height(52.dp),
@@ -271,6 +283,15 @@ fun ConnectScreen(
             } else {
                 Text("连接", fontSize = 16.sp)
             }
+        }
+
+        // 把当前输入的地址保存到"我的电脑"列表(借鉴 Moonlight 的手动添加 PC)
+        TextButton(
+            onClick = { vm.addManualPc(serverAddr) },
+            enabled = !isConnecting && addrValid,
+            modifier = Modifier.align(Alignment.End),
+        ) {
+            Text("＋ 添加到我的电脑", fontSize = 13.sp)
         }
 
         Spacer(Modifier.height(20.dp))
@@ -315,18 +336,21 @@ fun ConnectScreen(
 }
 
 /**
- * 已发现的 PC 列表:每个服务端一行,带三态状态指示(ONLINE/UNKNOWN/OFFLINE)
+ * 统一 PC 列表:每行一台 PC,带三态状态指示、配对徽标、多地址提示
  *
  * 状态视觉:
  * - ONLINE:  绿色圆点 + "在线",正常可点
  * - UNKNOWN: 灰色圆点 + "检测中...",正常可点
  * - OFFLINE: 红色圆点 + "离线",整行 alpha 降低,仍可点(用户可手动重试)
+ * - 配对徽标:绿色"已配对" / 橙色"未配对" / 未知不显示
+ * - 手动添加的条目右侧显示删除按钮
  */
 @Composable
-private fun DiscoveredServerList(
-    servers: List<DiscoveredServer>,
+private fun PcListView(
+    entries: List<PcEntry>,
     isConnecting: Boolean,
-    onPick: (DiscoveredServer) -> Unit,
+    onPick: (PcEntry) -> Unit,
+    onRemove: (PcEntry) -> Unit,
 ) {
     Card(
         colors = CardDefaults.cardColors(
@@ -336,15 +360,15 @@ private fun DiscoveredServerList(
         modifier = Modifier.fillMaxWidth(),
     ) {
         Column(modifier = Modifier.padding(vertical = 4.dp)) {
-            servers.forEachIndexed { idx, server ->
+            entries.forEachIndexed { idx, entry ->
                 if (idx > 0) HorizontalDivider(
                     color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f),
                 )
-                val rowAlpha = if (server.status == ServerStatus.OFFLINE) 0.5f else 1f
+                val rowAlpha = if (entry.status == ServerStatus.OFFLINE) 0.5f else 1f
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .clickable(enabled = !isConnecting) { onPick(server) }
+                        .clickable(enabled = !isConnecting) { onPick(entry) }
                         .padding(horizontal = 14.dp, vertical = 12.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
@@ -356,22 +380,70 @@ private fun DiscoveredServerList(
                     )
                     Spacer(Modifier.width(12.dp))
                     Column(modifier = Modifier.weight(1f)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(
+                                text = entry.name,
+                                fontWeight = FontWeight.Medium,
+                                color = MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = rowAlpha),
+                                fontSize = 14.sp,
+                            )
+                            when (entry.paired) {
+                                true -> {
+                                    Spacer(Modifier.width(8.dp))
+                                    PairedBadge("已配对", MaterialTheme.colorScheme.primary)
+                                }
+                                false -> {
+                                    Spacer(Modifier.width(8.dp))
+                                    PairedBadge("未配对", MaterialTheme.colorScheme.tertiary)
+                                }
+                                null -> {}
+                            }
+                        }
+                        val addrText = if (entry.addresses.size > 1) {
+                            "${entry.primaryAddr} 等 ${entry.addresses.size} 个地址"
+                        } else {
+                            entry.primaryAddr
+                        }
                         Text(
-                            text = server.name,
-                            fontWeight = FontWeight.Medium,
-                            color = MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = rowAlpha),
-                            fontSize = 14.sp,
-                        )
-                        Text(
-                            text = server.addrString,
+                            text = addrText,
                             fontSize = 12.sp,
                             color = MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = 0.7f * rowAlpha),
                         )
                     }
-                    StatusBadge(status = server.status)
+                    if (entry.manual) {
+                        Icon(
+                            imageVector = Icons.Default.Close,
+                            contentDescription = "移除",
+                            tint = MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = 0.6f),
+                            modifier = Modifier
+                                .size(18.dp)
+                                .clickable(enabled = !isConnecting) { onRemove(entry) },
+                        )
+                        Spacer(Modifier.width(10.dp))
+                    }
+                    StatusBadge(status = entry.status)
                 }
             }
         }
+    }
+}
+
+/**
+ * 配对状态小徽标(已配对/未配对)
+ */
+@Composable
+private fun PairedBadge(text: String, color: Color) {
+    Box(
+        modifier = Modifier
+            .clip(RoundedCornerShape(4.dp))
+            .background(color.copy(alpha = 0.15f))
+            .padding(horizontal = 5.dp, vertical = 1.dp),
+    ) {
+        Text(
+            text = text,
+            fontSize = 10.sp,
+            color = color,
+        )
     }
 }
 

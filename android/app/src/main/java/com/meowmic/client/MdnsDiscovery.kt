@@ -15,9 +15,6 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import org.json.JSONObject
-import java.net.HttpURLConnection
-import java.net.URL
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.jvm.Synchronized
@@ -44,6 +41,9 @@ enum class ServerStatus {
  * @param port        control TCP 端口(touch/audio 自动推导为 port+1/port+2,
  *                    serverinfo HTTP 端口为 port+4)
  * @param status      当前在线状态(UNKNOWN/ONLINE/OFFLINE)
+ * @param pubkey      服务端 Ed25519 公钥 base64(身份标识,类 Sunshine uniqueid;
+ *                    来自 mDNS TXT 的 pk 字段或 /serverinfo 探测,可能为空=未知)
+ * @param paired      本客户端是否已配对该服务端;null=未知(服务端未返回 pair_status)
  */
 data class DiscoveredServer(
     val serviceName: String,
@@ -51,6 +51,8 @@ data class DiscoveredServer(
     val host: String,
     val port: Int,
     val status: ServerStatus = ServerStatus.UNKNOWN,
+    val pubkey: String = "",
+    val paired: Boolean? = null,
 ) {
     /** 完整连接地址,形如 "192.168.1.100:28900",可直接传给 [MeowMicViewModel.connect] */
     val addrString: String get() = "$host:$port"
@@ -74,8 +76,14 @@ data class DiscoveredServer(
  * 线程:NsdManager 的 discoveryListener 回调在调用线程的 Looper 上触发,
  * 在主线程调用 [startDiscovery] 即可保证回调也在主线程。
  * 轮询协程在 IO 线程上执行 HTTP 请求。
+ *
+ * @param clientPubkeyProvider 提供本客户端公钥(base64)的回调,
+ *        非空时探测 URL 附加 ?pubkey= 以获取服务端侧 pair_status
  */
-class MdnsDiscovery(context: Context) {
+class MdnsDiscovery(
+    context: Context,
+    private val clientPubkeyProvider: () -> String = { "" },
+) {
 
     companion object {
         private const val TAG = "MeowMic/Mdns"
@@ -83,10 +91,6 @@ class MdnsDiscovery(context: Context) {
         private const val SERVICE_TYPE = "_meowmic._tcp."
         /** 轮询间隔(参考 Moonlight,默认 3s) */
         private const val POLL_INTERVAL_MS = 3000L
-        /** HTTP 探测超时(connect) */
-        private const val HTTP_CONNECT_TIMEOUT_MS = 1500
-        /** HTTP 探测超时(read) */
-        private const val HTTP_READ_TIMEOUT_MS = 2000
         /** 连续失败次数达到此阈值则标记 OFFLINE */
         private const val OFFLINE_FAILURE_THRESHOLD = 2
     }
@@ -167,6 +171,8 @@ class MdnsDiscovery(context: Context) {
 
                 // TXT 记录的 name 字段(优先),回退到 mDNS 实例名
                 val name = info.attributes["name"]?.toString(Charsets.UTF_8) ?: info.serviceName
+                // TXT 记录的 pk 字段:服务端身份公钥(发现即识别,无需等 HTTP 探测)
+                val txtPubkey = info.attributes["pk"]?.toString(Charsets.UTF_8) ?: ""
 
                 val server = DiscoveredServer(
                     serviceName = info.serviceName,
@@ -174,6 +180,7 @@ class MdnsDiscovery(context: Context) {
                     host = hostStr,
                     port = info.port,
                     status = ServerStatus.UNKNOWN, // 初始未知,等轮询协程探测
+                    pubkey = txtPubkey,
                 )
                 Log.i(TAG, "resolve 成功: $server")
 
@@ -269,38 +276,20 @@ class MdnsDiscovery(context: Context) {
 
     private suspend fun probeOnce(server: DiscoveredServer) {
         val result = withContext(Dispatchers.IO) {
-            try {
-                val conn = (URL(server.serverInfoUrl).openConnection() as HttpURLConnection).apply {
-                    connectTimeout = HTTP_CONNECT_TIMEOUT_MS
-                    readTimeout = HTTP_READ_TIMEOUT_MS
-                    requestMethod = "GET"
-                    useCaches = false
-                    instanceFollowRedirects = false
-                }
-                conn.connect()
-                try {
-                    val code = conn.responseCode
-                    if (code == 200) {
-                        val body = conn.inputStream.bufferedReader().use { it.readText() }
-                        parseServerInfo(body)
-                    } else {
-                        Log.w(TAG, "serverinfo HTTP $code for ${server.serviceName}")
-                        null
-                    }
-                } finally {
-                    conn.disconnect()
-                }
-            } catch (e: Exception) {
-                Log.d(TAG, "serverinfo 探测失败 ${server.serviceName}: ${e.message}")
-                null
-            }
+            ServerInfoProber.probe(server.serverInfoUrl, clientPubkeyProvider())
         }
 
         // 更新状态(原子地与其它探测结果合并)
-        val updated = updateStatus(server.serviceName) { current ->
+        // 成功时同步刷新 name/pubkey/paired(服务端身份与配对状态可能变化)
+        updateStatus(server.serviceName) { current ->
             if (result != null) {
                 failureCount.remove(server.serviceName)
-                current.copy(status = ServerStatus.ONLINE)
+                current.copy(
+                    status = ServerStatus.ONLINE,
+                    name = result.name.takeIf { it.isNotBlank() } ?: current.name,
+                    pubkey = result.serverPubkeyB64.takeIf { it.isNotBlank() } ?: current.pubkey,
+                    paired = result.pairStatus ?: current.paired,
+                )
             } else {
                 val count = failureCount
                     .computeIfAbsent(server.serviceName) { AtomicInteger(0) }
@@ -309,15 +298,8 @@ class MdnsDiscovery(context: Context) {
                     current.copy(status = ServerStatus.OFFLINE)
                 } else {
                     // 仍然保持原状态(若原本 ONLINE,短暂失败不立刻切走)
-                    current.copy(status = current.status)
+                    current
                 }
-            }
-        }
-        if (updated != null && result != null) {
-            // 探测成功时顺便把 serverinfo 中的 name/hostname 刷新到 UI(若服务端有更新)
-            val refreshed = updated.copy(name = result.name.takeIf { it.isNotBlank() } ?: updated.name)
-            updateStatus(server.serviceName) { current ->
-                if (current.status == ServerStatus.ONLINE) refreshed else current
             }
         }
     }
@@ -341,34 +323,5 @@ class MdnsDiscovery(context: Context) {
         updated.add(newServer)
         _servers.value = updated
         return newServer
-    }
-
-    /** 解析 /serverinfo 返回的 JSON */
-    private data class ServerInfo(
-        val name: String,
-        val hostname: String,
-        val version: Int,
-        val state: String,
-        val connectedClients: Int,
-        val maxClients: Int,
-        val uptimeSecs: Long,
-    )
-
-    private fun parseServerInfo(body: String): ServerInfo? {
-        return try {
-            val json = JSONObject(body)
-            ServerInfo(
-                name = json.optString("name", ""),
-                hostname = json.optString("hostname", ""),
-                version = json.optInt("version", 1),
-                state = json.optString("state", "ONLINE"),
-                connectedClients = json.optInt("connected_clients", 0),
-                maxClients = json.optInt("max_clients", 1),
-                uptimeSecs = json.optLong("uptime_secs", 0),
-            )
-        } catch (e: Exception) {
-            Log.w(TAG, "解析 serverinfo 失败: ${e.message}")
-            null
-        }
     }
 }

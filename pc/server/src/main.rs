@@ -89,28 +89,7 @@ async fn run_server(bind: &str, port: u16, output_device: Option<&str>) -> Resul
 
     list_local_ips();
 
-    // 启动 mDNS 服务广播(参考 Moonlight + Sunshine 的发现机制)
-    // 客户端监听 `_meowmic._tcp.` 即可自动发现本机服务端
-    // 广播器在函数结束时自动 Drop 注销
-    let host_name = hostname_string();
-    let _mdns_advertiser = match MdnsAdvertiser::register(
-        Some("MeowMic-Server"),
-        Some(&host_name),
-        ports.control,
-        None, // 让 mdns-sd 自动枚举所有接口
-    ) {
-        Ok(a) => {
-            info!("mDNS 广播已启动: 服务类型=_meowmic._tcp. 端口={}", ports.control);
-            Some(a)
-        }
-        Err(e) => {
-            // mDNS 失败不阻断服务端启动,仅影响自动发现
-            warn!("mDNS 广播启动失败(自动发现将不可用): {}", e);
-            None
-        }
-    };
-
-    // 加载或创建配对管理器
+    // 加载或创建配对管理器(需在 mDNS 注册之前:mDNS TXT 要携带服务端公钥)
     // 状态文件:Windows %APPDATA%/meowmic/pairing.json,其他平台 ~/.config/meowmic/pairing.json
     let pairing_dir = pairing_state_dir();
     let pairing_manager = match PairingManager::load_or_create(Some(pairing_dir.clone())) {
@@ -123,6 +102,30 @@ async fn run_server(bind: &str, port: u16, output_device: Option<&str>) -> Resul
         }
         Err(e) => {
             warn!("配对管理器初始化失败(配对机制禁用): {}", e);
+            None
+        }
+    };
+
+    // 启动 mDNS 服务广播(参考 Moonlight + Sunshine 的发现机制)
+    // 客户端监听 `_meowmic._tcp.` 即可自动发现本机服务端
+    // TXT 携带服务端公钥(pk):客户端发现即识别身份,IP 变化时按公钥合并地址
+    // 广播器在函数结束时自动 Drop 注销
+    let host_name = hostname_string();
+    let mdns_pubkey = pairing_manager.as_ref().map(|pm| pm.server_pubkey_b64());
+    let _mdns_advertiser = match MdnsAdvertiser::register(
+        Some("MeowMic-Server"),
+        Some(&host_name),
+        ports.control,
+        None, // 让 mdns-sd 自动枚举所有接口
+        mdns_pubkey.as_deref(),
+    ) {
+        Ok(a) => {
+            info!("mDNS 广播已启动: 服务类型=_meowmic._tcp. 端口={}", ports.control);
+            Some(a)
+        }
+        Err(e) => {
+            // mDNS 失败不阻断服务端启动,仅影响自动发现
+            warn!("mDNS 广播启动失败(自动发现将不可用): {}", e);
             None
         }
     };
@@ -390,6 +393,45 @@ fn list_local_ips() {
     }
 }
 
+/// 从查询字符串中提取指定参数值(不处理 `&` 之外的分隔,够用即可)
+fn extract_query_param(query: &str, key: &str) -> Option<String> {
+    for pair in query.split('&') {
+        if let Some((k, v)) = pair.split_once('=') {
+            if k == key {
+                return Some(v.to_string());
+            }
+        }
+    }
+    None
+}
+
+/// 简易 URL percent 解码(处理 %XX;`+` 原样保留——base64 的 `+` 会被客户端编码为 %2B)
+fn url_decode(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            let hex = |b: u8| -> Option<u8> {
+                match b {
+                    b'0'..=b'9' => Some(b - b'0'),
+                    b'a'..=b'f' => Some(b - b'a' + 10),
+                    b'A'..=b'F' => Some(b - b'A' + 10),
+                    _ => None,
+                }
+            };
+            if let (Some(h), Some(l)) = (hex(bytes[i + 1]), hex(bytes[i + 2])) {
+                out.push(h * 16 + l);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
 /// HTTP /serverinfo 服务:监听 0.0.0.0:port,GET /serverinfo 返回服务端状态 JSON
 ///
 /// 供手机端 mDNS 发现后做三态轮询(UNKNOWN/ONLINE/OFFLINE)。
@@ -404,6 +446,8 @@ fn list_local_ips() {
 /// - max_clients:最大客户端数(目前固定 1)
 /// - uptime_secs:服务端启动时长
 /// - server_pubkey_b64:服务端 Ed25519 公钥(32 字节 base64,用于配对流程身份识别)
+/// - pair_status(可选):仅当 URL 带 `?pubkey=<客户端公钥base64>` 时返回,
+///   表示该客户端是否已配对(参考 Sunshine 的 PairStatus)
 async fn run_serverinfo_server(
     stats: Arc<Mutex<stats::Stats>>,
     hostname: String,
@@ -440,7 +484,7 @@ async fn run_serverinfo_server(
             let mut parts = first_line.split_whitespace();
             let method = parts.next().unwrap_or("");
             let raw_path = parts.next().unwrap_or("");
-            let (path, _query) = match raw_path.split_once('?') {
+            let (path, query) = match raw_path.split_once('?') {
                 Some((p, q)) => (p, q),
                 None => (raw_path, ""),
             };
@@ -451,14 +495,25 @@ async fn run_serverinfo_server(
                     .as_ref()
                     .map(|p| p.server_pubkey_b64())
                     .unwrap_or_default();
+                // 参考 Sunshine 的 PairStatus:客户端带上自己的公钥查询时,
+                // 返回该客户端是否已配对,用于列表"已配对"徽标
+                let pair_status_field = match (extract_query_param(query, "pubkey"), pairing.as_ref()) {
+                    (Some(client_pk_b64), Some(pm)) => {
+                        let decoded = url_decode(&client_pk_b64);
+                        let paired = pm.is_client_paired_b64(&decoded).await;
+                        format!(",\"pair_status\":{}", paired)
+                    }
+                    _ => String::new(),
+                };
                 // JSON 字段顺序稳定(便于客户端解析)
                 let body = format!(
-                    r#"{{"name":"MeowMic-Server","hostname":"{}","version":{},"state":"ONLINE","connected_clients":{},"max_clients":1,"uptime_secs":{},"server_pubkey_b64":"{}"}}"#,
+                    r#"{{"name":"MeowMic-Server","hostname":"{}","version":{},"state":"ONLINE","connected_clients":{},"max_clients":1,"uptime_secs":{},"server_pubkey_b64":"{}"{}}}"#,
                     hostname,
                     meowmic_net::PROTOCOL_VERSION,
                     connected,
                     uptime,
                     pubkey_b64,
+                    pair_status_field,
                 );
                 ("200 OK", body)
             } else {

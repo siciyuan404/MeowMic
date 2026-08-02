@@ -9,6 +9,7 @@
 //!
 //! 配对流程:
 //! 1. nativeConnect 返回 1=已连接 / 2=需要配对 / 0=失败
+//!    (3=地址无效 / 4=主机不可达 / 5=连接被拒绝,供 UI 精确提示)
 //! 2. 若需要配对,Kotlin 弹出 PIN 输入框,调用 nativeCompletePairing(pin)
 //! 3. 配对成功后自动重连(发送 HelloPaired),返回 1=已连接 / 0=失败
 //! 4. 后续连接若已配对该服务端,nativeConnect 自动发送 HelloPaired
@@ -124,8 +125,27 @@ pub extern "system" fn Java_com_meowmic_client_NativeBridge_nativeSetStateDir(
     let _ = STATE_DIR.set(path_buf);
 }
 
+/// 把网络层错误映射为结构化返回码(参考 Moonlight 的错误分类):
+/// - 3: 地址无效(无法解析 host:port)
+/// - 4: 主机不可达(TCP 连接超时,数据包无回应)
+/// - 5: 连接被拒绝(主机可达但端口未开放,服务未启动或端口错误)
+/// - 0: 其它失败
+fn map_connect_error(e: &meowmic_net::NetError) -> jint {
+    use meowmic_net::NetError;
+    match e {
+        NetError::Handshake(_) => 3,
+        NetError::Io(io_err) => match io_err.kind() {
+            std::io::ErrorKind::TimedOut => 4,
+            std::io::ErrorKind::ConnectionRefused => 5,
+            _ => 0,
+        },
+        _ => 0,
+    }
+}
+
 /// Java: int nativeConnect(String serverAddr, String clientName)
-/// 返回值: 0=失败, 1=已连接, 2=需要配对(等待 nativeCompletePairing)
+/// 返回值: 0=失败, 1=已连接, 2=需要配对(等待 nativeCompletePairing),
+///        3=地址无效, 4=主机不可达(超时), 5=连接被拒绝
 #[no_mangle]
 pub extern "system" fn Java_com_meowmic_client_NativeBridge_nativeConnect(
     mut env: JNIEnv,
@@ -164,7 +184,7 @@ pub extern "system" fn Java_com_meowmic_client_NativeBridge_nativeConnect(
         Ok(c) => Arc::new(c),
         Err(e) => {
             log::error!("连接失败: {}", e);
-            return 0;
+            return map_connect_error(&e);
         }
     };
 
@@ -303,7 +323,7 @@ fn reconnect_paired(
         Ok(c) => Arc::new(c),
         Err(e) => {
             log::error!("HelloPaired 连接失败: {}", e);
-            return 0;
+            return map_connect_error(&e);
         }
     };
 
@@ -514,6 +534,26 @@ pub extern "system" fn Java_com_meowmic_client_NativeBridge_nativeIsServerPaired
     }
 }
 
+/// Java: String nativeGetClientPubkeyB64()
+/// 返回本客户端的 Ed25519 公钥(base64)。
+/// 用途:轮询 /serverinfo?pubkey=<此值> 查询服务端侧的配对状态(pair_status)。
+/// 状态目录未初始化或读取失败时返回空字符串。
+#[no_mangle]
+pub extern "system" fn Java_com_meowmic_client_NativeBridge_nativeGetClientPubkeyB64(
+    env: JNIEnv,
+    _class: JClass,
+) -> jstring {
+    init_logger();
+    let out = load_client_pairing_state()
+        .and_then(|s| s.pubkey().ok())
+        .map(|pk| B64.encode(pk))
+        .unwrap_or_default();
+    match env.new_string(&out) {
+        Ok(s) => s.into_raw(),
+        Err(_) => std::ptr::null_mut(),
+    }
+}
+
 /// Java: int nativeConnectPaired(String serverAddr, String clientName)
 /// 直接用已配对身份连接(跳过 Hello,直接发送 HelloPaired)
 /// 返回值: 0=失败, 1=已连接
@@ -574,7 +614,7 @@ pub extern "system" fn Java_com_meowmic_client_NativeBridge_nativeConnectPaired(
         Ok(c) => Arc::new(c),
         Err(e) => {
             log::error!("HelloPaired 连接失败: {}", e);
-            return 0;
+            return map_connect_error(&e);
         }
     };
 

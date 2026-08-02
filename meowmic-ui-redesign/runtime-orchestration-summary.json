@@ -31,7 +31,11 @@
       "maxFullValidationRuns": 2,
       "softWarningsTriggerRepair": false,
       "blockingRepairMode": "targeted-once",
-      "forbiddenRepairTriggers": ["soft-warning-only", "provenance-warning-only", "style-warning-only"]
+      "forbiddenRepairTriggers": [
+        "soft-warning-only",
+        "provenance-warning-only",
+        "style-warning-only"
+      ]
     },
     "lowValueCallWatchdog": {
       "noProgressNextAction": "dispatch-or-readiness"
@@ -47,32 +51,89 @@
       "path": "assets/icons/dl_builtin_trae_work/",
       "count": 671,
       "format": "svg"
-    }
-  },
-  "expectedDispatches": [
-    {
-      "pageId": "page-android-connect",
-      "htmlSrc": "pages/android-connect.html",
-      "title": "安卓 · 连接",
-      "status": "pending"
     },
-    {
-      "pageId": "page-android-touchpad-portrait",
-      "htmlSrc": "pages/android-touchpad-portrait.html",
-      "title": "安卓 · 触控板 竖屏",
-      "status": "pending"
-    },
-    {
-      "pageId": "page-android-touchpad-landscape",
-      "htmlSrc": "pages/android-touchpad-landscape.html",
-      "title": "安卓 · 触控板 横屏",
-      "status": "pending"
-    },
-    {
-      "pageId": "page-pc-console",
-      "htmlSrc": "pages/pc-console.html",
-      "title": "PC · 控制台",
-      "status": "pending"
-    }
-  ]
+    "expectedDispatches": [
+      {
+        "pageId": "page-android-connect",
+        "htmlSrc": "pages/android-connect.html",
+        "title": "安卓 · 连接",
+        "status": "completed"
+      },
+      {
+        "pageId": "page-android-touchpad-portrait",
+        "htmlSrc": "pages/android-touchpad-portrait.html",
+        "title": "安卓 · 触控板 竖屏",
+        "status": "completed"
+      },
+      {
+        "pageId": "page-android-touchpad-landscape",
+        "htmlSrc": "pages/android-touchpad-landscape.html",
+        "title": "安卓 · 触控板 横屏",
+        "status": "completed"
+      },
+      {
+        "pageId": "page-pc-console",
+        "htmlSrc": "pages/pc-console.html",
+        "title": "PC · 控制台",
+        "status": "completed"
+      },
+      {
+        "nodeId": "page-pc-console-settings",
+        "pageId": "page-pc-console-settings",
+        "targetPageId": "page-pc-console-settings",
+        "htmlSrc": "pages/pc-console-settings.html",
+        "status": "completed",
+        "changedFiles": [
+          "pages/pc-console-settings.html"
+        ],
+        "toolCallLedger": {
+          "source": "main-agent-runtime-trace",
+          "traceDigest": "b3a25c120ff4972bd79ac827b4a33331d2d2a679a1d649c8d6be40157619a57e",
+          "todoWriteCalls": 0,
+          "previewCalls": 0,
+          "validationScriptCalls": 0,
+          "helperScriptWrites": 0
+        },
+        "recordedAt": "2026-08-02T04:14:07.015Z",
+        "source": "record-dispatch-completion.mjs"
+      },
+      {
+        "nodeId": "page-pc-console-about",
+        "pageId": "page-pc-console-about",
+        "targetPageId": "page-pc-console-about",
+        "htmlSrc": "pages/pc-console-about.html",
+        "status": "completed",
+        "changedFiles": [
+          "pages/pc-console-about.html"
+        ],
+        "toolCallLedger": {
+          "source": "main-agent-runtime-trace",
+          "traceDigest": "229413f4c0a236f745aa3b99c0af1b534a319edd7d19002a7ad2f6eea355343b",
+          "todoWriteCalls": 0,
+          "previewCalls": 0,
+          "validationScriptCalls": 0,
+          "helperScriptWrites": 0
+        },
+        "recordedAt": "2026-08-02T04:14:07.879Z",
+        "source": "record-dispatch-completion.mjs"
+      }
+    ],
+    "dispatchPreflightManifest": [
+      {
+        "nodeId": "page-pc-console-settings",
+        "htmlSrc": "pages/pc-console-settings.html",
+        "allowedWritePaths": [
+          "pages/pc-console-settings.html"
+        ]
+      },
+      {
+        "nodeId": "page-pc-console-about",
+        "htmlSrc": "pages/pc-console-about.html",
+        "allowedWritePaths": [
+          "pages/pc-console-about.html"
+        ]
+      }
+    ],
+    "mainAgentPostDispatchMutations": []
+  }
 }

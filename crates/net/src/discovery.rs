@@ -10,6 +10,7 @@
 //! TXT 记录字段:
 //! - `v`:协议版本(当前 "1")
 //! - `name`:服务端显示名(主机名)
+//! - `pk`:服务端 Ed25519 公钥 base64(可选,配对启用时提供,用于客户端识别身份)
 
 use std::sync::Arc;
 use mdns_sd::{ServiceDaemon, ServiceInfo};
@@ -66,11 +67,14 @@ impl MdnsAdvertiser {
     /// - `port`:control TCP 端口(客户端发现后推导 touch=port+1, audio=port+2)
     /// - `listen_ip`:服务端绑定的本机 IP(用于 mDNS 广播地址);
     ///   传 None 则自动探测(UDP connect trick),并启用 mdns-sd 的地址自动更新
+    /// - `server_pubkey_b64`:服务端 Ed25519 公钥(base64),写入 TXT 的 `pk` 字段。
+    ///   客户端发现即可识别服务端身份(类 Sunshine uniqueid),IP 变化时按公钥合并地址
     pub fn register(
         instance_name: Option<&str>,
         host_name: Option<&str>,
         port: u16,
         listen_ip: Option<std::net::Ipv4Addr>,
+        server_pubkey_b64: Option<&str>,
     ) -> Result<Self, DiscoveryError> {
         let daemon = ServiceDaemon::new()
             .map_err(|e| DiscoveryError::Daemon(e.to_string()))?;
@@ -84,11 +88,15 @@ impl MdnsAdvertiser {
             .unwrap_or("meowmic-host");
 
         // TXT 记录:文档明确支持 &[(&str, &str)] 格式
-        let properties: Vec<(&str, &str)> = vec![
+        let mut properties: Vec<(&str, &str)> = vec![
             ("v", PROTOCOL_VERSION),
             // 把 name 也放进 TXT,便于客户端 UI 直接显示
             ("name", instance),
         ];
+        // 服务端身份公钥(配对启用时提供),客户端据此识别"同一台 PC"
+        if let Some(pk) = server_pubkey_b64.filter(|s| !s.is_empty()) {
+            properties.push(("pk", pk));
+        }
 
         // 决定广播 IP:优先用调用方传入,否则自动探测
         let ip_to_register: std::net::Ipv4Addr = listen_ip
@@ -96,8 +104,11 @@ impl MdnsAdvertiser {
             .unwrap_or(std::net::Ipv4Addr::new(127, 0, 0, 1));
         let addr_str = ip_to_register.to_string();
 
+        // mdns-sd 要求服务类型带域名后缀("_meowmic._tcp.local."),
+        // 而 Android NsdManager 侧使用不带后缀的 "_meowmic._tcp." 过滤(二者在线上格式一致)
+        let ty_domain = format!("{}local.", SERVICE_TYPE);
         let info = ServiceInfo::new(
-            SERVICE_TYPE,
+            &ty_domain,
             instance,
             host,
             &addr_str,

@@ -100,25 +100,120 @@
     },
     {
       "id": "page-pc-console",
-      "title": "PC · 控制台",
+      "title": "PC · 控制面板",
       "type": "page",
       "version": 1,
       "createdAt": 1785705600000,
       "canvasData": {
-        "x": 0,
-        "y": 578,
+        "x": -12,
+        "y": 720,
         "group": 1,
         "layoutSnapshot": {
           "version": 1,
-          "contentHeight": 901,
-          "viewportWidth": 800,
-          "sourceHash": "fnv1a-d3a1e527",
-          "measuredAt": 1785312573357
+          "contentHeight": 867,
+          "viewportWidth": 1169,
+          "sourceHash": "fnv1a-06b462cb",
+          "measuredAt": 1785645899445
+        },
+        "deviceType": "freeSize",
+        "windowSize": {
+          "width": 1169,
+          "height": 1094
         }
       },
       "devMetadata": {
         "htmlSrc": "pages/pc-console.html",
-        "interactions": []
+        "interactions": [
+          {
+            "trigger": "click",
+            "domId": "settings-tab",
+            "action": "navigate",
+            "targetPageId": "page-pc-console-settings"
+          },
+          {
+            "trigger": "click",
+            "domId": "about-tab",
+            "action": "navigate",
+            "targetPageId": "page-pc-console-about"
+          }
+        ]
+      }
+    },
+    {
+      "id": "page-pc-console-settings",
+      "title": "PC · 设置",
+      "type": "page",
+      "version": 1,
+      "createdAt": 1785800000000,
+      "canvasData": {
+        "x": 620,
+        "y": 720,
+        "group": 1,
+        "layoutSnapshot": {
+          "version": 1,
+          "contentHeight": 620,
+          "viewportWidth": 800,
+          "sourceHash": "fnv1a-863c755a",
+          "measuredAt": 1785645899445
+        }
+      },
+      "devMetadata": {
+        "htmlSrc": "pages/pc-console-settings.html",
+        "interactions": [
+          {
+            "trigger": "click",
+            "domId": "control-tab",
+            "action": "navigate",
+            "targetPageId": "page-pc-console"
+          },
+          {
+            "trigger": "click",
+            "domId": "about-tab",
+            "action": "navigate",
+            "targetPageId": "page-pc-console-about"
+          }
+        ]
+      }
+    },
+    {
+      "id": "page-pc-console-about",
+      "title": "PC · 关于",
+      "type": "page",
+      "version": 1,
+      "createdAt": 1785800001000,
+      "canvasData": {
+        "x": 1252,
+        "y": 720,
+        "group": 1,
+        "deviceType": "freeSize",
+        "windowSize": {
+          "width": 881,
+          "height": 765
+        },
+        "layoutSnapshot": {
+          "version": 1,
+          "contentHeight": 703,
+          "viewportWidth": 881,
+          "sourceHash": "fnv1a-42b6c7dd",
+          "measuredAt": 1785645899445
+        }
+      },
+      "devMetadata": {
+        "htmlSrc": "pages/pc-console-about.html",
+        "interactions": [
+          {
+            "trigger": "click",
+            "domId": "control-tab",
+            "action": "navigate",
+            "targetPageId": "page-pc-console"
+          },
+          {
+            "trigger": "click",
+            "domId": "settings-tab",
+            "action": "navigate",
+            "targetPageId": "page-pc-console-settings"
+          }
+        ]
       }
     }
   ],

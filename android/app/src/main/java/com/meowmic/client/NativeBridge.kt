@@ -32,7 +32,8 @@ object NativeBridge {
      * 连接到服务端
      * @param serverAddr 形如 "192.168.1.100:28900" (control 端口,touch/audio 自动 +1/+2)
      * @param clientName 客户端名称,用于服务端日志识别
-     * @return 0=失败, 1=已连接, 2=需要配对(等待 nativeCompletePairing)
+     * @return 0=失败, 1=已连接, 2=需要配对(等待 nativeCompletePairing),
+     *         3=地址无效, 4=主机不可达(TCP 超时), 5=连接被拒绝(服务未启动/端口错误)
      */
     external fun nativeConnect(serverAddr: String, clientName: String): Int
 
@@ -57,6 +58,13 @@ object NativeBridge {
      * @param serverPubkeyB64 服务端公钥的 base64 字符串
      */
     external fun nativeIsServerPaired(serverPubkeyB64: String): Boolean
+
+    /**
+     * 获取本客户端的 Ed25519 公钥(base64)
+     * 用途:轮询 /serverinfo?pubkey=<此值> 查询服务端侧配对状态(pair_status)
+     * @return base64 公钥;状态目录未初始化或读取失败时返回空字符串
+     */
+    external fun nativeGetClientPubkeyB64(): String
 
     /**
      * 发送触摸事件

@@ -78,3 +78,13 @@ CI 从 tag 提取版本号(如 `v0.6.0` → `0.6.0`),动态注入到:
 - `MEOWMIC_MUTE_SPEAKER` 环境变量控制音频静音
 - Android 触控事件处理有已知 bug(JNI 层丢失 EVT_SCROLL、pointerIndex/pointerId 混淆)
 - Kotlin `vararg` 参数必须放在函数签名最后
+
+## 发现与连接(2026-08 重构,借鉴 Sunshine/Moonlight)
+
+- **身份模型**:服务端公钥(`server_pubkey_b64`,持久化)即 PC 身份,类 Sunshine uniqueid;App 端 PC 列表按 `pk:<pubkey>` 键控合并地址,DHCP 换 IP 不失效
+- **mDNS TXT**:`v`(协议版本)、`name`(显示名)、`pk`(服务端公钥,发现即识别)
+- **serverinfo**:`GET {base_port+4}/serverinfo?pubkey=<客户端公钥b64>` 额外返回 `pair_status`(该客户端是否已配对);不带 pubkey 时无此字段(兼容旧客户端)
+- **nativeConnect 返回码**:0=通用失败,1=已连接,2=需配对,3=地址无效,4=主机不可达(TCP 3s 超时),5=连接被拒绝
+- **客户端 TCP 连接超时**:`crates/net/src/client.rs` 的 `CONNECT_TIMEOUT_SECS`(3s),超时映射为 io `TimedOut`;Kotlin 看门狗 join 为 15s(仅兜底)
+- **地址规范化**:App 侧 `normalizeAddress()` 去空格/去 scheme、裸 IP 自动补 `:28900`;非法地址在 UI 即时提示,不发起连接
+- **手动 PC**:`MeowMicViewModel` 持久化于 SharedPreferences `manual_pcs`(JSON),与 mDNS 发现同权轮询(`ServerInfoProber` 共用探测逻辑)

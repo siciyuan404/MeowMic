@@ -38,3 +38,6 @@ Thumbs.db
 *.pem
 secrets.ps1
 artifacts/
+
+# 工具临时目录
+.workbuddy/

@@ -186,6 +186,13 @@ impl PairingManager {
         state.paired_clients.iter().any(|c| c.pubkey_b64 == expected_b64)
     }
 
+    /// 检查 base64 编码的客户端公钥是否在白名单中
+    /// (供 /serverinfo?pubkey= 查询使用,避免调用方重复编解码)
+    pub async fn is_client_paired_b64(&self, client_pubkey_b64: &str) -> bool {
+        let state = self.state.lock().await;
+        state.paired_clients.iter().any(|c| c.pubkey_b64 == client_pubkey_b64)
+    }
+
     /// 处理客户端配对请求
     ///
     /// 返回 (success, server_pubkey, error_msg)

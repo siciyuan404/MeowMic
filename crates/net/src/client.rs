@@ -23,6 +23,11 @@ use meowmic_protocol::{
 use crate::{NetError, PeerAddr};
 use crate::sync::ClockSynchronizer;
 
+/// TCP 连接超时(秒)。不设置时依赖 OS 默认(Linux SYN 重传可达 ~2 分钟),
+/// 会让上层(Java 侧 thread.join 超时)只能给出模糊的"连接超时"。
+/// 缩短为 3s,使"主机不可达"能快速、准确地上报(映射为 io TimedOut)。
+pub const CONNECT_TIMEOUT_SECS: u64 = 3;
+
 /// 客户端事件(从服务端收到)
 #[derive(Debug)]
 pub enum ClientEvent {
@@ -131,7 +136,21 @@ impl Client {
             audio: SocketAddr::new(control_addr.ip(), control_addr.port() + 2),
         };
 
-        let stream = TcpStream::connect(control_addr).await?;
+        let stream = match tokio::time::timeout(
+            std::time::Duration::from_secs(CONNECT_TIMEOUT_SECS),
+            TcpStream::connect(control_addr),
+        )
+        .await
+        {
+            Ok(Ok(s)) => s,
+            Ok(Err(e)) => return Err(NetError::Io(e)),
+            Err(_) => {
+                return Err(NetError::Io(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    format!("连接 {} 超时({}s)", control_addr, CONNECT_TIMEOUT_SECS),
+                )))
+            }
+        };
         stream.set_nodelay(true)?;
 
         // 分离读写半部:read_half 独占给后台接收 task,write_half 用 Mutex 保护
