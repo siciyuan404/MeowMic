@@ -212,6 +212,7 @@ class MeowMicViewModel : ViewModel() {
     fun init(context: Context) {
         this.context = context.applicationContext
         audioInputManager.init(context.applicationContext)
+        voiceRecorder.init(context.applicationContext)
         updateChecker = UpdateChecker(context.applicationContext)
         loadHistory()
         loadAudioPanel()

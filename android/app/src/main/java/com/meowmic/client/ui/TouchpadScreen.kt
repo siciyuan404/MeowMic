@@ -813,58 +813,6 @@ fun TouchpadScreen(
         }
     }
 
-    // 语音/键盘控制面板:Tab 切换
-    @Composable
-    fun VoicePanel() {
-        var selectedTab by remember { mutableStateOf(0) }  // 0=语音, 1=键盘
-        val micEnabled by vm.micEnabled.collectAsState()
-
-        Column(modifier = Modifier.padding(horizontal = 12.dp)) {
-            // Tab 行(下划线风格)
-            TabRow(
-                selectedTabIndex = selectedTab,
-                modifier = Modifier.fillMaxWidth(),
-                contentColor = MaterialTheme.colorScheme.primary,
-            ) {
-                Tab(
-                    selected = selectedTab == 0,
-                    onClick = { selectedTab = 0 },
-                    text = { Text("语音", fontSize = 12.sp) },
-                    icon = { Icon(Icons.Default.AudioLines, null, Modifier.size(14.dp)) },
-                )
-                Tab(
-                    selected = selectedTab == 1,
-                    onClick = { selectedTab = 1 },
-                    text = { Text("键盘", fontSize = 12.sp) },
-                    icon = { Icon(Icons.Default.Keyboard, null, Modifier.size(14.dp)) },
-                )
-            }
-
-            Spacer(Modifier.height(10.dp))
-
-            when (selectedTab) {
-                0 -> {
-                    // 语音 Tab:PTT 录音 + 历史播放 + 快捷槽位
-                    PttButton(modifier = Modifier.fillMaxWidth())
-                    if (micEnabled) {
-                        Spacer(Modifier.height(4.dp))
-                        Text(
-                            "麦克风常开中,PTT 录音已禁用",
-                            fontSize = 10.sp,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
-                        )
-                    }
-                    Spacer(Modifier.height(10.dp))
-                    AudioPanel()
-                }
-                1 -> {
-                    // 键盘 Tab:虚拟键盘 + 快捷键
-                    KeyboardPanel()
-                }
-            }
-        }
-    }
-
     // 底部鼠标按键(支持按下/抬起,带图标)
     @Composable
     fun MouseButtonsBar() {
@@ -1122,6 +1070,58 @@ fun TouchpadScreen(
                 KeyBtn("End", VK.END, Modifier.weight(1f))
                 KeyBtn("PgUp", VK.PRIOR, Modifier.weight(1f))
                 KeyBtn("PgDn", VK.NEXT, Modifier.weight(1f))
+            }
+        }
+    }
+
+    // 语音/键盘控制面板:Tab 切换(必须在 KeyboardPanel 之后定义,局部函数不能前向引用)
+    @Composable
+    fun VoicePanel() {
+        var selectedTab by remember { mutableStateOf(0) }  // 0=语音, 1=键盘
+        val micEnabled by vm.micEnabled.collectAsState()
+
+        Column(modifier = Modifier.padding(horizontal = 12.dp)) {
+            // Tab 行(下划线风格)
+            TabRow(
+                selectedTabIndex = selectedTab,
+                modifier = Modifier.fillMaxWidth(),
+                contentColor = MaterialTheme.colorScheme.primary,
+            ) {
+                Tab(
+                    selected = selectedTab == 0,
+                    onClick = { selectedTab = 0 },
+                    text = { Text("语音", fontSize = 12.sp) },
+                    icon = { Icon(Icons.Default.GraphicEq, null, Modifier.size(14.dp)) },
+                )
+                Tab(
+                    selected = selectedTab == 1,
+                    onClick = { selectedTab = 1 },
+                    text = { Text("键盘", fontSize = 12.sp) },
+                    icon = { Icon(Icons.Default.Keyboard, null, Modifier.size(14.dp)) },
+                )
+            }
+
+            Spacer(Modifier.height(10.dp))
+
+            when (selectedTab) {
+                0 -> {
+                    // 语音 Tab:PTT 录音 + 历史播放 + 快捷槽位
+                    PttButton(modifier = Modifier.fillMaxWidth())
+                    if (micEnabled) {
+                        Spacer(Modifier.height(4.dp))
+                        Text(
+                            "麦克风常开中,PTT 录音已禁用",
+                            fontSize = 10.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
+                        )
+                    }
+                    Spacer(Modifier.height(10.dp))
+                    AudioPanel()
+                }
+                1 -> {
+                    // 键盘 Tab:虚拟键盘 + 快捷键
+                    KeyboardPanel()
+                }
             }
         }
     }

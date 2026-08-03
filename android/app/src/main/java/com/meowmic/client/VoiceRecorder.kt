@@ -1,5 +1,6 @@
 package com.meowmic.client
 
+import android.content.Context
 import android.media.MediaRecorder
 import android.os.Build
 import android.util.Log
@@ -26,12 +27,20 @@ class VoiceRecorder {
 
     private var recorder: MediaRecorder? = null
     private var outputFile: File? = null
+    private var appContext: Context? = null
     @Volatile private var isRecording = false
 
     /** 是否正在录音 */
     val recording: Boolean get() = isRecording
     /** 当前录音目标文件(录音中有效) */
     val currentFile: File? get() = outputFile
+
+    /**
+     * 初始化(传入 Context 用于 API 31+ 创建 MediaRecorder)
+     */
+    fun init(context: Context) {
+        appContext = context.applicationContext
+    }
 
     /**
      * 开始录音
@@ -132,7 +141,8 @@ class VoiceRecorder {
     private fun createRecorder(): MediaRecorder? {
         return try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                MediaRecorder(null)
+                val ctx = appContext ?: return null
+                MediaRecorder(ctx)
             } else {
                 @Suppress("DEPRECATION")
                 MediaRecorder()
