@@ -256,13 +256,27 @@ pub extern "system" fn Java_com_meowmic_client_NativeBridge_nativeConnect(
             // 检查是否已配对该服务端
             let server_pubkey_b64 = base64::engine::general_purpose::STANDARD.encode(&server_pubkey);
             if client_state.is_paired_with(&server_pubkey_b64) {
-                // 已配对该服务端,但服务端要求重新配对(可能服务端重置了配对列表)
-                // 尝试用 HelloPaired 重连
+                // 客户端本地记录已配对该服务端,但服务端返回 PairRequired,
+                // 说明服务端可能重置了 pairing.json。尝试用 HelloPaired 重连,
+                // 若被拒(HelloAck 超时,result=0)则回退到 PairRequest 流程,
+                // 让用户重新输入 PIN 完成配对。
                 log::info!("已配对该服务端,尝试用 HelloPaired 重连");
                 // drop 当前 client(断开 TCP)
                 drop(client);
                 drop(event_rx);
-                return reconnect_paired(rt, &server_addr, &client_name, &client_state);
+                let result = reconnect_paired(rt, &server_addr, &client_name, &client_state);
+                if result == 1 {
+                    return 1;
+                }
+                // result=0 表示 HelloAck 超时(服务端拒绝了 HelloPaired,白名单已失效)
+                // result=3/4/5 表示地址/网络错误,直接返回让 UI 提示
+                if result != 0 {
+                    return result;
+                }
+                log::warn!(
+                    "HelloPaired 被服务端拒绝(白名单已失效),回退到重新配对流程"
+                );
+                return reconnect_for_pairing(server_addr, client_name);
             }
 
             // 保存 pending 状态,等待 Kotlin 提供 PIN
@@ -284,6 +298,118 @@ pub extern "system" fn Java_com_meowmic_client_NativeBridge_nativeConnect(
             2
         }
         Handshake::Failed(msg) => {
+            log::warn!("{}", msg);
+            0
+        }
+    }
+}
+
+/// 回退到 PairRequest 流程(HelloPaired 被拒后使用)
+///
+/// 场景:客户端本地记录已配对该服务端,但服务端 pairing.json 被重置/丢失,
+/// HelloPaired 握手被服务端拒绝(返回 PairResponse{success:false} 而非 HelloAck)。
+/// 此时需要重新走"连接 → Hello → PairRequired → 保存 pending → 返回 2"流程,
+/// 让用户重新输入 PIN 完成配对。
+///
+/// 返回 2=需要配对(已保存 pending) / 0=失败 / 3/4/5=连接错误
+fn reconnect_for_pairing(server_addr: String, client_name: String) -> jint {
+    log::info!("回退到 PairRequest 流程:重新连接 {} as {}", server_addr, client_name);
+
+    let rt = match Runtime::new() {
+        Ok(rt) => rt,
+        Err(e) => {
+            log::error!("创建 runtime 失败: {}", e);
+            return 0;
+        }
+    };
+
+    let (event_tx, mut event_rx) = tokio::sync::mpsc::channel(64);
+    let client_result = rt.block_on(async {
+        Client::connect(&server_addr, &client_name, event_tx).await
+    });
+
+    let client = match client_result {
+        Ok(c) => Arc::new(c),
+        Err(e) => {
+            log::error!("回退连接失败: {}", e);
+            return map_connect_error(&e);
+        }
+    };
+
+    // 等待 PairRequired(服务端启用配对时必然返回此消息)
+    enum FallbackHandshake {
+        PairRequired { server_pubkey: Vec<u8>, server_nonce: u64 },
+        Ack, // 服务端未启用配对,直接放行(理论不会发生,兜底处理)
+        Failed(&'static str),
+    }
+
+    let handshake = rt.block_on(async {
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(8);
+        loop {
+            match tokio::time::timeout_at(deadline, event_rx.recv()).await {
+                Ok(Some(ClientEvent::PairRequired { server_pubkey, server_nonce })) => {
+                    break FallbackHandshake::PairRequired { server_pubkey, server_nonce };
+                }
+                Ok(Some(ClientEvent::HelloAck { .. })) => break FallbackHandshake::Ack,
+                Ok(Some(ev)) => {
+                    log::debug!("回退握手阶段跳过事件: {:?}", ev);
+                    continue;
+                }
+                Ok(None) => break FallbackHandshake::Failed("事件通道关闭"),
+                Err(_) => break FallbackHandshake::Failed("等待 PairRequired 超时(8s)"),
+            }
+        }
+    });
+
+    match handshake {
+        FallbackHandshake::PairRequired { server_pubkey, server_nonce } => {
+            let client_state = match load_client_pairing_state() {
+                Some(s) => s,
+                None => {
+                    log::error!("无法加载客户端配对状态");
+                    return 0;
+                }
+            };
+            let pending = PendingPairing {
+                rt,
+                client,
+                event_rx,
+                server_pubkey,
+                server_nonce,
+                client_state,
+                server_addr,
+                client_name,
+            };
+            let mut guard = pending_pairing().lock().unwrap();
+            if guard.is_some() {
+                log::warn!("已有 pending 配对,覆盖");
+            }
+            *guard = Some(pending);
+            2
+        }
+        FallbackHandshake::Ack => {
+            // 服务端未启用配对,直接放行(兜底,正常不会走到)
+            log::info!("回退:服务端直接放行(未启用配对)");
+            rt.spawn(async move {
+                while let Some(ev) = event_rx.recv().await {
+                    log::debug!("client event: {:?}", ev);
+                }
+            });
+            let new_state = State {
+                rt,
+                client: client.clone(),
+                encoder: Mutex::new(make_encoder(&AudioConfig::default())),
+                audio_cfg: AudioConfig::default(),
+                touch_seq: AtomicU16::new(0),
+                audio_seq: AtomicU16::new(0),
+                touch_sent: AtomicU64::new(0),
+                audio_sent: AtomicU64::new(0),
+            };
+            let mut guard = state().lock().unwrap();
+            *guard = Some(new_state);
+            1
+        }
+        FallbackHandshake::Failed(msg) => {
             log::warn!("{}", msg);
             0
         }
