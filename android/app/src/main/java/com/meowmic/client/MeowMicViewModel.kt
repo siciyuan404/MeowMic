@@ -16,6 +16,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
+import java.io.File
 
 sealed class ConnectionState {
     object Disconnected : ConnectionState()
@@ -185,6 +186,11 @@ class MeowMicViewModel : ViewModel() {
 
     private val audioInputManager = AudioInputManager()
     val currentAudioMode: StateFlow<AudioInputManager.InputMode> = audioInputManager.currentMode
+
+    // PTT 录音器(按住说话 → 产生 .m4a 文件 → 入库 + 推流到 PC)
+    private val voiceRecorder = VoiceRecorder()
+    private val _isRecording = MutableStateFlow(false)
+    val isRecording: StateFlow<Boolean> = _isRecording.asStateFlow()
 
     // 音频面板:历史记录 + 快捷 slot
     private val _audioHistory = MutableStateFlow<List<QuickAudioSlot>>(emptyList())
@@ -655,6 +661,57 @@ class MeowMicViewModel : ViewModel() {
         }
     }
 
+    // ==================== PTT 录音(按住说话 → 产生文件 → 入库 + 推流) ====================
+
+    /**
+     * 开始 PTT 录音:MediaRecorder 录制 AAC/M4A 到 filesDir/recordings/
+     * 录音文件落盘,松开后由 [stopRecording] 入库并推流到 PC。
+     *
+     * @return true 表示启动成功
+     */
+    fun startRecording(): Boolean {
+        if (_isRecording.value) return false
+        val ctx = context ?: return false
+        val dir = File(ctx.filesDir, "recordings").apply { mkdirs() }
+        val ts = System.currentTimeMillis()
+        val file = File(dir, "rec_$ts.m4a")
+        val ok = voiceRecorder.start(file)
+        if (ok) {
+            _isRecording.value = true
+        }
+        return ok
+    }
+
+    /**
+     * 停止 PTT 录音:文件落盘 → 入历史播放列表 → 自动推流到 PC 播放。
+     * 录制过短(< 1s)或失败时文件会被丢弃,不入库。
+     */
+    fun stopRecording() {
+        if (!_isRecording.value) return
+        _isRecording.value = false
+        val file = voiceRecorder.stop()
+        if (file != null) {
+            addAudioHistory(file.name, file.absolutePath)
+            // 自动推流到 PC 播放(复用音频文件解码链)
+            viewModelScope.launch {
+                try {
+                    playMusicFile(file.absolutePath)
+                } catch (e: Exception) {
+                    Log.w(TAG, "录音文件自动播放失败: ${e.message}")
+                }
+            }
+        }
+    }
+
+    /**
+     * 取消 PTT 录音(锁定态取消):删除文件,不入库不播放
+     */
+    fun cancelRecording() {
+        if (!_isRecording.value) return
+        _isRecording.value = false
+        voiceRecorder.cancel()
+    }
+
     fun switchAudioMode(mode: AudioInputManager.InputMode) {
         when (mode) {
             AudioInputManager.InputMode.MICROPHONE -> {
@@ -938,6 +995,8 @@ class MeowMicViewModel : ViewModel() {
     }
 
     fun disconnect() {
+        cancelRecording()
+        audioInputManager.stopMusicPlayback()
         audioCapture?.release()
         audioCapture = null
         touchHandler?.reset()

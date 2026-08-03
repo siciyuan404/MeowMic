@@ -213,6 +213,8 @@ fun TouchpadScreen(
     @Composable
     fun ActionBar() {
         var menuExpanded by remember { mutableStateOf(false) }
+        val micEnabled by vm.micEnabled.collectAsState()
+        val muteSpk by vm.muteSpeaker.collectAsState()
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(6.dp),
@@ -237,32 +239,7 @@ fun TouchpadScreen(
                 Icon(Icons.Default.ArrowBack, "返回", Modifier.size(16.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
             }
 
-            // 旋转按钮(占满剩余空间)
-            Box(
-                modifier = Modifier
-                    .weight(1f)
-                    .height(28.dp)
-                    .background(
-                        MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
-                        RoundedCornerShape(8.dp),
-                    )
-                    .clickable {
-                        if (isLandscape) requestPortrait() else requestLandscape()
-                        showToast(if (isLandscape) "切换到竖屏" else "切换到横屏")
-                    },
-                contentAlignment = Alignment.Center,
-            ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(Icons.Default.ScreenRotation, null, Modifier.size(14.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
-                    Spacer(Modifier.width(4.dp))
-                    Text(
-                        if (isLandscape) "竖屏" else "横屏",
-                        fontSize = 11.sp,
-                        fontWeight = FontWeight.Medium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-            }
+            Spacer(Modifier.weight(1f))
 
             // 更多按钮
             Box {
@@ -278,19 +255,69 @@ fun TouchpadScreen(
                     expanded = menuExpanded,
                     onDismissRequest = { menuExpanded = false },
                 ) {
+                    // 横屏切换
                     DropdownMenuItem(
-                        text = { Text("提示开关", fontSize = 12.sp) },
+                        text = { Text(if (isLandscape) "竖屏" else "横屏", fontSize = 12.sp) },
                         onClick = {
-                            showTooltips = !showTooltips
+                            if (isLandscape) requestPortrait() else requestLandscape()
                             menuExpanded = false
                         },
+                        leadingIcon = { Icon(Icons.Default.ScreenRotation, null, Modifier.size(16.dp)) },
+                    )
+                    HorizontalDivider()
+                    // 麦克风开关(常开推流)
+                    DropdownMenuItem(
+                        text = { Text("麦克风", fontSize = 12.sp) },
+                        onClick = { vm.setMicEnabled(!micEnabled) },
+                        leadingIcon = { Icon(Icons.Default.Mic, null, Modifier.size(16.dp)) },
                         trailingIcon = {
                             Switch(
-                                checked = showTooltips,
-                                onCheckedChange = null,
+                                checked = micEnabled,
+                                onCheckedChange = { vm.setMicEnabled(it) },
                                 modifier = Modifier.scale(0.7f),
                             )
                         },
+                    )
+                    // 扬声器开关(静音 PC 扬声器)
+                    DropdownMenuItem(
+                        text = { Text("扬声器", fontSize = 12.sp) },
+                        onClick = { vm.setMuteSpeaker(!muteSpk) },
+                        leadingIcon = {
+                            Icon(
+                                if (muteSpk) Icons.Default.VolumeOff else Icons.Default.VolumeUp,
+                                null, Modifier.size(16.dp),
+                            )
+                        },
+                        trailingIcon = {
+                            Switch(
+                                checked = !muteSpk,
+                                onCheckedChange = { vm.setMuteSpeaker(!it) },
+                                modifier = Modifier.scale(0.7f),
+                            )
+                        },
+                    )
+                    // 提示开关
+                    DropdownMenuItem(
+                        text = { Text("操作提示", fontSize = 12.sp) },
+                        onClick = { showTooltips = !showTooltips },
+                        leadingIcon = { Icon(Icons.Default.Notifications, null, Modifier.size(16.dp)) },
+                        trailingIcon = {
+                            Switch(
+                                checked = showTooltips,
+                                onCheckedChange = { showTooltips = it },
+                                modifier = Modifier.scale(0.7f),
+                            )
+                        },
+                    )
+                    HorizontalDivider()
+                    // 断开连接
+                    DropdownMenuItem(
+                        text = { Text("断开连接", fontSize = 12.sp, color = MaterialTheme.colorScheme.error) },
+                        onClick = {
+                            menuExpanded = false
+                            onDisconnect()
+                        },
+                        leadingIcon = { Icon(Icons.Default.Logout, null, Modifier.size(16.dp), tint = MaterialTheme.colorScheme.error) },
                     )
                 }
             }
@@ -408,27 +435,34 @@ fun TouchpadScreen(
         var btnState by remember { mutableStateOf("idle") }
         val density = LocalDensity.current
         val lockThresholdPx = with(density) { 60.dp.toPx() }
+        val micEnabled by vm.micEnabled.collectAsState()
+        // 麦克风常开时禁用 PTT(避免 MediaRecorder 和 AudioCapture 同时占用麦克风)
+        val disabled = micEnabled
 
         // 用 mutableStateOf 包装当前状态供 pointerInput 读取,避免 key 变化重启
         val stateRef = remember { mutableStateOf("idle") }
 
-        val bgColor = when (btnState) {
-            "recording" -> MaterialTheme.colorScheme.error
-            "locked" -> MaterialTheme.colorScheme.tertiary
+        val bgColor = when {
+            disabled -> MaterialTheme.colorScheme.surfaceVariant
+            btnState == "recording" -> MaterialTheme.colorScheme.error
+            btnState == "locked" -> MaterialTheme.colorScheme.tertiary
             else -> MaterialTheme.colorScheme.primary
         }
-        val icon = if (btnState == "idle") Icons.Default.MicOff else Icons.Default.Mic
-        val text = when (btnState) {
-            "recording" -> "录音中"
-            "locked" -> "已锁定·点取消"
-            else -> "长按说话"
+        val fgColor = if (disabled) MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f) else Color.White
+        val icon = Icons.Default.Mic
+        val text = when {
+            disabled -> "麦克风常开中"
+            btnState == "recording" -> "录音中"
+            btnState == "locked" -> "已锁定·点取消"
+            else -> "按住录音"
         }
 
         Box(
             modifier = modifier
                 .height(48.dp)
                 .background(bgColor, RoundedCornerShape(8.dp))
-                .pointerInput(Unit) {
+                .pointerInput(disabled) {
+                    if (disabled) return@pointerInput
                     awaitEachGesture {
                         val down = awaitFirstDown(requireUnconsumed = false)
                         val pressX = down.position.x
@@ -439,8 +473,8 @@ fun TouchpadScreen(
                             "idle" -> {
                                 btnState = "recording"
                                 stateRef.value = "recording"
-                                vm.setMicEnabled(true)
-                                showToast("开始录音(松开结束,滑动锁定)")
+                                vm.startRecording()
+                                showToast("开始录音(松开结束,上滑锁定)")
                                 var locked = false
                                 while (true) {
                                     val event = awaitPointerEvent(PointerEventPass.Main)
@@ -459,7 +493,7 @@ fun TouchpadScreen(
                                         if (!locked) {
                                             btnState = "idle"
                                             stateRef.value = "idle"
-                                            vm.setMicEnabled(false)
+                                            vm.stopRecording()
                                         }
                                         break
                                     }
@@ -473,8 +507,8 @@ fun TouchpadScreen(
                                     if (change.changedToUp()) {
                                         btnState = "idle"
                                         stateRef.value = "idle"
-                                        vm.setMicEnabled(false)
-                                        showToast("已取消锁定录音")
+                                        vm.cancelRecording()
+                                        showToast("已取消录音")
                                         break
                                     }
                                 }
@@ -487,7 +521,7 @@ fun TouchpadScreen(
                                     if (change.changedToUp()) {
                                         btnState = "idle"
                                         stateRef.value = "idle"
-                                        vm.setMicEnabled(false)
+                                        vm.stopRecording()
                                         break
                                     }
                                 }
@@ -498,9 +532,9 @@ fun TouchpadScreen(
             contentAlignment = Alignment.Center,
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(icon, null, Modifier.size(18.dp), tint = Color.White)
+                Icon(icon, null, Modifier.size(18.dp), tint = fgColor)
                 Spacer(Modifier.width(6.dp))
-                Text(text, fontSize = 13.sp, color = Color.White, fontWeight = FontWeight.Medium)
+                Text(text, fontSize = 13.sp, color = fgColor, fontWeight = FontWeight.Medium)
             }
         }
     }
@@ -641,60 +675,22 @@ fun TouchpadScreen(
     @Composable
     fun AudioPanel() {
         Column(modifier = Modifier.padding(horizontal = 12.dp)) {
-            // 音频源切换
+            // 音频源行:文件选择 + 停止播放
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(6.dp),
             ) {
-                // 麦克风源 pill
+                // 音频文件 pill(选择文件)
                 Box(
                     modifier = Modifier
                         .height(28.dp)
                         .background(
-                            if (currentAudioMode == AudioInputManager.InputMode.MICROPHONE)
-                                MaterialTheme.colorScheme.primaryContainer
-                            else MaterialTheme.colorScheme.surfaceVariant,
+                            MaterialTheme.colorScheme.surfaceVariant,
                             RoundedCornerShape(50),
                         )
                         .border(
                             1.dp,
-                            if (currentAudioMode == AudioInputManager.InputMode.MICROPHONE)
-                                MaterialTheme.colorScheme.primary
-                            else MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f),
-                            RoundedCornerShape(50),
-                        )
-                        .clickable {
-                            vm.switchAudioMode(AudioInputManager.InputMode.MICROPHONE)
-                            showToast("切换到麦克风源")
-                        }
-                        .padding(horizontal = 10.dp),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(Icons.Default.Mic, null, Modifier.size(12.dp), tint = if (currentAudioMode == AudioInputManager.InputMode.MICROPHONE) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant)
-                        Spacer(Modifier.width(4.dp))
-                        Text(
-                            "麦克风源",
-                            fontSize = 11.sp,
-                            color = if (currentAudioMode == AudioInputManager.InputMode.MICROPHONE) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
-                }
-                // 音频文件 pill
-                Box(
-                    modifier = Modifier
-                        .height(28.dp)
-                        .background(
-                            if (currentAudioMode == AudioInputManager.InputMode.MUSIC_FILE)
-                                MaterialTheme.colorScheme.primaryContainer
-                            else MaterialTheme.colorScheme.surfaceVariant,
-                            RoundedCornerShape(50),
-                        )
-                        .border(
-                            1.dp,
-                            if (currentAudioMode == AudioInputManager.InputMode.MUSIC_FILE)
-                                MaterialTheme.colorScheme.primary
-                            else MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f),
+                            MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f),
                             RoundedCornerShape(50),
                         )
                         .clickable {
@@ -706,12 +702,12 @@ fun TouchpadScreen(
                     contentAlignment = Alignment.Center,
                 ) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(Icons.Default.MusicNote, null, Modifier.size(12.dp), tint = if (currentAudioMode == AudioInputManager.InputMode.MUSIC_FILE) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant)
+                        Icon(Icons.Default.MusicNote, null, Modifier.size(12.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
                         Spacer(Modifier.width(4.dp))
                         Text(
                             "音频文件",
                             fontSize = 11.sp,
-                            color = if (currentAudioMode == AudioInputManager.InputMode.MUSIC_FILE) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
                 }
@@ -817,32 +813,13 @@ fun TouchpadScreen(
         }
     }
 
-    // 语音控制面板:Tab 切换 麦克风 / 音频
+    // 语音/键盘控制面板:Tab 切换
     @Composable
     fun VoicePanel() {
-        var selectedTab by remember { mutableStateOf(0) }  // 0=麦克风, 1=音频
+        var selectedTab by remember { mutableStateOf(0) }  // 0=语音, 1=键盘
         val micEnabled by vm.micEnabled.collectAsState()
-        val muteSpk by vm.muteSpeaker.collectAsState()
-        val currentMode by vm.currentAudioMode.collectAsState()
 
         Column(modifier = Modifier.padding(horizontal = 12.dp)) {
-            // 面板标题行
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(Icons.Default.Mic, null, Modifier.size(14.dp), tint = MaterialTheme.colorScheme.primary)
-                Spacer(Modifier.width(6.dp))
-                Text("语音", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurface)
-                Spacer(Modifier.weight(1f))
-                Text("提示", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f))
-                Spacer(Modifier.width(6.dp))
-                Switch(
-                    checked = showTooltips,
-                    onCheckedChange = { showTooltips = it },
-                    modifier = Modifier.scale(0.7f),
-                )
-            }
-
-            Spacer(Modifier.height(6.dp))
-
             // Tab 行(下划线风格)
             TabRow(
                 selectedTabIndex = selectedTab,
@@ -851,25 +828,15 @@ fun TouchpadScreen(
             ) {
                 Tab(
                     selected = selectedTab == 0,
-                    onClick = {
-                        selectedTab = 0
-                        if (currentMode == AudioInputManager.InputMode.MUSIC_FILE) {
-                            vm.stopMusicPlayback()
-                        }
-                        showToast("麦克风 Tab")
-                    },
-                    text = { Text("麦克风", fontSize = 12.sp) },
-                    icon = { Icon(Icons.Default.Mic, null, Modifier.size(14.dp)) },
+                    onClick = { selectedTab = 0 },
+                    text = { Text("语音", fontSize = 12.sp) },
+                    icon = { Icon(Icons.Default.AudioLines, null, Modifier.size(14.dp)) },
                 )
                 Tab(
                     selected = selectedTab == 1,
-                    onClick = {
-                        selectedTab = 1
-                        if (micEnabled) vm.setMicEnabled(false)
-                        showToast("音频 Tab")
-                    },
-                    text = { Text("音频", fontSize = 12.sp) },
-                    icon = { Icon(Icons.Default.MusicNote, null, Modifier.size(14.dp)) },
+                    onClick = { selectedTab = 1 },
+                    text = { Text("键盘", fontSize = 12.sp) },
+                    icon = { Icon(Icons.Default.Keyboard, null, Modifier.size(14.dp)) },
                 )
             }
 
@@ -877,39 +844,22 @@ fun TouchpadScreen(
 
             when (selectedTab) {
                 0 -> {
-                    // 麦克风 Tab:PTT 长按说话 + 静音外放
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(6.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        PttButton(modifier = Modifier.weight(1f))
-                        Box(
-                            modifier = Modifier
-                                .size(48.dp)
-                                .background(
-                                    MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.7f),
-                                    RoundedCornerShape(8.dp),
-                                )
-                                .clickable {
-                                    val newMuted = !muteSpk
-                                    vm.setMuteSpeaker(newMuted)
-                                    showToast(if (newMuted) "已静音外放" else "已开启外放")
-                                },
-                            contentAlignment = Alignment.Center,
-                        ) {
-                            Icon(
-                                if (muteSpk) Icons.Default.VolumeOff else Icons.Default.VolumeUp,
-                                contentDescription = "静音外放",
-                                tint = if (muteSpk) MaterialTheme.colorScheme.error
-                                else MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                        }
+                    // 语音 Tab:PTT 录音 + 历史播放 + 快捷槽位
+                    PttButton(modifier = Modifier.fillMaxWidth())
+                    if (micEnabled) {
+                        Spacer(Modifier.height(4.dp))
+                        Text(
+                            "麦克风常开中,PTT 录音已禁用",
+                            fontSize = 10.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
+                        )
                     }
+                    Spacer(Modifier.height(10.dp))
+                    AudioPanel()
                 }
                 1 -> {
-                    // 音频 Tab:音频面板(历史 + 快捷 slot)
-                    AudioPanel()
+                    // 键盘 Tab:虚拟键盘 + 快捷键
+                    KeyboardPanel()
                 }
             }
         }
@@ -1196,6 +1146,9 @@ fun TouchpadScreen(
                         Icon(Icons.Default.ArrowBack, "返回", Modifier.size(16.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                     StatusBar()
+                    Spacer(Modifier.weight(1f))
+                    // 横屏也放更多菜单
+                    ActionBar()
                 }
                 Spacer(Modifier.height(6.dp))
                 TouchArea(modifier = Modifier.weight(1f).fillMaxWidth())
@@ -1207,31 +1160,6 @@ fun TouchpadScreen(
             ) {
                 VoicePanel()
                 MouseButtonsBar()
-                KeyboardPanel()
-                // 断开按钮
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(40.dp)
-                        .padding(horizontal = 12.dp)
-                        .background(
-                            MaterialTheme.colorScheme.surfaceVariant,
-                            RoundedCornerShape(8.dp),
-                        )
-                        .border(
-                            1.dp,
-                            MaterialTheme.colorScheme.error.copy(alpha = 0.3f),
-                            RoundedCornerShape(8.dp),
-                        )
-                        .clickable { onDisconnect() },
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(Icons.Default.Logout, null, Modifier.size(16.dp), tint = MaterialTheme.colorScheme.error)
-                        Spacer(Modifier.width(6.dp))
-                        Text("断开", fontSize = 12.sp, color = MaterialTheme.colorScheme.error)
-                    }
-                }
             }
         }
     } else {
@@ -1266,31 +1194,6 @@ fun TouchpadScreen(
                         ) {
                             VoicePanel()
                             MouseButtonsBar()
-                            KeyboardPanel()
-                            // 断开按钮
-                            Box(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .height(40.dp)
-                                    .padding(horizontal = 12.dp)
-                                    .background(
-                                        MaterialTheme.colorScheme.surfaceVariant,
-                                        RoundedCornerShape(8.dp),
-                                    )
-                                    .border(
-                                        1.dp,
-                                        MaterialTheme.colorScheme.error.copy(alpha = 0.3f),
-                                        RoundedCornerShape(8.dp),
-                                    )
-                                    .clickable { onDisconnect() },
-                                contentAlignment = Alignment.Center,
-                            ) {
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    Icon(Icons.Default.Logout, null, Modifier.size(16.dp), tint = MaterialTheme.colorScheme.error)
-                                    Spacer(Modifier.width(6.dp))
-                                    Text("断开", fontSize = 12.sp, color = MaterialTheme.colorScheme.error)
-                                }
-                            }
                         }
                     }
                 }
