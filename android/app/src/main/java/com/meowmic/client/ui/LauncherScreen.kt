@@ -18,14 +18,15 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.scale
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.PathEffect
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.meowmic.client.AppEntry
 import com.meowmic.client.AppListState
 import com.meowmic.client.ConnectionState
 import com.meowmic.client.MeowMicViewModel
@@ -119,19 +120,16 @@ fun LauncherScreen(
                         }
                     }
                     else -> {
-                        if (quickAppIds.isEmpty()) {
-                            EmptyState(onAdd = { showAddDialog = true })
-                        } else {
-                            PagerGrid(
-                                pagerState = pagerState,
-                                quickAppIds = quickAppIds,
-                                vm = vm,
-                                editMode = editMode,
-                                onLaunch = { id -> vm.launchApp(id) },
-                                onRemove = { id -> vm.removeQuickApp(id) },
-                                onAdd = { showAddDialog = true },
-                            )
-                        }
+                        // 无论是否有应用,都显示 PagerGrid(空位全部显示"添加"格子)
+                        PagerGrid(
+                            pagerState = pagerState,
+                            quickAppIds = quickAppIds,
+                            vm = vm,
+                            editMode = editMode,
+                            onLaunch = { id -> vm.launchApp(id) },
+                            onRemove = { id -> vm.removeQuickApp(id) },
+                            onAdd = { showAddDialog = true },
+                        )
                     }
                 }
             }
@@ -218,7 +216,7 @@ private fun StatusBar(addr: String) {
     }
 }
 
-/** 顶部操作栏:返回 / 标题 / 编辑 / 添加 */
+/** 顶部操作栏:返回(secondary) / 标题 / 编辑(ghost) / 添加(ghost) */
 @Composable
 private fun TopBar(
     editMode: Boolean,
@@ -231,8 +229,28 @@ private fun TopBar(
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(6.dp),
     ) {
-        IconButton(onClick = onBack, modifier = Modifier.size(28.dp)) {
-            Icon(Icons.Default.ArrowBack, contentDescription = "返回", modifier = Modifier.size(18.dp))
+        // 返回按钮:secondary 风格(overlay 背景 + 边框)
+        Box(
+            modifier = Modifier
+                .size(28.dp)
+                .background(
+                    MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f),
+                    RoundedCornerShape(8.dp),
+                )
+                .border(
+                    1.dp,
+                    MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f),
+                    RoundedCornerShape(8.dp),
+                )
+                .clickable(onClick = onBack),
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(
+                Icons.Default.ArrowBack,
+                contentDescription = "返回",
+                modifier = Modifier.size(16.dp),
+                tint = MaterialTheme.colorScheme.onSurface,
+            )
         }
         Text(
             "快捷启动",
@@ -242,40 +260,41 @@ private fun TopBar(
             fontWeight = FontWeight.SemiBold,
             color = MaterialTheme.colorScheme.onSurface,
         )
-        IconButton(onClick = onToggleEdit, modifier = Modifier.size(28.dp)) {
+        // 编辑按钮:ghost 风格(透明背景,激活时主色)
+        Box(
+            modifier = Modifier
+                .size(28.dp)
+                .clickable(onClick = onToggleEdit),
+            contentAlignment = Alignment.Center,
+        ) {
             Icon(
                 if (editMode) Icons.Default.Check else Icons.Default.Edit,
                 contentDescription = "编辑",
                 modifier = Modifier.size(18.dp),
-                tint = if (editMode) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                tint = if (editMode) MaterialTheme.colorScheme.primary
+                else MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
-        IconButton(onClick = onAdd, modifier = Modifier.size(28.dp)) {
-            Icon(Icons.Default.Add, contentDescription = "添加", modifier = Modifier.size(18.dp))
+        // 添加按钮:ghost 风格
+        Box(
+            modifier = Modifier
+                .size(28.dp)
+                .clickable(onClick = onAdd),
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(
+                Icons.Default.Add,
+                contentDescription = "添加",
+                modifier = Modifier.size(18.dp),
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
         }
     }
 }
 
-/** 空状态 */
-@Composable
-private fun EmptyState(onAdd: () -> Unit) {
-    Column(
-        modifier = Modifier.fillMaxSize().clickable { onAdd() },
-        verticalArrangement = Arrangement.Center,
-        horizontalAlignment = Alignment.CenterHorizontally,
-    ) {
-        Icon(
-            Icons.Default.Apps,
-            contentDescription = null,
-            modifier = Modifier.size(48.dp),
-            tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f),
-        )
-        Spacer(Modifier.height(12.dp))
-        Text("点击添加应用", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-    }
-}
+/** 空状态:已弃用,统一用 PagerGrid 显示空位"添加"格子 */
 
-/** 分页网格:HorizontalPager + 每页 5×6 */
+/** 分页网格:HorizontalPager + 每页 5×6,空位全部显示"添加" */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun PagerGrid(
@@ -298,12 +317,12 @@ private fun PagerGrid(
 
         Column(
             modifier = Modifier.fillMaxSize(),
-            verticalArrangement = Arrangement.spacedBy(4.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
             for (row in 0 until GRID_ROWS) {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
                     for (col in 0 until GRID_COLUMNS) {
                         val index = row * GRID_COLUMNS + col
@@ -318,8 +337,8 @@ private fun PagerGrid(
                                     onLaunch = onLaunch,
                                     onRemove = onRemove,
                                 )
-                            } else if (index == pageItems.size && !editMode) {
-                                // 第一个空位显示"添加"
+                            } else {
+                                // 所有空位都显示"添加"(对齐设计稿)
                                 AddCell(onClick = onAdd)
                             }
                         }
@@ -350,7 +369,7 @@ private fun QuickAppCell(
                 },
                 onLongClick = { onRemove(appId) },
             )
-            .padding(vertical = 2.dp),
+            .padding(start = 2.dp, end = 2.dp, top = 4.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(4.dp),
     ) {
@@ -396,7 +415,7 @@ private fun AppIconBox(appId: String, vm: MeowMicViewModel) {
             .background(MaterialTheme.colorScheme.surface, RoundedCornerShape(12.dp))
             .border(
                 1.dp,
-                MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f),
+                MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f),
                 RoundedCornerShape(12.dp),
             ),
         contentAlignment = Alignment.Center,
@@ -420,24 +439,48 @@ private fun AppIconBox(appId: String, vm: MeowMicViewModel) {
     }
 }
 
-/** 空位"添加"格子 */
+/** 虚线边框 modifier(对齐设计稿 dashed border,仅支持 RoundedCornerShape) */
+private fun Modifier.dashedBorder(
+    width: androidx.compose.ui.unit.Dp,
+    color: androidx.compose.ui.graphics.Color,
+    cornerRadius: androidx.compose.ui.unit.Dp,
+    dashWidth: Float = 6f,
+    gapWidth: Float = 4f,
+): Modifier = this.then(
+    Modifier.drawBehind {
+        val w = width.toPx()
+        val r = cornerRadius.toPx()
+        drawRoundRect(
+            color = color,
+            topLeft = androidx.compose.ui.geometry.Offset(w / 2, w / 2),
+            size = androidx.compose.ui.geometry.Size(size.width - w, size.height - w),
+            cornerRadius = androidx.compose.ui.geometry.CornerRadius(r, r),
+            style = Stroke(
+                width = w,
+                pathEffect = PathEffect.dashPathEffect(floatArrayOf(dashWidth, gapWidth), 0f),
+            ),
+        )
+    }
+)
+
+/** 空位"添加"格子(虚线边框 + 加号图标) */
 @Composable
 private fun AddCell(onClick: () -> Unit) {
     Column(
         modifier = Modifier
             .fillMaxWidth()
             .clickable { onClick() }
-            .padding(vertical = 2.dp),
+            .padding(start = 2.dp, end = 2.dp, top = 4.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(4.dp),
     ) {
         Box(
             modifier = Modifier
                 .size(48.dp)
-                .border(
-                    1.dp,
-                    MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f),
-                    RoundedCornerShape(12.dp),
+                .dashedBorder(
+                    width = 1.dp,
+                    color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.8f),
+                    cornerRadius = 12.dp,
                 ),
             contentAlignment = Alignment.Center,
         ) {
@@ -445,7 +488,7 @@ private fun AddCell(onClick: () -> Unit) {
                 Icons.Default.Add,
                 contentDescription = "添加",
                 modifier = Modifier.size(18.dp),
-                tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
+                tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f),
             )
         }
         Text(
@@ -514,12 +557,12 @@ private fun DockBar(
                         onClick = { onLaunch(appId) },
                     )
                 } else {
-                    // 空位占位
+                    // 空位占位(对齐设计稿 dock-item 透明背景)
                     Box(
                         modifier = Modifier
                             .size(32.dp)
                             .background(
-                                MaterialTheme.colorScheme.surface.copy(alpha = 0.5f),
+                                MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
                                 RoundedCornerShape(8.dp),
                             ),
                     )
@@ -529,7 +572,7 @@ private fun DockBar(
     }
 }
 
-/** Dock 单项:32×32 圆角图标 */
+/** Dock 单项:32×32 圆角图标(对齐设计稿 dock-item) */
 @Composable
 private fun DockItem(appId: String, vm: MeowMicViewModel, onClick: () -> Unit) {
     val v by vm.iconVersion.collectAsState()
@@ -541,14 +584,14 @@ private fun DockItem(appId: String, vm: MeowMicViewModel, onClick: () -> Unit) {
         Box(
             modifier = Modifier
                 .size(32.dp)
-                .background(MaterialTheme.colorScheme.surface, RoundedCornerShape(8.dp)),
+                .background(MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(8.dp)),
             contentAlignment = Alignment.Center,
         ) {
             if (bmp != null) {
                 Image(
                     bitmap = bmp.asImageBitmap(),
                     contentDescription = appId,
-                    modifier = Modifier.size(20.dp),
+                    modifier = Modifier.size(18.dp),
                 )
             } else {
                 LaunchedEffect(appId) { vm.loadIcon(appId) }

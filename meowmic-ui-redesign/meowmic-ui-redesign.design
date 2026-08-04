@@ -7,15 +7,20 @@
       "version": 1,
       "createdAt": 1785705600000,
       "canvasData": {
-        "x": 433,
-        "y": 0,
+        "x": 1116,
+        "y": -96,
         "group": 0,
         "layoutSnapshot": {
           "version": 1,
           "contentHeight": 901,
-          "viewportWidth": 800,
+          "viewportWidth": 799,
           "sourceHash": "fnv1a-c660a821",
-          "measuredAt": 1785312573357
+          "measuredAt": 1785782914673
+        },
+        "deviceType": "freeSize",
+        "windowSize": {
+          "width": 799,
+          "height": 888
         }
       },
       "devMetadata": {
@@ -23,7 +28,7 @@
         "interactions": [
           {
             "domId": "connect-btn",
-            "targetPageId": "page-android-touchpad-portrait"
+            "targetPageId": "page-android-touchpad-portrait-quicklaunch"
           }
         ]
       }
@@ -35,24 +40,53 @@
       "version": 1,
       "createdAt": 1785705600000,
       "canvasData": {
-        "x": 432,
-        "y": 324,
+        "x": 433,
+        "y": 289,
         "group": 0,
         "deviceType": "desktop",
         "layoutSnapshot": {
           "version": 1,
-          "contentHeight": 1192,
+          "contentHeight": 1187,
           "viewportWidth": 1440,
-          "sourceHash": "fnv1a-8dbbc5ec",
-          "measuredAt": 1785312573357
+          "sourceHash": "fnv1a-8543b489",
+          "measuredAt": 1785782579628
         }
       },
       "devMetadata": {
         "htmlSrc": "pages/android-touchpad-portrait.html",
+        "interactions": []
+      }
+    },
+    {
+      "id": "page-android-touchpad-portrait-quicklaunch",
+      "title": "安卓 · 触控板 竖屏 - 快捷启动",
+      "type": "page",
+      "version": 1,
+      "createdAt": 1785815000000,
+      "canvasData": {
+        "x": 433,
+        "y": 289,
+        "group": 0,
+        "deviceType": "desktop",
+        "layoutSnapshot": {
+          "version": 1,
+          "contentHeight": 1187,
+          "viewportWidth": 1440,
+          "sourceHash": "fnv1a-d58d26c4",
+          "measuredAt": 1785821859492
+        }
+      },
+      "devMetadata": {
+        "htmlSrc": "pages/android-touchpad-portrait-quicklaunch.html",
         "interactions": [
           {
             "domId": "back-btn",
             "targetPageId": "page-android-connect"
+          },
+          {
+            "domId": "quick-launch-btn",
+            "targetPageId": "page-android-quicklaunch-desktop",
+            "transitionLabel": "快捷启动"
           },
           {
             "domId": "rotate-btn",
@@ -80,8 +114,8 @@
           "version": 1,
           "contentHeight": 901,
           "viewportWidth": 799,
-          "sourceHash": "fnv1a-ecb8a2f8",
-          "measuredAt": 1785312573357
+          "sourceHash": "fnv1a-bf7598fa",
+          "measuredAt": 1785782579628
         }
       },
       "devMetadata": {
@@ -93,7 +127,7 @@
           },
           {
             "domId": "rotate-btn",
-            "targetPageId": "page-android-touchpad-portrait"
+            "targetPageId": "page-android-touchpad-portrait-quicklaunch"
           }
         ]
       }
@@ -105,8 +139,8 @@
       "version": 1,
       "createdAt": 1785705600000,
       "canvasData": {
-        "x": -12,
-        "y": 720,
+        "x": 0,
+        "y": 733,
         "group": 1,
         "layoutSnapshot": {
           "version": 1,
@@ -123,6 +157,34 @@
       },
       "devMetadata": {
         "htmlSrc": "pages/pc-console.html",
+        "interactions": []
+      }
+    },
+    {
+      "id": "page-pc-console-log",
+      "title": "PC · 控制面板 - 服务日志",
+      "type": "page",
+      "version": 1,
+      "createdAt": 1785812000000,
+      "canvasData": {
+        "x": 0,
+        "y": 733,
+        "group": 1,
+        "layoutSnapshot": {
+          "version": 1,
+          "contentHeight": 867,
+          "viewportWidth": 1169,
+          "sourceHash": "fnv1a-c2ce0f1b",
+          "measuredAt": 1785813609194
+        },
+        "deviceType": "freeSize",
+        "windowSize": {
+          "width": 1169,
+          "height": 1094
+        }
+      },
+      "devMetadata": {
+        "htmlSrc": "pages/pc-console-log.html",
         "interactions": [
           {
             "trigger": "click",
@@ -146,8 +208,8 @@
       "version": 1,
       "createdAt": 1785800000000,
       "canvasData": {
-        "x": 620,
-        "y": 720,
+        "x": 541,
+        "y": 733,
         "group": 1,
         "layoutSnapshot": {
           "version": 1,
@@ -164,7 +226,7 @@
             "trigger": "click",
             "domId": "control-tab",
             "action": "navigate",
-            "targetPageId": "page-pc-console"
+            "targetPageId": "page-pc-console-log"
           },
           {
             "trigger": "click",
@@ -182,8 +244,8 @@
       "version": 1,
       "createdAt": 1785800001000,
       "canvasData": {
-        "x": 1252,
-        "y": 720,
+        "x": 541,
+        "y": 1022,
         "group": 1,
         "deviceType": "freeSize",
         "windowSize": {
@@ -194,8 +256,8 @@
           "version": 1,
           "contentHeight": 703,
           "viewportWidth": 881,
-          "sourceHash": "fnv1a-42b6c7dd",
-          "measuredAt": 1785645899445
+          "sourceHash": "fnv1a-e42e1737",
+          "measuredAt": 1785684957337
         }
       },
       "devMetadata": {
@@ -205,13 +267,44 @@
             "trigger": "click",
             "domId": "control-tab",
             "action": "navigate",
-            "targetPageId": "page-pc-console"
+            "targetPageId": "page-pc-console-log"
           },
           {
             "trigger": "click",
             "domId": "settings-tab",
             "action": "navigate",
             "targetPageId": "page-pc-console-settings"
+          }
+        ]
+      }
+    },
+    {
+      "id": "page-android-quicklaunch-desktop",
+      "title": "安卓 · 快捷启动桌面",
+      "type": "page",
+      "version": 1,
+      "createdAt": 1785816000000,
+      "canvasData": {
+        "x": 1044,
+        "y": 289,
+        "group": 0,
+        "deviceType": "desktop",
+        "layoutSnapshot": {
+          "version": 1,
+          "contentHeight": 901,
+          "viewportWidth": 1440,
+          "sourceHash": "fnv1a-c091b395",
+          "measuredAt": 1785821859492
+        }
+      },
+      "devMetadata": {
+        "htmlSrc": "pages/android-quicklaunch-desktop.html",
+        "interactions": [
+          {
+            "domId": "back-btn",
+            "targetPageId": "page-android-touchpad-portrait-quicklaunch",
+            "hideEdge": true,
+            "transitionLabel": "返回触控板"
           }
         ]
       }
@@ -228,6 +321,7 @@
       "path": "c:\\Users\\62744\\.trae-cn\\design_libraries\\dl_builtin_trae_work",
       "versionSource": "metadata.json"
     },
-    "showEdge": true
+    "showEdge": true,
+    "visualEditorEnabled": true
   }
 }

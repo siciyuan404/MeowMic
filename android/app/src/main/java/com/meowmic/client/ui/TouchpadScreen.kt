@@ -44,6 +44,8 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Color
@@ -461,10 +463,10 @@ fun TouchpadScreen(
         }
     }
 
-    // ── 顶部操作栏(返回 / 旋转 / 更多) ──
-    // showBack/showRotate:横屏布局自己已渲染这些按钮,调用方可设为 false 避免重复
+    // ── 顶部操作栏(返回 / 快捷启动(居中) / 更多) ──
+    // showBack:横屏布局自己已渲染返回按钮,调用方可设为 false 避免重复
     @Composable
-    fun ActionBar(showBack: Boolean = true, showRotate: Boolean = true) {
+    fun ActionBar(showBack: Boolean = true) {
         var menuExpanded by remember { mutableStateOf(false) }
         val micEnabled by vm.micEnabled.collectAsState()
         val muteSpk by vm.muteSpeaker.collectAsState()
@@ -482,23 +484,16 @@ fun TouchpadScreen(
                 )
             }
 
-            if (showBack || showRotate) Spacer(Modifier.weight(1f))
+            Spacer(Modifier.weight(1f))
 
-            // 独立旋转按钮(对齐设计稿横屏操作栏)
-            if (showRotate) {
-                IconButtonSmall(
-                    icon = Icons.Default.ScreenRotation,
-                    contentDescription = if (isLandscape) "切换竖屏" else "切换横屏",
-                    onClick = { if (isLandscape) requestPortrait() else requestLandscape() },
-                )
-            }
-
-            // 快捷启动按钮(进入应用库页面)
+            // 快捷启动按钮(居中,进入应用库页面)
             IconButtonSmall(
                 icon = Icons.Default.Apps,
                 contentDescription = "快捷启动",
                 onClick = onOpenLauncher,
             )
+
+            Spacer(Modifier.weight(1f))
 
             // 更多按钮
             Box {
@@ -596,52 +591,77 @@ fun TouchpadScreen(
         }
     }
 
-    // ── 触控区域(虚线边框占位风格) ──
+    // ── 触控区域(虚线边框占位风格,底部含鼠标按键栏) ──
     @Composable
     fun TouchArea(modifier: Modifier) {
-        Box(
+        Column(
             modifier = modifier
-                .background(
-                    MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
-                    RoundedCornerShape(16.dp),
-                )
+                .clip(RoundedCornerShape(16.dp))
+                .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f))
                 .border(
                     1.dp,
                     MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f),
                     RoundedCornerShape(16.dp),
-                )
-                .pointerInteropFilter { event ->
-                    // 仅在值变化时更新 state,避免每个 ACTION_MOVE 触发重组
-                    val newCount = event.pointerCount
-                    val newMode = when {
-                        newCount >= 3 -> "三指"
-                        newCount == 2 -> "双指"
-                        else -> when (event.actionMasked) {
-                            MotionEvent.ACTION_DOWN -> "按下"
-                            MotionEvent.ACTION_MOVE -> "移动"
-                            MotionEvent.ACTION_UP -> "抬起"
-                            else -> "移动"
-                        }
-                    }
-                    if (newCount != pointerCount) pointerCount = newCount
-                    if (newMode != touchMode) touchMode = newMode
-                    vm.handleTouch(event)
-                    true
-                },
-            contentAlignment = Alignment.Center,
+                ),
         ) {
-            Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                Icon(
-                    Icons.Default.Mouse, null,
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.25f),
-                    modifier = Modifier.size(if (isLandscape) 48.dp else 64.dp),
-                )
-                Spacer(Modifier.height(6.dp))
-                Text(
-                    "滑动移动 · 轻触左键 · 双指右键 · 双指滚动",
-                    fontSize = if (isLandscape) 10.sp else 11.sp,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
-                )
+            // 手势区(占满剩余空间)
+            Box(
+                modifier = Modifier
+                    .weight(1f)
+                    .pointerInteropFilter { event ->
+                        // 仅在值变化时更新 state,避免每个 ACTION_MOVE 触发重组
+                        val newCount = event.pointerCount
+                        val newMode = when {
+                            newCount >= 3 -> "三指"
+                            newCount == 2 -> "双指"
+                            else -> when (event.actionMasked) {
+                                MotionEvent.ACTION_DOWN -> "按下"
+                                MotionEvent.ACTION_MOVE -> "移动"
+                                MotionEvent.ACTION_UP -> "抬起"
+                                else -> "移动"
+                            }
+                        }
+                        if (newCount != pointerCount) pointerCount = newCount
+                        if (newMode != touchMode) touchMode = newMode
+                        vm.handleTouch(event)
+                        true
+                    },
+                contentAlignment = Alignment.Center,
+            ) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Icon(
+                        Icons.Default.Mouse, null,
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.25f),
+                        modifier = Modifier.size(if (isLandscape) 48.dp else 64.dp),
+                    )
+                    Spacer(Modifier.height(6.dp))
+                    Text(
+                        "滑动移动 · 双指右键 · 双指滚动",
+                        fontSize = if (isLandscape) 10.sp else 11.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
+                    )
+                }
+            }
+            // 底部鼠标按键栏(border-top 分隔,始终可见)
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .drawBehind {
+                        drawLine(
+                            color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f),
+                            start = androidx.compose.ui.geometry.Offset(0f, 0f),
+                            end = androidx.compose.ui.geometry.Offset(size.width, 0f),
+                            strokeWidth = 1.dp.toPx(),
+                        )
+                    }
+                    .background(MaterialTheme.colorScheme.surface)
+                    .padding(horizontal = 8.dp, vertical = 8.dp),
+                horizontalArrangement = Arrangement.spacedBy(1.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                MouseBtn("左键", Icons.Default.Mouse, BTN_LEFT, Modifier.weight(1f).height(44.dp), "鼠标左键:单击/按住拖拽", { showToast(it) }, { vm.playFeedbackSound() })
+                MouseBtn("中键", Icons.Default.Mouse, BTN_MIDDLE, Modifier.weight(1f).height(44.dp), "鼠标中键:滚轮按键", { showToast(it) }, { vm.playFeedbackSound() })
+                MouseBtn("右键", Icons.Default.Menu, BTN_RIGHT, Modifier.weight(1f).height(44.dp), "鼠标右键:上下文菜单", { showToast(it) }, { vm.playFeedbackSound() })
             }
         }
     }
@@ -840,7 +860,7 @@ fun TouchpadScreen(
         }
     }
 
-    // ─────────── PTT 长按说话按钮(整合 PPT/实时模式) ───────────
+    // ─────────── PTT 长按说话按钮(对齐设计稿 mm-rec-btn 圆形 56dp) ───────────
     // state: idle / recording / locked
     // idle → 按下 → recording → 抬起 → idle
     // idle → 按下 → recording → 滑动超过阈值 → locked
@@ -860,7 +880,6 @@ fun TouchpadScreen(
         val stateRef = remember { mutableStateOf("idle") }
 
         // 实时计时器:基于 vm.isRecording 信号,录音/锁定期间持续累计
-        // (recording → locked 切换不会重置计时器,因为 vm.isRecording 保持 true)
         var recSeconds by remember { mutableStateOf(0) }
         val isVmRecording by vm.isRecording.collectAsState()
         LaunchedEffect(isVmRecording) {
@@ -873,13 +892,13 @@ fun TouchpadScreen(
             }
         }
 
-        val bgColor = when {
+        // 设计稿:按钮始终红色(status-error),锁定态用 tertiary 区分
+        val btnColor = when {
             disabled -> MaterialTheme.colorScheme.surfaceVariant
-            btnState == "recording" -> MaterialTheme.colorScheme.error
             btnState == "locked" -> MaterialTheme.colorScheme.tertiary
-            else -> MaterialTheme.colorScheme.primary
+            else -> MaterialTheme.colorScheme.error
         }
-        val fgColor = if (disabled) MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f) else Color.White
+        val iconColor = if (disabled) MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f) else Color.White
         val isActive = btnState == "recording" || btnState == "locked"
 
         // 计时器格式化
@@ -892,125 +911,117 @@ fun TouchpadScreen(
             disabled -> "麦克风常开中"
             btnState == "recording" -> "录音中 ${formatTime(recSeconds)}  松开停止"
             btnState == "locked" -> "已锁定 ${formatTime(recSeconds)}  点取消"
-            else -> "按住录音"
+            else -> "按住说话"
+        }
+        val textColor = when {
+            disabled -> MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
+            isActive -> MaterialTheme.colorScheme.error
+            else -> MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
         }
 
-        Box(
-            modifier = modifier
-                .height(64.dp)
-                .background(bgColor, RoundedCornerShape(8.dp))
-                .pointerInput(disabled) {
-                    if (disabled) return@pointerInput
-                    awaitEachGesture {
-                        val down = awaitFirstDown(requireUnconsumed = false)
-                        val pressX = down.position.x
-                        val pressY = down.position.y
-                        val currentState = stateRef.value
-
-                        when (currentState) {
-                            "idle" -> {
-                                btnState = "recording"
-                                stateRef.value = "recording"
-                                vm.startRecording()
-                                vm.playFeedbackSound()
-                                showToast("开始录音(松开结束,上滑锁定)")
-                                var locked = false
-                                while (true) {
-                                    val event = awaitPointerEvent(PointerEventPass.Main)
-                                    val change = event.changes.firstOrNull() ?: break
-                                    if (!locked) {
-                                        val dx: Float = change.position.x - pressX
-                                        val dy: Float = change.position.y - pressY
-                                        if (abs(dx) > lockThresholdPx || abs(dy) > lockThresholdPx) {
-                                            locked = true
-                                            btnState = "locked"
-                                            stateRef.value = "locked"
-                                            showToast("已锁定录音(点击取消)")
-                                        }
-                                    }
-                                    if (change.changedToUp()) {
-                                        if (!locked) {
-                                            btnState = "idle"
-                                            stateRef.value = "idle"
-                                            vm.stopRecording()
-                                        }
-                                        break
-                                    }
-                                }
-                            }
-                            "locked" -> {
-                                // 点击取消锁定 - 等待抬起后再切换状态
-                                while (true) {
-                                    val event = awaitPointerEvent(PointerEventPass.Main)
-                                    val change = event.changes.firstOrNull() ?: break
-                                    if (change.changedToUp()) {
-                                        btnState = "idle"
-                                        stateRef.value = "idle"
-                                        vm.cancelRecording()
-                                        showToast("已取消录音")
-                                        break
-                                    }
-                                }
-                            }
-                            else -> {
-                                // recording 状态防御:等待抬起
-                                while (true) {
-                                    val event = awaitPointerEvent(PointerEventPass.Main)
-                                    val change = event.changes.firstOrNull() ?: break
-                                    if (change.changedToUp()) {
-                                        btnState = "idle"
-                                        stateRef.value = "idle"
-                                        vm.stopRecording()
-                                        break
-                                    }
-                                }
-                            }
-                        }
-                    }
-                },
-            contentAlignment = Alignment.Center,
+        Column(
+            modifier = modifier.padding(vertical = 8.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(6.dp),
         ) {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            // 圆形按钮 + 脉冲圆环
+            Box(
+                modifier = Modifier.size(56.dp),
+                contentAlignment = Alignment.Center,
             ) {
-                // 左侧:脉冲圆环 + 主按钮(图标)
+                if (isActive) {
+                    PulseRing(color = btnColor, size = 56.dp)
+                }
                 Box(
-                    modifier = Modifier.size(40.dp),
+                    modifier = Modifier
+                        .size(56.dp)
+                        .background(btnColor, CircleShape)
+                        .pointerInput(disabled) {
+                            if (disabled) return@pointerInput
+                            awaitEachGesture {
+                                val down = awaitFirstDown(requireUnconsumed = false)
+                                val pressX = down.position.x
+                                val pressY = down.position.y
+                                val currentState = stateRef.value
+
+                                when (currentState) {
+                                    "idle" -> {
+                                        btnState = "recording"
+                                        stateRef.value = "recording"
+                                        vm.startRecording()
+                                        vm.playFeedbackSound()
+                                        showToast("开始录音(松开结束,上滑锁定)")
+                                        var locked = false
+                                        while (true) {
+                                            val event = awaitPointerEvent(PointerEventPass.Main)
+                                            val change = event.changes.firstOrNull() ?: break
+                                            if (!locked) {
+                                                val dx: Float = change.position.x - pressX
+                                                val dy: Float = change.position.y - pressY
+                                                if (abs(dx) > lockThresholdPx || abs(dy) > lockThresholdPx) {
+                                                    locked = true
+                                                    btnState = "locked"
+                                                    stateRef.value = "locked"
+                                                    showToast("已锁定录音(点击取消)")
+                                                }
+                                            }
+                                            if (change.changedToUp()) {
+                                                if (!locked) {
+                                                    btnState = "idle"
+                                                    stateRef.value = "idle"
+                                                    vm.stopRecording()
+                                                }
+                                                break
+                                            }
+                                        }
+                                    }
+                                    "locked" -> {
+                                        // 点击取消锁定 - 等待抬起后再切换状态
+                                        while (true) {
+                                            val event = awaitPointerEvent(PointerEventPass.Main)
+                                            val change = event.changes.firstOrNull() ?: break
+                                            if (change.changedToUp()) {
+                                                btnState = "idle"
+                                                stateRef.value = "idle"
+                                                vm.cancelRecording()
+                                                showToast("已取消录音")
+                                                break
+                                            }
+                                        }
+                                    }
+                                    else -> {
+                                        // recording 状态防御:等待抬起
+                                        while (true) {
+                                            val event = awaitPointerEvent(PointerEventPass.Main)
+                                            val change = event.changes.firstOrNull() ?: break
+                                            if (change.changedToUp()) {
+                                                btnState = "idle"
+                                                stateRef.value = "idle"
+                                                vm.stopRecording()
+                                                break
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        },
                     contentAlignment = Alignment.Center,
                 ) {
-                    if (isActive) {
-                        PulseRing(
-                            color = bgColor,
-                            size = 40.dp,
-                        )
-                    }
-                    Box(
-                        modifier = Modifier
-                            .size(28.dp)
-                            .background(Color.White.copy(alpha = 0.15f), CircleShape),
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        Icon(
-                            if (isActive) Icons.Default.Stop else Icons.Default.Mic,
-                            null,
-                            Modifier.size(18.dp),
-                            tint = fgColor,
-                        )
-                    }
-                }
-                // 中间:文字 + 波形条
-                Column(
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.spacedBy(2.dp),
-                ) {
-                    Text(text, fontSize = 12.sp, color = fgColor, fontWeight = FontWeight.Medium)
-                    WaveBars(
-                        color = fgColor.copy(alpha = 0.8f),
-                        active = isActive,
+                    Icon(
+                        if (isActive) Icons.Default.Stop else Icons.Default.Mic,
+                        null,
+                        Modifier.size(22.dp),
+                        tint = iconColor,
                     )
                 }
             }
+            // 波形条(仅录音时可见)
+            WaveBars(
+                color = MaterialTheme.colorScheme.error,
+                active = isActive,
+            )
+            // 状态文字
+            Text(text, fontSize = 11.sp, color = textColor)
         }
     }
 
@@ -1513,17 +1524,7 @@ fun TouchpadScreen(
             modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp),
             verticalArrangement = Arrangement.spacedBy(3.dp),
         ) {
-            // 第 1 行:三态修饰键(借鉴 moonlight-android 使用 L/R 专用 VK code)
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(6.dp),
-            ) {
-                StickyModBtn("Ctrl", VK.LCONTROL, Modifier.weight(1f))
-                StickyModBtn("Shift", VK.LSHIFT, Modifier.weight(1f))
-                StickyModBtn("Alt", VK.LMENU, Modifier.weight(1f))
-                StickyModBtn("Win", VK.LWIN, Modifier.weight(1f))
-            }
-            // 第 2 行:功能键 Esc | F1-F4 | F5-F8 | F9-F12(对齐设计稿 vkb-row 功能键行)
+            // 第 1 行:功能键 Esc | F1-F4 | F5-F8 | F9-F12(对齐设计稿 vkb-row 功能键行)
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(3.dp),
@@ -1545,7 +1546,7 @@ fun TouchpadScreen(
                 KeyBtn("F11", VK.F11, Modifier.weight(1f), fn = true, small = true)
                 KeyBtn("F12", VK.F12, Modifier.weight(1f), fn = true, small = true)
             }
-            // 第 3 行:数字行 ` 1-0 - = ⌫
+            // 第 2 行:数字行 ` 1-0 - = ⌫
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(3.dp),
@@ -1565,7 +1566,7 @@ fun TouchpadScreen(
                 KeyBtn("=", VK.OEM_PLUS, Modifier.weight(1f))
                 KeyBtn("⌫", VK.BACK, Modifier.weight(1.6f), fn = true)
             }
-            // 第 4 行:QWERTY 行 Tab Q-P [ ] \
+            // 第 3 行:QWERTY 行 Tab Q-P [ ] \
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(3.dp),
@@ -1585,7 +1586,7 @@ fun TouchpadScreen(
                 KeyBtn("]", VK.OEM_6, Modifier.weight(1f))
                 KeyBtn("\\", VK.OEM_5, Modifier.weight(1f))
             }
-            // 第 5 行:ASDF 行 Caps A-L ; ' ↵
+            // 第 4 行:ASDF 行 Caps A-L ; ' ↵
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(3.dp),
@@ -1604,7 +1605,7 @@ fun TouchpadScreen(
                 KeyBtn("'", VK.OEM_7, Modifier.weight(1f))
                 KeyBtn("↵", VK.RETURN, Modifier.weight(2.2f), fn = true)
             }
-            // 第 6 行:ZXCV 行 ⇧ Z-/ ⇧
+            // 第 5 行:ZXCV 行 ⇧ Z-/ ⇧
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(3.dp),
@@ -1622,7 +1623,7 @@ fun TouchpadScreen(
                 KeyBtn("/", VK.OEM_2, Modifier.weight(1f))
                 KeyBtn("⇧", VK.RSHIFT, Modifier.weight(2.2f), fn = true)
             }
-            // 第 7 行:修饰键行 Ctrl Win Alt 空格 Alt Fn Menu Ctrl
+            // 第 6 行:修饰键行 Ctrl Win Alt 空格 Alt Fn Menu Ctrl
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(3.dp),
@@ -1636,7 +1637,7 @@ fun TouchpadScreen(
                 KeyBtn("Menu", VK.MENU_KEY, Modifier.weight(1f), fn = true)
                 KeyBtn("Ctrl", VK.RCONTROL, Modifier.weight(1f), fn = true)
             }
-            // 第 8 行:PrtSc ScrLk Pause | Ins Home PgUp | ↑
+            // 第 7 行:PrtSc ScrLk Pause | Ins Home PgUp | ↑
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(3.dp),
@@ -1651,7 +1652,7 @@ fun TouchpadScreen(
                 KeyGap(Modifier.weight(0.4f))
                 KeyBtn("↑", VK.UP, Modifier.weight(1f), fn = true)
             }
-            // 第 9 行:Del End PgDn | ← ↓ →
+            // 第 8 行:Del End PgDn | ← ↓ →
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(3.dp),
@@ -1768,7 +1769,7 @@ fun TouchpadScreen(
                         onClick = { requestPortrait() },
                     )
                     // 更多菜单(横屏外层已渲染返回/旋转按钮,此处只显示更多)
-                    ActionBar(showBack = false, showRotate = false)
+                    ActionBar(showBack = false)
                 }
                 Spacer(Modifier.height(6.dp))
                 TouchArea(modifier = Modifier.weight(1f).fillMaxWidth())
@@ -1779,7 +1780,6 @@ fun TouchpadScreen(
                 verticalArrangement = Arrangement.spacedBy(6.dp),
             ) {
                 VoicePanel()
-                MouseButtonsBar()
             }
         }
     } else {
@@ -1813,7 +1813,6 @@ fun TouchpadScreen(
                             verticalArrangement = Arrangement.spacedBy(10.dp),
                         ) {
                             VoicePanel()
-                            MouseButtonsBar()
                         }
                     }
                 }
@@ -1823,8 +1822,8 @@ fun TouchpadScreen(
 }
 
 /**
- * 鼠标按键按钮(支持按下/抬起,实现按住拖拽等场景)
- * 长按显示功能泡泡提示(由 showTooltips 控制)
+ * 鼠标按键按钮(对齐设计稿:透明背景、无边框,按下时高亮)
+ * 支持按下/抬起,实现按住拖拽等场景。长按显示功能泡泡提示(由 showTooltips 控制)
  */
 @Composable
 private fun MouseBtn(
@@ -1838,19 +1837,14 @@ private fun MouseBtn(
 ) {
     var pressed by remember { mutableStateOf(false) }
 
-    val bgColor = if (pressed) MaterialTheme.colorScheme.primary
-    else MaterialTheme.colorScheme.surfaceVariant
-    val fgColor = if (pressed) Color.White
+    val bgColor = if (pressed) MaterialTheme.colorScheme.primary.copy(alpha = 0.1f)
+    else Color.Transparent
+    val fgColor = if (pressed) MaterialTheme.colorScheme.primary
     else MaterialTheme.colorScheme.onSurfaceVariant
 
     Box(
         modifier = modifier
-            .background(bgColor, RoundedCornerShape(8.dp))
-            .border(
-                1.dp,
-                MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f),
-                RoundedCornerShape(8.dp),
-            )
+            .background(bgColor, RoundedCornerShape(6.dp))
             .pointerInput(buttonMask) {
                 detectTapGestures(
                     onPress = {
@@ -1871,10 +1865,10 @@ private fun MouseBtn(
     ) {
         Column(
             horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.Center,
+            verticalArrangement = Arrangement.spacedBy(2.dp),
         ) {
-            Icon(icon, null, Modifier.size(16.dp), tint = fgColor)
-            Text(label, fontSize = 12.sp, color = fgColor, fontWeight = FontWeight.Medium)
+            Icon(icon, null, Modifier.size(18.dp), tint = fgColor)
+            Text(label, fontSize = 10.sp, color = fgColor)
         }
     }
 }

@@ -16,18 +16,25 @@
   },
   "operatingMode": "free-explore",
   "renderBlockingErrorCount": 0,
-  "softWarningCount": 12,
+  "softWarningCount": 19,
   "renderBlockingErrors": [],
   "errorSignatures": [],
   "softWarnings": [
+    "[html-head-style] android-quicklaunch-desktop.html: found 1 custom <style> block(s) in <head>. The <head> is owned by apply-html-head-contract.mjs; move custom styles before </body> or re-run apply-html-head-contract.mjs <css-path> <html-file> --replace-head to relocate them.",
+    "[html-head-style] android-touchpad-portrait-quicklaunch.html: found 1 custom <style> block(s) in <head>. The <head> is owned by apply-html-head-contract.mjs; move custom styles before </body> or re-run apply-html-head-contract.mjs <css-path> <html-file> --replace-head to relocate them.",
+    "[html-head-style] android-touchpad-portrait.html: found 1 custom <style> block(s) in <head>. The <head> is owned by apply-html-head-contract.mjs; move custom styles before </body> or re-run apply-html-head-contract.mjs <css-path> <html-file> --replace-head to relocate them.",
     "[orchestration-summary] runtime-orchestration-summary.json is missing skillProvenance.name/version/version_source. Version provenance will be reported as observed_unknown by external evaluators.",
     "[html-quality] colors_and_type.css: free-explore brand CSS must use one primary hue only; forbidden secondary/accent brand variables found (--color-accent, --text-secondary, --text-secondary-hover, --text-secondary-active, --icon-secondary, --icon-secondary-hover, --icon-secondary-active, --accent-teal, --accent-coral, --accent-amber, --accent-lime, --accent-cyan). Use --state-success/warning/error/info only for semantic states.",
     "[html-quality] colors_and_type.css: free-explore radius tokens must stay within the restrained 2/4/8/12/16px scale; oversized or forbidden radius tokens found (--radius-xl: var(--radius-10), --radius-xl: var(--radius-xl), --radius-20: 20px, --radius-24: 24px, --radius-32: 32px). Do not use 20px+ radii unless the user explicitly requested large rounded shapes.",
     "[html-quality] android-connect.html: free-explore pages must not use secondary/accent brand variables. Use the single primary hue, neutral tints, or --state-success/warning/error/info for real semantic states.",
+    "[html-quality] android-quicklaunch-desktop.html: free-explore pages must not use secondary/accent brand variables. Use the single primary hue, neutral tints, or --state-success/warning/error/info for real semantic states.",
     "[html-quality] android-touchpad-landscape.html: free-explore pages must not use secondary/accent brand variables. Use the single primary hue, neutral tints, or --state-success/warning/error/info for real semantic states.",
+    "[html-quality] android-touchpad-portrait-quicklaunch.html: free-explore pages must not use secondary/accent brand variables. Use the single primary hue, neutral tints, or --state-success/warning/error/info for real semantic states.",
     "[html-quality] android-touchpad-portrait.html: free-explore pages must not use secondary/accent brand variables. Use the single primary hue, neutral tints, or --state-success/warning/error/info for real semantic states.",
     "[html-quality] pc-console-about.html: hardcoded colors are forbidden outside <style id=\"theme-vars\">. Use brand CSS variables from the token reference.",
     "[html-quality] pc-console-about.html: free-explore pages must not use secondary/accent brand variables. Use the single primary hue, neutral tints, or --state-success/warning/error/info for real semantic states.",
+    "[html-quality] pc-console-log.html: hardcoded colors are forbidden outside <style id=\"theme-vars\">. Use brand CSS variables from the token reference.",
+    "[html-quality] pc-console-log.html: free-explore pages must not use secondary/accent brand variables. Use the single primary hue, neutral tints, or --state-success/warning/error/info for real semantic states.",
     "[html-quality] pc-console-settings.html: hardcoded colors are forbidden outside <style id=\"theme-vars\">. Use brand CSS variables from the token reference.",
     "[html-quality] pc-console-settings.html: free-explore pages must not use secondary/accent brand variables. Use the single primary hue, neutral tints, or --state-success/warning/error/info for real semantic states.",
     "[html-quality] pc-console.html: hardcoded colors are forbidden outside <style id=\"theme-vars\">. Use brand CSS variables from the token reference.",
@@ -42,6 +49,19 @@
       "strategy": "targeted_token_replace_once",
       "affectedFiles": [
         "pc-console-about.html"
+      ],
+      "repairReportPath": null,
+      "repairAlreadyAttempted": false,
+      "allowSourceRead": "no-full-html-read",
+      "maxValidationRuns": 2
+    },
+    {
+      "errorClass": "hardcoded-color-in-body",
+      "owner": "sub-agent",
+      "repairScope": "targeted-token-replace",
+      "strategy": "targeted_token_replace_once",
+      "affectedFiles": [
+        "pc-console-log.html"
       ],
       "repairReportPath": null,
       "repairAlreadyAttempted": false,
@@ -77,17 +97,24 @@
   ],
   "repairActionTable": [],
   "errorCount": 0,
-  "warningCount": 12,
+  "warningCount": 19,
   "errors": [],
   "warnings": [
+    "[html-head-style] android-quicklaunch-desktop.html: found 1 custom <style> block(s) in <head>. The <head> is owned by apply-html-head-contract.mjs; move custom styles before </body> or re-run apply-html-head-contract.mjs <css-path> <html-file> --replace-head to relocate them.",
+    "[html-head-style] android-touchpad-portrait-quicklaunch.html: found 1 custom <style> block(s) in <head>. The <head> is owned by apply-html-head-contract.mjs; move custom styles before </body> or re-run apply-html-head-contract.mjs <css-path> <html-file> --replace-head to relocate them.",
+    "[html-head-style] android-touchpad-portrait.html: found 1 custom <style> block(s) in <head>. The <head> is owned by apply-html-head-contract.mjs; move custom styles before </body> or re-run apply-html-head-contract.mjs <css-path> <html-file> --replace-head to relocate them.",
     "[orchestration-summary] runtime-orchestration-summary.json is missing skillProvenance.name/version/version_source. Version provenance will be reported as observed_unknown by external evaluators.",
     "[html-quality] colors_and_type.css: free-explore brand CSS must use one primary hue only; forbidden secondary/accent brand variables found (--color-accent, --text-secondary, --text-secondary-hover, --text-secondary-active, --icon-secondary, --icon-secondary-hover, --icon-secondary-active, --accent-teal, --accent-coral, --accent-amber, --accent-lime, --accent-cyan). Use --state-success/warning/error/info only for semantic states.",
     "[html-quality] colors_and_type.css: free-explore radius tokens must stay within the restrained 2/4/8/12/16px scale; oversized or forbidden radius tokens found (--radius-xl: var(--radius-10), --radius-xl: var(--radius-xl), --radius-20: 20px, --radius-24: 24px, --radius-32: 32px). Do not use 20px+ radii unless the user explicitly requested large rounded shapes.",
     "[html-quality] android-connect.html: free-explore pages must not use secondary/accent brand variables. Use the single primary hue, neutral tints, or --state-success/warning/error/info for real semantic states.",
+    "[html-quality] android-quicklaunch-desktop.html: free-explore pages must not use secondary/accent brand variables. Use the single primary hue, neutral tints, or --state-success/warning/error/info for real semantic states.",
     "[html-quality] android-touchpad-landscape.html: free-explore pages must not use secondary/accent brand variables. Use the single primary hue, neutral tints, or --state-success/warning/error/info for real semantic states.",
+    "[html-quality] android-touchpad-portrait-quicklaunch.html: free-explore pages must not use secondary/accent brand variables. Use the single primary hue, neutral tints, or --state-success/warning/error/info for real semantic states.",
     "[html-quality] android-touchpad-portrait.html: free-explore pages must not use secondary/accent brand variables. Use the single primary hue, neutral tints, or --state-success/warning/error/info for real semantic states.",
     "[html-quality] pc-console-about.html: hardcoded colors are forbidden outside <style id=\"theme-vars\">. Use brand CSS variables from the token reference.",
     "[html-quality] pc-console-about.html: free-explore pages must not use secondary/accent brand variables. Use the single primary hue, neutral tints, or --state-success/warning/error/info for real semantic states.",
+    "[html-quality] pc-console-log.html: hardcoded colors are forbidden outside <style id=\"theme-vars\">. Use brand CSS variables from the token reference.",
+    "[html-quality] pc-console-log.html: free-explore pages must not use secondary/accent brand variables. Use the single primary hue, neutral tints, or --state-success/warning/error/info for real semantic states.",
     "[html-quality] pc-console-settings.html: hardcoded colors are forbidden outside <style id=\"theme-vars\">. Use brand CSS variables from the token reference.",
     "[html-quality] pc-console-settings.html: free-explore pages must not use secondary/accent brand variables. Use the single primary hue, neutral tints, or --state-success/warning/error/info for real semantic states.",
     "[html-quality] pc-console.html: hardcoded colors are forbidden outside <style id=\"theme-vars\">. Use brand CSS variables from the token reference.",
@@ -130,7 +157,7 @@
       "read_status": "unknown"
     },
     "renderBlockingErrorCount": 0,
-    "softWarningCount": 12,
+    "softWarningCount": 19,
     "renderBlockingErrors": [],
     "repairActionTable": [],
     "nextCheck": {
@@ -147,13 +174,16 @@
     ]
   },
   "projectFileHashes": {
-    "meowmic-ui-redesign.design": "ddcdc96e4111f4ce75c78c5dade98dae79884d7480ef926614fc420278cefe70",
+    "meowmic-ui-redesign.design": "299ac76524f5eaf2ca280dd5dfe465bc40bc8f86341e0b25edcf41e592b8dc66",
     "colors_and_type.css": "c79dcca7286e63ca59a319600b376c48af078f6e253e6dc7f475157cc53dc5a7",
     "runtime-orchestration-summary.json": "41b7c09d4fecb3eb2b7cd0aff65881b72e7d76f49ac27fe75557ca5cd46a460d",
     "pages/android-connect.html": "63f2a4bd20177bb6fca155bac9e6faf814e55b337c0bee8b10d8d167125dd321",
-    "pages/android-touchpad-landscape.html": "427230acc6608dbbb94aa2364bb0c23ea109764be907ced389a1b50f0d4504c4",
-    "pages/android-touchpad-portrait.html": "048a15d870a020f43f3773b1a14e41f30a0719f815ad32fdb31bf799621dc847",
+    "pages/android-quicklaunch-desktop.html": "3f35c998787e662ecc38ffe5651ebd4b6f3249cbed45c90ab76f598c243aa49f",
+    "pages/android-touchpad-landscape.html": "6b22dc3efb81593d42c3f799a47a3e2a092f8aa89772bd03064db29f6fcddb3d",
+    "pages/android-touchpad-portrait-quicklaunch.html": "53a54dde16d1c80f56eace64820da587836195f1b917460b67e9eca26393289b",
+    "pages/android-touchpad-portrait.html": "7306788e518b3f2754e7ea2aeb3cc1e9ec1d76f84108612d7a90bc6e9db403cf",
     "pages/pc-console-about.html": "00e231b012e54f5d9293970ba7aa484ee65d474a72c0368a6355933a8c69699d",
+    "pages/pc-console-log.html": "47a1422ce4573faba58a33e3b5f649fcf9a43ff8f2de8c8eb4a7750bafd93c55",
     "pages/pc-console-settings.html": "0aef50e8bcdc85b714a2b9f0ee8d967342be1936dec4e64af6ce38c82505462a",
     "pages/pc-console.html": "0a11a579245846f00536adcb2887420240105bd01fff5b8e6a6f3189d0a0a20a",
     "assets/icons/dl_builtin_trae_work/ab.svg": "e7ab5ddf3bdc430f1b3e04918ecd79aeaa76ea6651b6ce61a93596978a6d2ded",
@@ -660,5 +690,5 @@
   "designDir": "f:\\git\\MeowMic\\meowmic-ui-redesign",
   "expectedPages": null,
   "requireInteractions": null,
-  "checkedAt": "2026-08-02T04:46:53.471Z"
+  "checkedAt": "2026-08-04T04:02:19.788Z"
 }
