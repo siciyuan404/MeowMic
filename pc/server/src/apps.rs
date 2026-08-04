@@ -16,6 +16,8 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppEntry {
     /// 稳定 ID(用于 /launch?id=、/app_icon?id= 引用)
+    /// 反序列化时可选(POST /add_app 不传 id,由服务端生成)
+    #[serde(default)]
     pub id: String,
     /// 显示名
     pub name: String,

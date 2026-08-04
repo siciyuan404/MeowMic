@@ -212,7 +212,8 @@ object LauncherRepository {
                         val body = conn.inputStream.bufferedReader().use { it.readText() }
                         JSONObject(body).optString("id").ifBlank { null }
                     } else {
-                        Log.w(TAG, "addApp HTTP ${conn.responseCode}")
+                        val errBody = conn.errorStream?.bufferedReader()?.use { it.readText() }
+                        Log.w(TAG, "addApp HTTP ${conn.responseCode}: $errBody")
                         null
                     }
                 } finally {
