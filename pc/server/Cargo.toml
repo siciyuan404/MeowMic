@@ -30,6 +30,7 @@ windows = { version = "0.58", features = [
     "Win32_UI_WindowsAndMessaging",
     "Win32_UI_Shell",
     "Win32_Graphics_Gdi",
+    "Win32_Storage_FileSystem",
 ] }
 cpal = "0.15"
 local-ip-address = "0.6"

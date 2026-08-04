@@ -1310,6 +1310,17 @@ class MeowMicViewModel : ViewModel() {
         }
     }
 
+    /**
+     * 浏览 PC 端目录(用于 exe 路径选择)。
+     * @param path 目录路径(空字符串表示盘符列表)
+     * @return 目录列表;失败返回 null
+     */
+    suspend fun browseDir(path: String): DirListing? {
+        val addr = (_connectionState.value as? ConnectionState.Connected)?.serverAddr ?: return null
+        val pk = clientPubkeyB64().ifBlank { return null }
+        return LauncherRepository.listDir(addr, path, pk)
+    }
+
     /** 移除快捷启动页中的应用 */
     fun removeQuickApp(appId: String) {
         _quickAppIds.value = _quickAppIds.value - appId

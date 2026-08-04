@@ -268,6 +268,114 @@ fn save_apps(apps: &[AppEntry]) -> std::io::Result<()> {
     Ok(())
 }
 
+/// 目录浏览条目(用于客户端 exe 路径选择)
+#[derive(Debug, Clone, Serialize)]
+pub struct DirEntry {
+    pub name: String,
+    pub path: String,
+    pub is_dir: bool,
+    pub is_exe: bool,
+}
+
+/// 浏览目录:返回子目录 + .exe 文件(目录优先)
+///
+/// - path 为空:返回 Windows 盘符列表(仅 Windows)
+/// - path 非空:返回该目录下的子目录和 .exe 文件
+/// - 过滤系统目录($Recycle.Bin、System Volume Information 等)
+pub fn list_directory(path: &str) -> std::io::Result<(String, Option<String>, Vec<DirEntry>)> {
+    #[cfg(windows)]
+    {
+        if path.is_empty() {
+            return list_drives();
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        if path.is_empty() {
+            let home = std::env::var("HOME").unwrap_or_else(|_| "/".into());
+            return list_dir_contents(&home);
+        }
+    }
+
+    list_dir_contents(path)
+}
+
+#[cfg(windows)]
+fn list_drives() -> std::io::Result<(String, Option<String>, Vec<DirEntry>)> {
+    // 遍历 C-Z 检测可用盘符(避免引入 Win32 API 依赖)
+    let mut items = Vec::new();
+    for c in b'C'..=b'Z' {
+        let letter = c as char;
+        let path = format!("{}:\\", letter);
+        if std::path::Path::new(&path).exists() {
+            items.push(DirEntry {
+                name: format!("{}:", letter),
+                path,
+                is_dir: true,
+                is_exe: false,
+            });
+        }
+    }
+    Ok(("".to_string(), None, items))
+}
+
+fn list_dir_contents(path: &str) -> std::io::Result<(String, Option<String>, Vec<DirEntry>)> {
+    // 不用 canonicalize(会产生 \\?\ UNC 前缀),直接用原始路径
+    let p = std::path::Path::new(path);
+    let current = p.display().to_string();
+
+    // 父目录(用于"返回上一级")
+    let parent = p
+        .parent()
+        .map(|pp| pp.display().to_string())
+        .filter(|s| !s.is_empty());
+
+    let mut dirs = Vec::new();
+    let mut exes = Vec::new();
+
+    for entry in std::fs::read_dir(p)? {
+        let entry = entry?;
+        let file_type = entry.file_type()?;
+        let name = entry.file_name().to_string_lossy().to_string();
+
+        // 过滤系统/隐藏目录
+        if name.starts_with('$')
+            || name == "System Volume Information"
+            || name == "RECYCLER"
+        {
+            continue;
+        }
+
+        let entry_path = entry.path().display().to_string();
+
+        if file_type.is_dir() {
+            dirs.push(DirEntry {
+                name,
+                path: entry_path,
+                is_dir: true,
+                is_exe: false,
+            });
+        } else if file_type.is_file() {
+            let lower = name.to_lowercase();
+            if lower.ends_with(".exe") {
+                exes.push(DirEntry {
+                    name,
+                    path: entry_path,
+                    is_dir: false,
+                    is_exe: true,
+                });
+            }
+        }
+    }
+
+    // 目录按名字排序,exe 按名字排序
+    dirs.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    exes.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+
+    dirs.extend(exes);
+    Ok((current, parent, dirs))
+}
+
 /// 启动指定应用(非阻塞,spawn 后立即返回)
 pub fn launch_app(app: &AppEntry) -> std::io::Result<()> {
     let command = expand_env(&app.command);

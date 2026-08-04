@@ -22,6 +22,25 @@ data class AppEntry(
 )
 
 /**
+ * PC 端目录浏览条目(用于 exe 路径选择)
+ */
+data class DirEntry(
+    val name: String,
+    val path: String,
+    val isDir: Boolean,
+    val isExe: Boolean,
+)
+
+/**
+ * 目录浏览结果
+ */
+data class DirListing(
+    val current: String,
+    val parent: String?,
+    val items: List<DirEntry>,
+)
+
+/**
  * 快捷启动 HTTP 客户端
  *
  * 端点(挂在 base_port+4,与 /serverinfo 同服务,复用配对鉴权):
@@ -204,4 +223,59 @@ object LauncherRepository {
                 null
             }
         }
+
+    /**
+     * 浏览 PC 端目录(用于 exe 路径选择)。
+     * @param path 目录路径(空字符串表示根/盘符列表)
+     * @return 目录列表;失败返回 null
+     */
+    suspend fun listDir(serverAddr: String, path: String, pubkey: String): DirListing? =
+        withContext(Dispatchers.IO) {
+            val url = "${httpBaseUrl(serverAddr)}/list_dir?path=${encodeParam(path)}&pubkey=${encodeParam(pubkey)}"
+            try {
+                val conn = (URL(url).openConnection() as HttpURLConnection).apply {
+                    connectTimeout = CONNECT_TIMEOUT_MS
+                    readTimeout = READ_TIMEOUT_MS
+                    requestMethod = "GET"
+                    useCaches = false
+                    instanceFollowRedirects = false
+                }
+                try {
+                    if (conn.responseCode == 200) {
+                        val body = conn.inputStream.bufferedReader().use { it.readText() }
+                        parseDirListing(body)
+                    } else {
+                        Log.w(TAG, "listDir HTTP ${conn.responseCode}")
+                        null
+                    }
+                } finally {
+                    conn.disconnect()
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "listDir 失败: ${e.message}")
+                null
+            }
+        }
+
+    private fun parseDirListing(body: String): DirListing? {
+        return try {
+            val obj = JSONObject(body)
+            val current = obj.optString("current")
+            val parent = obj.opt("parent") as? String
+            val itemsArr = obj.optJSONArray("items") ?: JSONArray()
+            val items = (0 until itemsArr.length()).mapNotNull { i ->
+                val item = itemsArr.optJSONObject(i) ?: return@mapNotNull null
+                DirEntry(
+                    name = item.optString("name"),
+                    path = item.optString("path"),
+                    isDir = item.optBoolean("is_dir"),
+                    isExe = item.optBoolean("is_exe"),
+                )
+            }
+            DirListing(current = current, parent = parent, items = items)
+        } catch (e: Exception) {
+            Log.w(TAG, "解析 dir listing 失败: ${e.message}")
+            null
+        }
+    }
 }

@@ -27,7 +27,7 @@ import kotlin.math.hypot
  * 按钮掩码位: bit0=左键 bit1=右键 bit2=中键
  */
 class TouchHandler(
-    private val sensitivity: Float = 1.2f,
+    private val sensitivity: Float = 1.0f,
     private val invertY: Boolean = false,
 ) {
     var screenRotation: Int = 0

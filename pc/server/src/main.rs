@@ -193,7 +193,7 @@ async fn run_server(bind: &str, port: u16, output_device: Option<&str>) -> Resul
         run_serverinfo_server(stats_for_info, serverinfo_name, serverinfo_pairing, apps_lib, serverinfo_addr).await;
     });
     info!("serverinfo HTTP 监听: http://{}/serverinfo", serverinfo_addr);
-    info!("快捷启动端点: /applist /app_icon /launch /add_app /remove_app");
+    info!("快捷启动端点: /applist /app_icon /launch /add_app /remove_app /list_dir");
 
     // 启动 HTTP /pairing 服务(监听 127.0.0.1:{base_port + 5})
     // 供 PC 控制台查询当前 PIN / 已配对客户端列表 / 重置配对
@@ -674,6 +674,33 @@ async fn run_serverinfo_server(
                         ("200 OK", "application/json", br#"{"ok":true}"#.to_vec())
                     } else {
                         ("404 Not Found", "application/json", br#"{"error":"app not found"}"#.to_vec())
+                    }
+                }
+            } else if method == "GET" && path == "/list_dir" {
+                // 快捷启动:浏览 PC 目录(用于 exe 路径选择)
+                if !check_paired(&pairing, query).await {
+                    ("403 Forbidden", "application/json", br#"{"error":"not paired"}"#.to_vec())
+                } else {
+                    let dir_path = extract_query_param(query, "path").unwrap_or_default();
+                    let decoded = url_decode(&dir_path);
+                    match apps::list_directory(&decoded) {
+                        Ok((current, parent, items)) => {
+                            let parent_json = parent
+                                .map(|p| format!("\"{}\"", p.replace('\\', "\\\\").replace('"', "\\\"")))
+                                .unwrap_or_else(|| "null".to_string());
+                            let items_json = serde_json::to_string(&items).unwrap_or_else(|_| "[]".into());
+                            let body = format!(
+                                r#"{{"current":"{}","parent":{},"items":{}}}"#,
+                                current.replace('\\', "\\\\").replace('"', "\\\""),
+                                parent_json,
+                                items_json,
+                            );
+                            ("200 OK", "application/json", body.into_bytes())
+                        }
+                        Err(e) => {
+                            let body = format!(r#"{{"error":"{}"}}"#, e);
+                            ("400 Bad Request", "application/json", body.into_bytes())
+                        }
                     }
                 }
             } else {

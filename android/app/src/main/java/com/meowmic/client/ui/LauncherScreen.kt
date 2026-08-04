@@ -8,6 +8,7 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.rememberScrollState
@@ -29,8 +30,10 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Dialog
 import com.meowmic.client.AppListState
 import com.meowmic.client.ConnectionState
+import com.meowmic.client.DirListing
 import com.meowmic.client.MeowMicViewModel
 
 private val GRID_COLUMNS = 5
@@ -624,6 +627,7 @@ private fun AddAppDialog(
     var manualName by remember { mutableStateOf("") }
     var manualPath by remember { mutableStateOf("") }
     var submitting by remember { mutableStateOf(false) }
+    var showDirBrowser by remember { mutableStateOf(false) }
 
     AlertDialog(
         onDismissRequest = { if (!submitting) onDismiss() },
@@ -654,15 +658,31 @@ private fun AddAppDialog(
                         modifier = Modifier.fillMaxWidth(),
                         textStyle = androidx.compose.ui.text.TextStyle(fontSize = 13.sp),
                     )
-                    OutlinedTextField(
-                        value = manualPath,
-                        onValueChange = { manualPath = it },
-                        label = { Text("exe 路径", fontSize = 12.sp) },
-                        singleLine = true,
+                    // exe 路径 + 浏览按钮
+                    Row(
                         modifier = Modifier.fillMaxWidth(),
-                        textStyle = androidx.compose.ui.text.TextStyle(fontSize = 13.sp),
-                        placeholder = { Text("C:\\Program Files\\App\\app.exe", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)) },
-                    )
+                        verticalAlignment = Alignment.Bottom,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        OutlinedTextField(
+                            value = manualPath,
+                            onValueChange = { manualPath = it },
+                            label = { Text("exe 路径", fontSize = 12.sp) },
+                            singleLine = true,
+                            modifier = Modifier.weight(1f),
+                            textStyle = androidx.compose.ui.text.TextStyle(fontSize = 13.sp),
+                            placeholder = { Text("C:\\Program Files\\App\\app.exe", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)) },
+                        )
+                        Button(
+                            onClick = { showDirBrowser = true },
+                            modifier = Modifier.height(48.dp),
+                            contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 12.dp),
+                        ) {
+                            Icon(Icons.Default.Folder, contentDescription = "浏览", modifier = Modifier.size(16.dp))
+                            Spacer(Modifier.width(4.dp))
+                            Text("浏览", fontSize = 12.sp)
+                        }
+                    }
                     Text(
                         "支持 %APPDATA%、%LOCALAPPDATA% 等环境变量",
                         fontSize = 10.sp,
@@ -746,4 +766,179 @@ private fun AddAppDialog(
             }
         },
     )
+
+    // 目录浏览器对话框
+    if (showDirBrowser) {
+        DirBrowserDialog(
+            vm = vm,
+            onPick = { path ->
+                manualPath = path
+                // 如果名称为空,用文件名(去 .exe)自动填充
+                if (manualName.isBlank()) {
+                    manualName = path.substringAfterLast('\\').substringAfterLast('/')
+                        .removeSuffix(".exe").removeSuffix(".EXE")
+                }
+                showDirBrowser = false
+            },
+            onDismiss = { showDirBrowser = false },
+        )
+    }
+}
+
+/**
+ * PC 端目录浏览器(用于选择 exe 路径)
+ *
+ * - 首次打开显示盘符列表(Windows)
+ * - 点击目录进入子目录
+ * - 点击 exe 文件选中并返回
+ * - 顶部"返回上一级"按钮
+ */
+@Composable
+private fun DirBrowserDialog(
+    vm: MeowMicViewModel,
+    onPick: (String) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    var currentPath by remember { mutableStateOf("") }
+    var listing by remember { mutableStateOf<DirListing?>(null) }
+    var loading by remember { mutableStateOf(true) }
+    var error by remember { mutableStateOf<String?>(null) }
+
+    // 加载目录内容
+    LaunchedEffect(currentPath) {
+        loading = true
+        error = null
+        val result = vm.browseDir(currentPath)
+        if (result != null) {
+            listing = result
+        } else {
+            error = "无法读取目录"
+        }
+        loading = false
+    }
+
+    Dialog(onDismissRequest = onDismiss) {
+        Card(
+            modifier = Modifier.fillMaxWidth().fillMaxHeight(0.85f),
+            shape = RoundedCornerShape(16.dp),
+        ) {
+            Column(modifier = Modifier.fillMaxSize()) {
+                // 标题栏
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Icon(Icons.Default.Folder, contentDescription = null, modifier = Modifier.size(18.dp), tint = MaterialTheme.colorScheme.primary)
+                    Spacer(Modifier.width(8.dp))
+                    Text("选择应用", fontSize = 14.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
+                    IconButton(onClick = onDismiss, modifier = Modifier.size(28.dp)) {
+                        Icon(Icons.Default.Close, contentDescription = "关闭", modifier = Modifier.size(18.dp))
+                    }
+                }
+
+                // 当前路径栏
+                listing?.let { lst ->
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            if (lst.current.isBlank()) "我的电脑" else lst.current,
+                            fontSize = 11.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f),
+                        )
+                        // 返回上一级
+                        if (lst.parent != null) {
+                            TextButton(
+                                onClick = { currentPath = lst.parent!! },
+                                contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 8.dp),
+                            ) {
+                                Icon(Icons.Default.ArrowUpward, contentDescription = "上一级", modifier = Modifier.size(14.dp))
+                                Spacer(Modifier.width(2.dp))
+                                Text("上级", fontSize = 11.sp)
+                            }
+                        }
+                    }
+                }
+
+                HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
+
+                // 目录列表
+                Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
+                    when {
+                        loading -> {
+                            CircularProgressIndicator(
+                                modifier = Modifier.align(Alignment.Center),
+                                color = MaterialTheme.colorScheme.primary,
+                            )
+                        }
+                        error != null -> {
+                            Column(
+                                modifier = Modifier.align(Alignment.Center),
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                            ) {
+                                Text(error!!, fontSize = 13.sp, color = MaterialTheme.colorScheme.error)
+                                Spacer(Modifier.height(8.dp))
+                                TextButton(onClick = { currentPath = currentPath }) { Text("重试") }
+                            }
+                        }
+                        listing != null -> {
+                            val items = listing!!.items
+                            if (items.isEmpty()) {
+                                Text(
+                                    "空目录",
+                                    modifier = Modifier.align(Alignment.Center),
+                                    fontSize = 13.sp,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            } else {
+                                androidx.compose.foundation.lazy.LazyColumn(modifier = Modifier.fillMaxSize()) {
+                                    items(items) { item ->
+                                        Row(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .clickable {
+                                                    if (item.isDir) {
+                                                        currentPath = item.path
+                                                    } else if (item.isExe) {
+                                                        onPick(item.path)
+                                                    }
+                                                }
+                                                .padding(horizontal = 12.dp, vertical = 10.dp),
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(10.dp),
+                                        ) {
+                                            Icon(
+                                                if (item.isDir) Icons.Default.Folder
+                                                else Icons.Default.Apps,
+                                                contentDescription = null,
+                                                modifier = Modifier.size(20.dp),
+                                                tint = if (item.isDir) MaterialTheme.colorScheme.primary
+                                                else MaterialTheme.colorScheme.onSurfaceVariant,
+                                            )
+                                            Column(modifier = Modifier.weight(1f)) {
+                                                Text(item.name, fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurface)
+                                                Text(item.path, fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                            }
+                                            if (item.isExe) {
+                                                Icon(
+                                                    Icons.Default.Check,
+                                                    contentDescription = "选择",
+                                                    modifier = Modifier.size(16.dp),
+                                                    tint = MaterialTheme.colorScheme.primary,
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
