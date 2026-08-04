@@ -434,6 +434,59 @@
             background: var(--mm-muted);
             color: var(--mm-secondary-foreground);
         }
+
+        /* ============ Service Log Panel (命令行日志) ============ */
+        .mm-log-panel { display: flex; flex-direction: column; overflow: hidden; }
+        .mm-log-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 6px 12px;
+            border-bottom: 1px solid var(--mm-border);
+            background: var(--mm-muted);
+        }
+        .mm-log-title { display: flex; align-items: center; gap: 6px; font-size: 13px; font-weight: 600; color: var(--mm-foreground); }
+        .mm-log-title svg { width: 14px; height: 14px; color: var(--mm-primary); flex-shrink: 0; }
+        .mm-log-count {
+            font-family: var(--mm-font-mono);
+            font-size: 11px;
+            color: var(--mm-muted-foreground);
+            background: var(--mm-background);
+            border: 1px solid var(--mm-border);
+            border-radius: var(--mm-radius-full);
+            padding: 0 6px;
+            min-width: 20px;
+            text-align: center;
+            font-variant-numeric: tabular-nums;
+        }
+        .mm-log-actions { display: flex; align-items: center; gap: 10px; }
+        .mm-log-autoscroll { display: flex; align-items: center; gap: 4px; font-size: 11px; color: var(--mm-muted-foreground); cursor: pointer; user-select: none; }
+        .mm-log-autoscroll input { width: 12px; height: 12px; accent-color: var(--mm-primary); cursor: pointer; margin: 0; }
+        .mm-log-body {
+            height: 168px;
+            overflow-y: auto;
+            background: #0d1117;
+            color: #c9d1d9;
+            font-family: var(--mm-font-mono);
+            font-size: 11.5px;
+            line-height: 17px;
+            padding: 6px 8px;
+            user-select: text;
+            -webkit-user-select: text;
+        }
+        .mm-log-body::-webkit-scrollbar { width: 8px; }
+        .mm-log-body::-webkit-scrollbar-track { background: transparent; }
+        .mm-log-body::-webkit-scrollbar-thumb { background: #30363d; border-radius: var(--mm-radius-full); }
+        .mm-log-body::-webkit-scrollbar-thumb:hover { background: #484f58; }
+        .mm-log-line { display: flex; gap: 6px; padding: 0; }
+        .mm-log-time { color: #6e7681; flex-shrink: 0; }
+        .mm-log-level { flex-shrink: 0; width: 36px; font-weight: 600; }
+        .mm-log-level-info { color: #79c0ff; }
+        .mm-log-level-warn { color: #e3b341; }
+        .mm-log-level-error { color: #f85149; }
+        .mm-log-level-event { color: #56d364; }
+        .mm-log-text { white-space: pre-wrap; word-break: break-word; flex: 1; min-width: 0; }
+        .mm-log-empty { color: #6e7681; font-style: italic; }
         .mm-firewall-banner {
             display: none;
             align-items: center;
@@ -1301,6 +1354,30 @@
                     <button class="mm-addr-copy" type="button" onclick="copyServerAddr()">复制</button>
                 </div>
             </section>
+
+            <!-- ===== 服务日志(命令行日志) ===== -->
+            <section class="mm-card mm-log-panel" id="serviceLogPanel">
+                <div class="mm-log-header">
+                    <div class="mm-log-title">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 17 10 11 4 5"/><line x1="12" x2="20" y1="19" y2="19"/></svg>
+                        <span>服务日志</span>
+                        <span class="mm-log-count" id="logCount">0</span>
+                    </div>
+                    <div class="mm-log-actions">
+                        <label class="mm-log-autoscroll">
+                            <input type="checkbox" id="logAutoscroll" checked>
+                            <span>自动滚动</span>
+                        </label>
+                        <button class="mm-btn mm-btn-secondary mm-btn-sm" type="button" onclick="clearServiceLog()">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+                            <span>清空</span>
+                        </button>
+                    </div>
+                </div>
+                <div class="mm-log-body" id="serviceLogBody">
+                    <div class="mm-log-empty">等待服务日志…</div>
+                </div>
+            </section>
         </div>
 
         <!-- ===== Page: 设置 ===== -->
@@ -1510,6 +1587,11 @@
         let updateUnlisten = null;       // 更新事件监听取消函数
         let isUpdateDownloading = false; // 是否正在下载更新
 
+        // ============ Service Log State ============
+        let serviceLogUnlisten = null;   // server-log 事件监听取消函数
+        let lastLoggedError = null;      // 上次已记录的 last_error,避免重复刷屏
+        const LOG_MAX_LINES = 500;       // 面板保留的最大行数
+
         // ============ Init ============
         async function init() {
             try {
@@ -1556,6 +1638,17 @@
 
                 updateStatus();
                 statusInterval = setInterval(updateStatus, 1000);
+
+                // 监听后端推送的 server 日志行(stdout/stderr 逐行转发)
+                try {
+                    if (Tauri.event && Tauri.event.listen) {
+                        serviceLogUnlisten = await Tauri.event.listen('server-log', (event) => {
+                            const payload = event.payload || {};
+                            const parsed = parseServerLine(payload.line || '');
+                            appendServiceLog(parsed.level, parsed.text);
+                        });
+                    }
+                } catch(e) { console.warn('服务日志监听失败:', e); }
 
                 // 启动后延迟自动检查更新(不打扰用户)
                 setTimeout(() => {
@@ -1710,6 +1803,69 @@
             }
         }
 
+        // ============ Service Log Panel ============
+        // 解析 tracing 默认格式行 "2026-08-04T10:23:45.123Z  INFO 消息",
+        // 剥离时间戳前缀,提取级别与正文;无法解析时按 info 原样显示。
+        function parseServerLine(raw) {
+            const m = String(raw).match(/^\d{4}-\d{2}-\d{2}T[\d:.+\-]+Z?\s+(INFO|WARN|ERROR|DEBUG|TRACE)\s+(.*)$/);
+            if (m) {
+                const lv = m[1].toLowerCase();
+                const level = (lv === 'error') ? 'error' : (lv === 'warn') ? 'warn' : 'info';
+                return { level: level, text: m[2] };
+            }
+            return { level: 'info', text: String(raw) };
+        }
+
+        function logLevelLabel(level) {
+            if (level === 'event') return '▶';
+            if (level === 'warn') return 'WARN';
+            if (level === 'error') return 'ERR';
+            return 'INFO';
+        }
+
+        function appendServiceLog(level, text) {
+            const body = document.getElementById('serviceLogBody');
+            if (!body) return;
+            const empty = body.querySelector('.mm-log-empty');
+            if (empty) empty.remove();
+
+            const time = new Date().toLocaleTimeString('en-GB');
+            const line = document.createElement('div');
+            line.className = 'mm-log-line';
+
+            const t = document.createElement('span');
+            t.className = 'mm-log-time';
+            t.textContent = time;
+            line.appendChild(t);
+
+            const lv = document.createElement('span');
+            lv.className = 'mm-log-level mm-log-level-' + level;
+            lv.textContent = logLevelLabel(level);
+            line.appendChild(lv);
+
+            const tx = document.createElement('span');
+            tx.className = 'mm-log-text';
+            tx.textContent = text;
+            line.appendChild(tx);
+
+            body.appendChild(line);
+
+            if (document.getElementById('logAutoscroll').checked) {
+                body.scrollTop = body.scrollHeight;
+            }
+            // 限制 DOM 节点数,避免长时间运行后面板卡顿
+            while (body.children.length > LOG_MAX_LINES) {
+                body.removeChild(body.firstChild);
+            }
+            document.getElementById('logCount').textContent = body.children.length;
+        }
+
+        function clearServiceLog() {
+            const body = document.getElementById('serviceLogBody');
+            body.innerHTML = '<div class="mm-log-empty">日志已清空</div>';
+            document.getElementById('logCount').textContent = '0';
+        }
+
         // ============ Config ============
         function applyConfigToUI(cfg) {
             document.getElementById('tcpPort').value = cfg.base_port;
@@ -1737,23 +1893,33 @@
         async function startService() {
             const cfg = getConfigFromUI();
             const Tauri = window.__TAURI__;
+            appendServiceLog('event', '正在启动服务(端口 ' + cfg.base_port + ')...');
             try {
                 await Tauri.invoke('start_service', { config: cfg });
                 showError('');
                 showToast('服务已启动');
+                appendServiceLog('event', '服务已启动');
+                lastLoggedError = null;
             } catch(e) {
-                showError(String(e));
+                const msg = String(e);
+                showError(msg);
+                appendServiceLog('error', '启动失败: ' + msg);
             }
         }
 
         async function stopService() {
             const Tauri = window.__TAURI__;
+            appendServiceLog('event', '正在停止服务...');
             try {
                 await Tauri.invoke('stop_service');
                 showError('');
                 showToast('服务已停止');
+                appendServiceLog('event', '服务已停止');
+                lastLoggedError = null;
             } catch(e) {
-                showError(String(e));
+                const msg = String(e);
+                showError(msg);
+                appendServiceLog('error', '停止失败: ' + msg);
             }
         }
 
@@ -1808,6 +1974,15 @@
                 if (status.last_error && !status.running) {
                     // server 进程退出时显示退出码,帮助诊断崩溃原因
                     showError(status.last_error);
+                    // 同步入日志面板:仅在 last_error 变化时记录一次,避免每秒刷屏
+                    if (status.last_error !== lastLoggedError) {
+                        appendServiceLog('error', status.last_error);
+                        lastLoggedError = status.last_error;
+                    }
+                }
+                // 服务恢复运行时清空已记录的错误,下次再退出可重新记录
+                if (status.running) {
+                    lastLoggedError = null;
                 }
 
                 // 防火墙诊断:服务运行但无连接时,检查防火墙规则(节流 30s)

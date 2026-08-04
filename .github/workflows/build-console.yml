@@ -183,7 +183,11 @@ jobs:
             else
               base="${f%.*}"; ext="${f##*.}"
             fi
-            mv "$f" "${base}-${TAG}-${{ matrix.asset_suffix }}.${ext}" 2>/dev/null || true
+            # GitHub Release 上传时会把文件名中的空格 sanitize 为点,
+            # 必须在本地重命名阶段就同步替换,否则 latest.json 里的 URL
+            # (带空格)与 GitHub 上实际资产名(带点)不一致,导致 updater 404。
+            base_dotted="${base// /.}"
+            mv "$f" "${base_dotted}-${TAG}-${{ matrix.asset_suffix }}.${ext}" 2>/dev/null || true
           done
           ls -lh
 

@@ -3,12 +3,12 @@
 use serde::{Deserialize, Serialize};
 use std::env;
 use std::fs;
-use std::io::{Read, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4, TcpStream};
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::time::Duration;
-use tauri::State;
+use tauri::{Manager, State};
 
 const CONFIG_FILE: &str = "meowmic-console.json";
 
@@ -64,6 +64,15 @@ pub struct PairedClientInfo {
     pub pubkey_b64: String,
     pub client_name: String,
     pub paired_at: u64,
+}
+
+/// server 日志行:由后台线程从 meowmic-server 的 stdout/stderr 读取后,
+/// 作为 `server-log` 事件推送到前端"服务日志"面板。
+#[derive(Clone, Serialize)]
+pub struct ServerLog {
+    /// 级别:"info"(stdout) 或 "warn"(stderr)
+    pub level: String,
+    pub line: String,
 }
 
 pub struct ServiceManager {
@@ -150,7 +159,7 @@ impl ServiceManager {
         self.status.clone()
     }
 
-    pub fn start(&mut self, config: &AppConfig) -> Result<(), String> {
+    pub fn start(&mut self, config: &AppConfig, app: &tauri::AppHandle) -> Result<(), String> {
         if self.is_running() {
             return Err("服务已在运行".to_string());
         }
@@ -170,10 +179,10 @@ impl ServiceManager {
             cmd.arg("--output-device").arg(&config.output_device);
         }
 
-        // stdout/stderr 用 null 而非 piped:piped 但不读取会导致 4KB 缓冲区填满后
-        // server 的日志写入阻塞,进而无法接受新连接(表现:手机连接超时)
-        cmd.stdout(Stdio::null());
-        cmd.stderr(Stdio::null());
+        // stdout/stderr 用 piped:在后台线程持续读取并转发到前端"服务日志"面板。
+        // 必须持续读取:否则 4KB 管道缓冲填满后 server 日志写入阻塞,导致无法接受新连接。
+        cmd.stdout(Stdio::piped());
+        cmd.stderr(Stdio::piped());
         cmd.stdin(Stdio::null());
 
         // Windows 下隐藏 meowmic-server 子进程的命令行窗口
@@ -186,7 +195,14 @@ impl ServiceManager {
         }
 
         match cmd.spawn() {
-            Ok(child) => {
+            Ok(mut child) => {
+                // 捕获 server stdout/stderr,逐行作为 server-log 事件推送到前端
+                if let Some(stdout) = child.stdout.take() {
+                    spawn_log_reader(stdout, app.clone(), "info");
+                }
+                if let Some(stderr) = child.stderr.take() {
+                    spawn_log_reader(stderr, app.clone(), "warn");
+                }
                 self.process = Some(child);
                 self.started_at = Some(std::time::Instant::now());
                 self.base_port = Some(config.base_port);
@@ -228,6 +244,30 @@ impl Drop for ServiceManager {
     fn drop(&mut self) {
         let _ = self.stop();
     }
+}
+
+/// 后台线程持续读取子进程的 stdout/stderr,逐行作为 `server-log` 事件推送到前端。
+/// 持续读取是必须的:管道 4KB 缓冲填满后 server 日志写入会阻塞,导致无法接受新连接。
+/// 进程退出时管道关闭,`lines()` 迭代自然结束,线程退出。
+fn spawn_log_reader<R: Read + Send + 'static>(stream: R, app: tauri::AppHandle, level: &'static str) {
+    std::thread::spawn(move || {
+        let reader = BufReader::new(stream);
+        for line in reader.lines() {
+            match line {
+                Ok(l) if !l.trim().is_empty() => {
+                    let _ = app.emit_all(
+                        "server-log",
+                        ServerLog {
+                            level: level.to_string(),
+                            line: l,
+                        },
+                    );
+                }
+                Ok(_) => {}
+                Err(_) => break,
+            }
+        }
+    });
 }
 
 /// 通过 HTTP GET 拉取 server 的 /stats 统计接口。
@@ -421,10 +461,10 @@ fn save_app_config(config: AppConfig) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn start_service(state: State<AppState>, config: AppConfig) -> Result<(), String> {
+fn start_service(state: State<AppState>, app: tauri::AppHandle, config: AppConfig) -> Result<(), String> {
     save_config(&config)?;
     let mut svc = state.service.lock().unwrap();
-    svc.start(&config)
+    svc.start(&config, &app)
 }
 
 #[tauri::command]
@@ -647,13 +687,18 @@ pub fn run() {
         service: std::sync::Mutex::new(ServiceManager::new()),
     };
 
-    if config.auto_start {
-        let mut svc = state.service.lock().unwrap();
-        let _ = svc.start(&config);
-    }
-
     tauri::Builder::default()
         .manage(state)
+        .setup(move |app| {
+            // 自动启动:在 setup 中执行,此时已可获取 AppHandle 用于日志转发
+            if config.auto_start {
+                let state = app.state::<AppState>();
+                let mut svc = state.service.lock().unwrap();
+                let handle = app.handle();
+                let _ = svc.start(&config, &handle);
+            }
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             get_config,
             save_app_config,
