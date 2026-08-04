@@ -213,7 +213,7 @@ object LauncherRepository {
                     instanceFollowRedirects = false
                     doOutput = true
                     setFixedLengthStreamingMode(payloadBytes.size)
-                    setRequestProperty("Content-Type", "application/json")
+                    setRequestProperty("Content-Type", "application/json; charset=utf-8")
                 }
                 try {
                     conn.outputStream.use { it.write(payloadBytes) }

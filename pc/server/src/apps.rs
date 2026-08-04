@@ -182,24 +182,33 @@ pub fn load_apps() -> Vec<AppEntry> {
 }
 
 /// 展开环境变量(%APPDATA%、%LOCALAPPDATA% 等)
+///
+/// 注意:按字节扫描 `%`(ASCII 单字节,不会出现在 UTF-8 多字节序列中),
+/// 用 `&str` 切片保持非 ASCII 部分(如中文路径)的 UTF-8 编码完整。
 fn expand_env(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     let bytes = s.as_bytes();
-    let mut i = 0;
+    let mut last = 0usize;
+    let mut i = 0usize;
     while i < bytes.len() {
         if bytes[i] == b'%' {
-            if let Some(end) = s[i + 1..].find('%') {
-                let name = &s[i + 1..i + 1 + end];
+            // 在剩余部分找下一个 %
+            if let Some(end_rel) = s[i + 1..].find('%') {
+                let end = i + 1 + end_rel;
+                let name = &s[i + 1..end];
                 if let Ok(val) = std::env::var(name) {
+                    // 追加 % 之前的部分(原样,保持 UTF-8)
+                    out.push_str(&s[last..i]);
                     out.push_str(&val);
-                    i += end + 2;
+                    last = end + 1;
+                    i = end + 1;
                     continue;
                 }
             }
         }
-        out.push(bytes[i] as char);
         i += 1;
     }
+    out.push_str(&s[last..]);
     out
 }
 

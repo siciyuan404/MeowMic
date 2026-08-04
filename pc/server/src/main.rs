@@ -647,6 +647,7 @@ async fn run_serverinfo_server(
                     ("403 Forbidden", "application/json", br#"{"error":"not paired"}"#.to_vec())
                 } else {
                     let mut apps = apps_lib.write().await;
+                    tracing::info!("add_app 收到 body: {}", body_str);
                     match serde_json::from_str::<apps::AppEntry>(&body_str) {
                         Ok(entry) if !entry.name.is_empty() && !entry.command.is_empty() => {
                             let id = apps::add_app(&mut apps, &entry.name, &entry.command, entry.args, &entry.working_dir);
