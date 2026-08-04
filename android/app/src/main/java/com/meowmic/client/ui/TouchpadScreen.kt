@@ -643,12 +643,13 @@ fun TouchpadScreen(
                 }
             }
             // 底部鼠标按键栏(border-top 分隔,始终可见)
+            val dividerColor = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f)
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
                     .drawBehind {
                         drawLine(
-                            color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f),
+                            color = dividerColor,
                             start = androidx.compose.ui.geometry.Offset(0f, 0f),
                             end = androidx.compose.ui.geometry.Offset(size.width, 0f),
                             strokeWidth = 1.dp.toPx(),
