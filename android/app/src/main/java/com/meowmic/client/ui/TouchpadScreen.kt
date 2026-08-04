@@ -8,11 +8,16 @@ import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.*
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.StartOffset
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.awaitEachGesture
@@ -22,11 +27,18 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.ExperimentalComposeUiApi
@@ -50,6 +62,7 @@ import com.meowmic.client.ConnectionState
 import com.meowmic.client.MeowMicViewModel
 import com.meowmic.client.NativeBridge
 import com.meowmic.client.QuickAudioSlot
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import org.json.JSONObject
 import kotlin.math.abs
@@ -61,11 +74,6 @@ private const val BTN_MIDDLE = 0x04
 
 // ============ Windows VK code 常量(用于模拟键盘) ============
 private object VK {
-    // 修饰键(通用 code,用于 ComboBtn 预定义组合)
-    const val CONTROL = 0x11
-    const val SHIFT = 0x10
-    const val MENU = 0x12       // Alt
-    const val LWIN = 0x5B
     // 修饰键 L/R 专用 code(借鉴 moonlight-android,用于粘滞/锁定状态)
     // Windows 对部分快捷键区分左右(如右 Shift 长按=筛选键),用专用 code 行为更精确
     const val LCONTROL = 0xA2
@@ -74,12 +82,30 @@ private object VK {
     const val RSHIFT = 0xA1
     const val LMENU = 0xA4      // Left Alt
     const val RMENU = 0xA5      // Right Alt
-    const val RWIN = 0x5C
-    // 字母
-    const val C = 0x43; const val V = 0x56; const val X = 0x58
-    const val Z = 0x5A; const val A = 0x41; const val S = 0x53
-    const val F = 0x46; const val W = 0x57; const val R = 0x52
-    const val T = 0x54; const val D = 0x44
+    const val LWIN = 0x5B
+    // 字母(完整 A-Z,用于虚拟键盘)
+    const val A = 0x41; const val B = 0x42; const val C = 0x43; const val D = 0x44
+    const val E = 0x45; const val F = 0x46; const val G = 0x47; const val H = 0x48
+    const val I = 0x49; const val J = 0x4A; const val K = 0x4B; const val L = 0x4C
+    const val M = 0x4D; const val N = 0x4E; const val O = 0x4F; const val P = 0x50
+    const val Q = 0x51; const val R = 0x52; const val S = 0x53; const val T = 0x54
+    const val U = 0x55; const val V = 0x56; const val W = 0x57; const val X = 0x58
+    const val Y = 0x59; const val Z = 0x5A
+    // 数字行(0-9 + 符号)
+    const val D0 = 0x30; const val D1 = 0x31; const val D2 = 0x32; const val D3 = 0x33
+    const val D4 = 0x34; const val D5 = 0x35; const val D6 = 0x36; const val D7 = 0x37
+    const val D8 = 0x38; const val D9 = 0x39
+    const val OEM_3 = 0xC0    // `
+    const val OEM_MINUS = 0xBD // -
+    const val OEM_PLUS = 0xBB  // =
+    const val OEM_4 = 0xDB    // [
+    const val OEM_6 = 0xDD    // ]
+    const val OEM_5 = 0xDC    // \
+    const val OEM_1 = 0xBA    // ;
+    const val OEM_7 = 0xDE    // '
+    const val OEM_COMMA = 0xBC // ,
+    const val OEM_PERIOD = 0xBE // .
+    const val OEM_2 = 0xBF    // /
     // 功能键
     const val F1 = 0x70; const val F2 = 0x71; const val F3 = 0x72
     const val F4 = 0x73; const val F5 = 0x74; const val F6 = 0x75
@@ -97,7 +123,11 @@ private object VK {
     // 其他
     const val SNAPSHOT = 0x2C  // PrtScn
     const val CAPITAL = 0x14   // CapsLock
-    const val NUMLOCK = 0x90
+    const val SCROLL = 0x91   // ScrollLock
+    const val PAUSE = 0x13    // Pause Break
+    // Fn / Menu 没有独立 VK code,用占位值避免误触
+    const val FN = 0x7F       // F24(实际不可用,仅占位)
+    const val MENU_KEY = 0x5D // AppsKey
 }
 
 @OptIn(ExperimentalComposeUiApi::class)
@@ -105,6 +135,7 @@ private object VK {
 fun TouchpadScreen(
     vm: MeowMicViewModel,
     onDisconnect: () -> Unit,
+    onOpenLauncher: () -> Unit = {},
 ) {
     val connectionState by vm.connectionState.collectAsState()
     val stats by vm.stats.collectAsState()
@@ -124,6 +155,7 @@ fun TouchpadScreen(
     val currentAudioMode by vm.currentAudioMode.collectAsState()
     val audioHistory by vm.audioHistory.collectAsState()
     val quickSlots by vm.quickSlots.collectAsState()
+    val soundFeedback by vm.soundFeedback.collectAsState()
 
     // 统计数据
     var touchSent = 0L
@@ -210,8 +242,9 @@ fun TouchpadScreen(
     }
 
     // ── 顶部操作栏(返回 / 旋转 / 更多) ──
+    // showBack/showRotate:横屏布局自己已渲染这些按钮,调用方可设为 false 避免重复
     @Composable
-    fun ActionBar() {
+    fun ActionBar(showBack: Boolean = true, showRotate: Boolean = true) {
         var menuExpanded by remember { mutableStateOf(false) }
         val micEnabled by vm.micEnabled.collectAsState()
         val muteSpk by vm.muteSpeaker.collectAsState()
@@ -221,25 +254,31 @@ fun TouchpadScreen(
             verticalAlignment = Alignment.CenterVertically,
         ) {
             // 返回按钮
-            Box(
-                modifier = Modifier
-                    .size(28.dp)
-                    .background(
-                        MaterialTheme.colorScheme.surfaceVariant,
-                        RoundedCornerShape(8.dp),
-                    )
-                    .border(
-                        1.dp,
-                        MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f),
-                        RoundedCornerShape(8.dp),
-                    )
-                    .clickable { onDisconnect() },
-                contentAlignment = Alignment.Center,
-            ) {
-                Icon(Icons.Default.ArrowBack, "返回", Modifier.size(16.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
+            if (showBack) {
+                IconButtonSmall(
+                    icon = Icons.Default.ArrowBack,
+                    contentDescription = "返回",
+                    onClick = onDisconnect,
+                )
             }
 
-            Spacer(Modifier.weight(1f))
+            if (showBack || showRotate) Spacer(Modifier.weight(1f))
+
+            // 独立旋转按钮(对齐设计稿横屏操作栏)
+            if (showRotate) {
+                IconButtonSmall(
+                    icon = Icons.Default.ScreenRotation,
+                    contentDescription = if (isLandscape) "切换竖屏" else "切换横屏",
+                    onClick = { if (isLandscape) requestPortrait() else requestLandscape() },
+                )
+            }
+
+            // 快捷启动按钮(进入应用库页面)
+            IconButtonSmall(
+                icon = Icons.Default.Apps,
+                contentDescription = "快捷启动",
+                onClick = onOpenLauncher,
+            )
 
             // 更多按钮
             Box {
@@ -255,7 +294,7 @@ fun TouchpadScreen(
                     expanded = menuExpanded,
                     onDismissRequest = { menuExpanded = false },
                 ) {
-                    // 横屏切换
+                    // 横屏切换(菜单项保留,与独立按钮等价)
                     DropdownMenuItem(
                         text = { Text(if (isLandscape) "竖屏" else "横屏", fontSize = 12.sp) },
                         onClick = {
@@ -296,11 +335,24 @@ fun TouchpadScreen(
                             )
                         },
                     )
-                    // 提示开关
+                    // 操作反馈音效开关(对齐设计稿"提示音"语义)
+                    DropdownMenuItem(
+                        text = { Text("提示音", fontSize = 12.sp) },
+                        onClick = { vm.setSoundFeedback(!soundFeedback) },
+                        leadingIcon = { Icon(Icons.Default.Notifications, null, Modifier.size(16.dp)) },
+                        trailingIcon = {
+                            Switch(
+                                checked = soundFeedback,
+                                onCheckedChange = { vm.setSoundFeedback(it) },
+                                modifier = Modifier.scale(0.7f),
+                            )
+                        },
+                    )
+                    // 操作提示 Toast 开关(独立于提示音)
                     DropdownMenuItem(
                         text = { Text("操作提示", fontSize = 12.sp) },
                         onClick = { showTooltips = !showTooltips },
-                        leadingIcon = { Icon(Icons.Default.Notifications, null, Modifier.size(16.dp)) },
+                        leadingIcon = { Icon(Icons.Default.ChatBubbleOutline, null, Modifier.size(16.dp)) },
                         trailingIcon = {
                             Switch(
                                 checked = showTooltips,
@@ -321,6 +373,34 @@ fun TouchpadScreen(
                     )
                 }
             }
+        }
+    }
+
+    /**
+     * 小尺寸图标按钮(对齐设计稿顶栏 28dp 圆角方块)
+     */
+    @Composable
+    fun IconButtonSmall(
+        icon: androidx.compose.ui.graphics.vector.ImageVector,
+        contentDescription: String,
+        onClick: () -> Unit,
+    ) {
+        Box(
+            modifier = Modifier
+                .size(28.dp)
+                .background(
+                    MaterialTheme.colorScheme.surfaceVariant,
+                    RoundedCornerShape(8.dp),
+                )
+                .border(
+                    1.dp,
+                    MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f),
+                    RoundedCornerShape(8.dp),
+                )
+                .clickable(onClick = onClick),
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(icon, contentDescription, Modifier.size(16.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
         }
     }
 
@@ -423,7 +503,156 @@ fun TouchpadScreen(
         }
     }
 
-    // PTT 长按说话按钮(整合 PPT/实时模式)
+    // ─────────── 麦克风状态指示器(对齐设计稿 mm-mic-orb) ───────────
+    // 三态:关闭(灰) / 常开(品牌色+光晕) / 录音中(红色+光晕+波形)
+    @Composable
+    fun MicOrb(modifier: Modifier = Modifier) {
+        val micEnabled by vm.micEnabled.collectAsState()
+        val isRecording by vm.isRecording.collectAsState()
+
+        val active = micEnabled || isRecording
+        val bgColor = when {
+            isRecording -> MaterialTheme.colorScheme.error
+            micEnabled -> MaterialTheme.colorScheme.primary
+            else -> MaterialTheme.colorScheme.surfaceVariant
+        }
+        val fgColor = if (active) Color.White else MaterialTheme.colorScheme.onSurfaceVariant
+        val orbSize = if (isLandscape) 44.dp else 56.dp
+        val iconSize = if (isLandscape) 18.dp else 22.dp
+
+        // 光晕缩放与透明度动画(开启/录音时)
+        val haloAnim = rememberInfiniteTransition(label = "mic-halo")
+        val haloScale by haloAnim.animateFloat(
+            initialValue = 1f,
+            targetValue = 1.25f,
+            animationSpec = infiniteRepeatable(
+                animation = tween(1200, easing = { it }),
+                repeatMode = RepeatMode.Reverse,
+            ),
+            label = "halo-scale",
+        )
+        val haloAlpha by haloAnim.animateFloat(
+            initialValue = 0.35f,
+            targetValue = 0.1f,
+            animationSpec = infiniteRepeatable(
+                animation = tween(1200, easing = { it }),
+                repeatMode = RepeatMode.Reverse,
+            ),
+            label = "halo-alpha",
+        )
+
+        Box(
+            modifier = modifier,
+            contentAlignment = Alignment.Center,
+        ) {
+            // 光晕(仅激活态显示)
+            if (active) {
+                Box(
+                    modifier = Modifier
+                        .size(orbSize * haloScale)
+                        .background(bgColor.copy(alpha = haloAlpha), CircleShape),
+                )
+            }
+            // 主圆
+            Box(
+                modifier = Modifier
+                    .size(orbSize)
+                    .background(bgColor, CircleShape),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(
+                    if (isRecording) Icons.Default.Stop else Icons.Default.Mic,
+                    null,
+                    Modifier.size(iconSize),
+                    tint = fgColor,
+                )
+            }
+        }
+    }
+
+    // ─────────── 脉冲扩散圆环(对齐设计稿 mm-rec-pulse) ───────────
+    @Composable
+    fun PulseRing(
+        modifier: Modifier = Modifier,
+        color: Color,
+        size: androidx.compose.ui.unit.Dp,
+    ) {
+        val anim = rememberInfiniteTransition(label = "pulse")
+        val scale by anim.animateFloat(
+            initialValue = 1f,
+            targetValue = 1.8f,
+            animationSpec = infiniteRepeatable(
+                animation = tween(1200),
+                repeatMode = RepeatMode.Restart,
+            ),
+            label = "pulse-scale",
+        )
+        val alpha by anim.animateFloat(
+            initialValue = 0.4f,
+            targetValue = 0f,
+            animationSpec = infiniteRepeatable(
+                animation = tween(1200),
+                repeatMode = RepeatMode.Restart,
+            ),
+            label = "pulse-alpha",
+        )
+        Box(
+            modifier = modifier,
+            contentAlignment = Alignment.Center,
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(size)
+                    .scale(scale)
+                    .background(color.copy(alpha = alpha), CircleShape),
+            )
+        }
+    }
+
+    // ─────────── 录音波形条(对齐设计稿 mm-rec-bars) ───────────
+    // 5 条不等高、错相位的柱形,录音时持续抖动
+    @Composable
+    fun WaveBars(
+        modifier: Modifier = Modifier,
+        color: Color,
+        active: Boolean,
+    ) {
+        // 设计稿:5 条,相对高度 + 错相位
+        val heights = listOf(3f, 8f, 12f, 7f, 5f)
+        val phases = listOf(0, 120, 240, 180, 60)  // ms
+
+        Row(
+            modifier = modifier,
+            horizontalArrangement = Arrangement.spacedBy(2.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            heights.forEachIndexed { i, h ->
+                val anim = rememberInfiniteTransition(label = "bar-$i")
+                val animatedH by anim.animateFloat(
+                    initialValue = 3f,
+                    targetValue = if (active) h else 3f,
+                    animationSpec = if (active) {
+                        infiniteRepeatable(
+                            animation = tween(600, easing = { it }),
+                            repeatMode = RepeatMode.Reverse,
+                            initialStartOffset = StartOffset(phases[i]),
+                        )
+                    } else {
+                        tween(200)
+                    },
+                    label = "bar-h-$i",
+                )
+                Box(
+                    modifier = Modifier
+                        .width(2.dp)
+                        .height(animatedH.dp)
+                        .background(color, RoundedCornerShape(50)),
+                )
+            }
+        }
+    }
+
+    // ─────────── PTT 长按说话按钮(整合 PPT/实时模式) ───────────
     // state: idle / recording / locked
     // idle → 按下 → recording → 抬起 → idle
     // idle → 按下 → recording → 滑动超过阈值 → locked
@@ -442,6 +671,20 @@ fun TouchpadScreen(
         // 用 mutableStateOf 包装当前状态供 pointerInput 读取,避免 key 变化重启
         val stateRef = remember { mutableStateOf("idle") }
 
+        // 实时计时器:基于 vm.isRecording 信号,录音/锁定期间持续累计
+        // (recording → locked 切换不会重置计时器,因为 vm.isRecording 保持 true)
+        var recSeconds by remember { mutableStateOf(0) }
+        val isVmRecording by vm.isRecording.collectAsState()
+        LaunchedEffect(isVmRecording) {
+            if (isVmRecording) {
+                recSeconds = 0
+                while (true) {
+                    delay(1000)
+                    recSeconds++
+                }
+            }
+        }
+
         val bgColor = when {
             disabled -> MaterialTheme.colorScheme.surfaceVariant
             btnState == "recording" -> MaterialTheme.colorScheme.error
@@ -449,17 +692,24 @@ fun TouchpadScreen(
             else -> MaterialTheme.colorScheme.primary
         }
         val fgColor = if (disabled) MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f) else Color.White
-        val icon = Icons.Default.Mic
+        val isActive = btnState == "recording" || btnState == "locked"
+
+        // 计时器格式化
+        fun formatTime(s: Int): String {
+            val m = s / 60
+            val sec = s % 60
+            return "$m:${if (sec < 10) "0$sec" else "$sec"}"
+        }
         val text = when {
             disabled -> "麦克风常开中"
-            btnState == "recording" -> "录音中"
-            btnState == "locked" -> "已锁定·点取消"
+            btnState == "recording" -> "录音中 ${formatTime(recSeconds)}  松开停止"
+            btnState == "locked" -> "已锁定 ${formatTime(recSeconds)}  点取消"
             else -> "按住录音"
         }
 
         Box(
             modifier = modifier
-                .height(48.dp)
+                .height(64.dp)
                 .background(bgColor, RoundedCornerShape(8.dp))
                 .pointerInput(disabled) {
                     if (disabled) return@pointerInput
@@ -474,6 +724,7 @@ fun TouchpadScreen(
                                 btnState = "recording"
                                 stateRef.value = "recording"
                                 vm.startRecording()
+                                vm.playFeedbackSound()
                                 showToast("开始录音(松开结束,上滑锁定)")
                                 var locked = false
                                 while (true) {
@@ -531,10 +782,46 @@ fun TouchpadScreen(
                 },
             contentAlignment = Alignment.Center,
         ) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(icon, null, Modifier.size(18.dp), tint = fgColor)
-                Spacer(Modifier.width(6.dp))
-                Text(text, fontSize = 13.sp, color = fgColor, fontWeight = FontWeight.Medium)
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                // 左侧:脉冲圆环 + 主按钮(图标)
+                Box(
+                    modifier = Modifier.size(40.dp),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    if (isActive) {
+                        PulseRing(
+                            color = bgColor,
+                            size = 40.dp,
+                        )
+                    }
+                    Box(
+                        modifier = Modifier
+                            .size(28.dp)
+                            .background(Color.White.copy(alpha = 0.15f), CircleShape),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Icon(
+                            if (isActive) Icons.Default.Stop else Icons.Default.Mic,
+                            null,
+                            Modifier.size(18.dp),
+                            tint = fgColor,
+                        )
+                    }
+                }
+                // 中间:文字 + 波形条
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(2.dp),
+                ) {
+                    Text(text, fontSize = 12.sp, color = fgColor, fontWeight = FontWeight.Medium)
+                    WaveBars(
+                        color = fgColor.copy(alpha = 0.8f),
+                        active = isActive,
+                    )
+                }
             }
         }
     }
@@ -675,22 +962,67 @@ fun TouchpadScreen(
     @Composable
     fun AudioPanel() {
         Column(modifier = Modifier.padding(horizontal = 12.dp)) {
-            // 音频源行:文件选择 + 停止播放
+            // ── 音频源切换:录音 / 音频文件(对齐设计稿双 pill) ──
+            // 当前模式高亮:录音=品牌填充,音频文件=品牌填充
+            val micActive = currentAudioMode == AudioInputManager.InputMode.MICROPHONE
+            val fileActive = currentAudioMode == AudioInputManager.InputMode.MUSIC_FILE
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(6.dp),
+                verticalAlignment = Alignment.CenterVertically,
             ) {
-                // 音频文件 pill(选择文件)
+                // 录音 pill
                 Box(
                     modifier = Modifier
                         .height(28.dp)
                         .background(
-                            MaterialTheme.colorScheme.surfaceVariant,
+                            if (micActive) MaterialTheme.colorScheme.primaryContainer
+                            else MaterialTheme.colorScheme.surfaceVariant,
                             RoundedCornerShape(50),
                         )
                         .border(
                             1.dp,
-                            MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f),
+                            if (micActive) MaterialTheme.colorScheme.primary
+                            else MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f),
+                            RoundedCornerShape(50),
+                        )
+                        .clickable {
+                            vm.switchAudioMode(AudioInputManager.InputMode.MICROPHONE)
+                            showToast("切换到录音模式")
+                        }
+                        .padding(horizontal = 10.dp),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(
+                            Icons.Default.Mic,
+                            null,
+                            Modifier.size(12.dp),
+                            tint = if (micActive) MaterialTheme.colorScheme.primary
+                            else MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        Spacer(Modifier.width(4.dp))
+                        Text(
+                            "录音",
+                            fontSize = 11.sp,
+                            color = if (micActive) MaterialTheme.colorScheme.primary
+                            else MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+                // 音频文件 pill
+                Box(
+                    modifier = Modifier
+                        .height(28.dp)
+                        .background(
+                            if (fileActive) MaterialTheme.colorScheme.primaryContainer
+                            else MaterialTheme.colorScheme.surfaceVariant,
+                            RoundedCornerShape(50),
+                        )
+                        .border(
+                            1.dp,
+                            if (fileActive) MaterialTheme.colorScheme.primary
+                            else MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f),
                             RoundedCornerShape(50),
                         )
                         .clickable {
@@ -702,16 +1034,25 @@ fun TouchpadScreen(
                     contentAlignment = Alignment.Center,
                 ) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(Icons.Default.MusicNote, null, Modifier.size(12.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Icon(
+                            Icons.Default.MusicNote,
+                            null,
+                            Modifier.size(12.dp),
+                            tint = if (fileActive) MaterialTheme.colorScheme.primary
+                            else MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
                         Spacer(Modifier.width(4.dp))
                         Text(
                             "音频文件",
                             fontSize = 11.sp,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            color = if (fileActive) MaterialTheme.colorScheme.primary
+                            else MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
                 }
+                // 停止按钮(MUSIC_FILE 模式下显示)
                 if (currentAudioMode == AudioInputManager.InputMode.MUSIC_FILE) {
+                    Spacer(Modifier.weight(1f))
                     Box(
                         modifier = Modifier
                             .size(28.dp)
@@ -821,9 +1162,9 @@ fun TouchpadScreen(
             horizontalArrangement = Arrangement.spacedBy(6.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            MouseBtn("左键", Icons.Default.Mouse, BTN_LEFT, Modifier.weight(1f).height(44.dp), "鼠标左键:单击/按住拖拽") { showToast(it) }
-            MouseBtn("中键", Icons.Default.Mouse, BTN_MIDDLE, Modifier.weight(1f).height(44.dp), "鼠标中键:滚轮按键") { showToast(it) }
-            MouseBtn("右键", Icons.Default.Menu, BTN_RIGHT, Modifier.weight(1f).height(44.dp), "鼠标右键:上下文菜单") { showToast(it) }
+            MouseBtn("左键", Icons.Default.Mouse, BTN_LEFT, Modifier.weight(1f).height(44.dp), "鼠标左键:单击/按住拖拽", { showToast(it) }, { vm.playFeedbackSound() })
+            MouseBtn("中键", Icons.Default.Mouse, BTN_MIDDLE, Modifier.weight(1f).height(44.dp), "鼠标中键:滚轮按键", { showToast(it) }, { vm.playFeedbackSound() })
+            MouseBtn("右键", Icons.Default.Menu, BTN_RIGHT, Modifier.weight(1f).height(44.dp), "鼠标右键:上下文菜单", { showToast(it) }, { vm.playFeedbackSound() })
         }
     }
 
@@ -869,6 +1210,7 @@ fun TouchpadScreen(
         // 仅在全部成功时:清除粘滞态,保留锁定态;失败时全保留以允许重试
         if (allSuccess) {
             clearStickyOnly()
+            vm.playFeedbackSound()
         }
     }
 
@@ -928,71 +1270,60 @@ fun TouchpadScreen(
         }
     }
 
-    @Composable
-    fun ComboBtn(label: String, modifier: Modifier = Modifier, vararg keyCodes: Int) {
-        Box(
-            modifier = modifier
-                .height(36.dp)
-                .background(
-                    MaterialTheme.colorScheme.surfaceVariant,
-                    RoundedCornerShape(8.dp),
-                )
-                .border(
-                    1.dp,
-                    MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f),
-                    RoundedCornerShape(8.dp),
-                )
-                .clickable {
-                    NativeBridge.sendKeyCombo(*keyCodes)
-                    // 组合键按钮自带修饰键,发送后清粘滞(1),保留锁定(2)
-                    clearStickyOnly()
-                },
-            contentAlignment = Alignment.Center,
-        ) {
-            Text(
-                label,
-                fontSize = 11.sp,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                fontWeight = FontWeight.Medium,
-            )
-        }
-    }
-
+    /**
+     * 通用键位按钮(对齐设计稿 vkb-key):
+     * - fn=true: 功能/修饰键,使用次级背景色 + 较小字号
+     * - wide/xwide/space: 不同 flex 比例
+     * - 点击发送对应 VK code,并清粘滞态
+     */
     @Composable
     fun KeyBtn(
         label: String,
         vkCode: Int,
         modifier: Modifier = Modifier,
+        fn: Boolean = false,
+        small: Boolean = false,
     ) {
+        val bgColor = if (fn) MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.7f)
+        else MaterialTheme.colorScheme.surfaceVariant
+        val fontSize = when {
+            small -> 9.sp
+            fn -> 10.sp
+            else -> 11.sp
+        }
         Box(
             modifier = modifier
-                .height(36.dp)
-                .background(
-                    MaterialTheme.colorScheme.surfaceVariant,
-                    RoundedCornerShape(8.dp),
-                )
+                .height(if (isLandscape) 24.dp else 30.dp)
+                .background(bgColor, RoundedCornerShape(6.dp))
                 .border(
                     1.dp,
                     MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f),
-                    RoundedCornerShape(8.dp),
+                    RoundedCornerShape(6.dp),
                 )
                 .clickable { fireKey(vkCode) },
             contentAlignment = Alignment.Center,
         ) {
             Text(
                 label,
-                fontSize = 11.sp,
+                fontSize = fontSize,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 fontWeight = FontWeight.Medium,
+                maxLines = 1,
             )
         }
+    }
+
+    /** 占位间隔(对齐设计稿 vkb-gap) */
+    @Composable
+    fun KeyGap(modifier: Modifier = Modifier) {
+        Spacer(modifier = modifier)
     }
 
     @Composable
     fun KeyboardPanel() {
         Column(
             modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp),
-            verticalArrangement = Arrangement.spacedBy(6.dp),
+            verticalArrangement = Arrangement.spacedBy(3.dp),
         ) {
             // 第 1 行:三态修饰键(借鉴 moonlight-android 使用 L/R 专用 VK code)
             Row(
@@ -1004,72 +1335,337 @@ fun TouchpadScreen(
                 StickyModBtn("Alt", VK.LMENU, Modifier.weight(1f))
                 StickyModBtn("Win", VK.LWIN, Modifier.weight(1f))
             }
-            // 第 2 行:常用快捷组合(Ctrl 系列)
+            // 第 2 行:功能键 Esc | F1-F4 | F5-F8 | F9-F12(对齐设计稿 vkb-row 功能键行)
             Row(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                horizontalArrangement = Arrangement.spacedBy(3.dp),
             ) {
-                ComboBtn("复制", Modifier.weight(1f), VK.CONTROL, VK.C)
-                ComboBtn("粘贴", Modifier.weight(1f), VK.CONTROL, VK.V)
-                ComboBtn("剪切", Modifier.weight(1f), VK.CONTROL, VK.X)
-                ComboBtn("撤销", Modifier.weight(1f), VK.CONTROL, VK.Z)
-                ComboBtn("全选", Modifier.weight(1f), VK.CONTROL, VK.A)
-                ComboBtn("保存", Modifier.weight(1f), VK.CONTROL, VK.S)
+                KeyBtn("Esc", VK.ESCAPE, Modifier.weight(1f), fn = true, small = true)
+                KeyGap(Modifier.weight(0.4f))
+                KeyBtn("F1", VK.F1, Modifier.weight(1f), fn = true, small = true)
+                KeyBtn("F2", VK.F2, Modifier.weight(1f), fn = true, small = true)
+                KeyBtn("F3", VK.F3, Modifier.weight(1f), fn = true, small = true)
+                KeyBtn("F4", VK.F4, Modifier.weight(1f), fn = true, small = true)
+                KeyGap(Modifier.weight(0.4f))
+                KeyBtn("F5", VK.F5, Modifier.weight(1f), fn = true, small = true)
+                KeyBtn("F6", VK.F6, Modifier.weight(1f), fn = true, small = true)
+                KeyBtn("F7", VK.F7, Modifier.weight(1f), fn = true, small = true)
+                KeyBtn("F8", VK.F8, Modifier.weight(1f), fn = true, small = true)
+                KeyGap(Modifier.weight(0.4f))
+                KeyBtn("F9", VK.F9, Modifier.weight(1f), fn = true, small = true)
+                KeyBtn("F10", VK.F10, Modifier.weight(1f), fn = true, small = true)
+                KeyBtn("F11", VK.F11, Modifier.weight(1f), fn = true, small = true)
+                KeyBtn("F12", VK.F12, Modifier.weight(1f), fn = true, small = true)
             }
-            // 第 3 行:系统快捷键
+            // 第 3 行:数字行 ` 1-0 - = ⌫
             Row(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                horizontalArrangement = Arrangement.spacedBy(3.dp),
             ) {
-                ComboBtn("⇄Tab", Modifier.weight(1f), VK.MENU, VK.TAB)
-                ComboBtn("Win", Modifier.weight(1f), VK.LWIN)
-                ComboBtn("AltF4", Modifier.weight(1f), VK.MENU, VK.F4)
-                ComboBtn("刷新", Modifier.weight(1f), VK.CONTROL, VK.F5)
-                ComboBtn("截屏", Modifier.weight(1f), VK.SNAPSHOT)
+                KeyBtn("`", VK.OEM_3, Modifier.weight(1f))
+                KeyBtn("1", VK.D1, Modifier.weight(1f))
+                KeyBtn("2", VK.D2, Modifier.weight(1f))
+                KeyBtn("3", VK.D3, Modifier.weight(1f))
+                KeyBtn("4", VK.D4, Modifier.weight(1f))
+                KeyBtn("5", VK.D5, Modifier.weight(1f))
+                KeyBtn("6", VK.D6, Modifier.weight(1f))
+                KeyBtn("7", VK.D7, Modifier.weight(1f))
+                KeyBtn("8", VK.D8, Modifier.weight(1f))
+                KeyBtn("9", VK.D9, Modifier.weight(1f))
+                KeyBtn("0", VK.D0, Modifier.weight(1f))
+                KeyBtn("-", VK.OEM_MINUS, Modifier.weight(1f))
+                KeyBtn("=", VK.OEM_PLUS, Modifier.weight(1f))
+                KeyBtn("⌫", VK.BACK, Modifier.weight(1.6f), fn = true)
             }
-            // 第 4 行:功能键 F1-F12(横向滚动)
-            LazyRow(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(4.dp),
-            ) {
-                item { KeyBtn("F1", VK.F1, Modifier.width(48.dp)) }
-                item { KeyBtn("F2", VK.F2, Modifier.width(48.dp)) }
-                item { KeyBtn("F3", VK.F3, Modifier.width(48.dp)) }
-                item { KeyBtn("F4", VK.F4, Modifier.width(48.dp)) }
-                item { KeyBtn("F5", VK.F5, Modifier.width(48.dp)) }
-                item { KeyBtn("F6", VK.F6, Modifier.width(48.dp)) }
-                item { KeyBtn("F7", VK.F7, Modifier.width(48.dp)) }
-                item { KeyBtn("F8", VK.F8, Modifier.width(48.dp)) }
-                item { KeyBtn("F9", VK.F9, Modifier.width(48.dp)) }
-                item { KeyBtn("F10", VK.F10, Modifier.width(48.dp)) }
-                item { KeyBtn("F11", VK.F11, Modifier.width(48.dp)) }
-                item { KeyBtn("F12", VK.F12, Modifier.width(48.dp)) }
-            }
-            // 第 5 行:方向键 + 编辑键
+            // 第 4 行:QWERTY 行 Tab Q-P [ ] \
             Row(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                horizontalArrangement = Arrangement.spacedBy(3.dp),
             ) {
-                KeyBtn("←", VK.LEFT, Modifier.weight(1f))
-                KeyBtn("↑", VK.UP, Modifier.weight(1f))
-                KeyBtn("↓", VK.DOWN, Modifier.weight(1f))
-                KeyBtn("→", VK.RIGHT, Modifier.weight(1f))
-                KeyBtn("Enter", VK.RETURN, Modifier.weight(1.4f))
-                KeyBtn("Esc", VK.ESCAPE, Modifier.weight(1f))
-                KeyBtn("Tab", VK.TAB, Modifier.weight(1f))
+                KeyBtn("Tab", VK.TAB, Modifier.weight(1.6f), fn = true)
+                KeyBtn("Q", VK.Q, Modifier.weight(1f))
+                KeyBtn("W", VK.W, Modifier.weight(1f))
+                KeyBtn("E", VK.E, Modifier.weight(1f))
+                KeyBtn("R", VK.R, Modifier.weight(1f))
+                KeyBtn("T", VK.T, Modifier.weight(1f))
+                KeyBtn("Y", VK.Y, Modifier.weight(1f))
+                KeyBtn("U", VK.U, Modifier.weight(1f))
+                KeyBtn("I", VK.I, Modifier.weight(1f))
+                KeyBtn("O", VK.O, Modifier.weight(1f))
+                KeyBtn("P", VK.P, Modifier.weight(1f))
+                KeyBtn("[", VK.OEM_4, Modifier.weight(1f))
+                KeyBtn("]", VK.OEM_6, Modifier.weight(1f))
+                KeyBtn("\\", VK.OEM_5, Modifier.weight(1f))
             }
-            // 第 6 行:编辑键
+            // 第 5 行:ASDF 行 Caps A-L ; ' ↵
             Row(
                 modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(3.dp),
+            ) {
+                KeyBtn("Caps", VK.CAPITAL, Modifier.weight(2.2f), fn = true)
+                KeyBtn("A", VK.A, Modifier.weight(1f))
+                KeyBtn("S", VK.S, Modifier.weight(1f))
+                KeyBtn("D", VK.D, Modifier.weight(1f))
+                KeyBtn("F", VK.F, Modifier.weight(1f))
+                KeyBtn("G", VK.G, Modifier.weight(1f))
+                KeyBtn("H", VK.H, Modifier.weight(1f))
+                KeyBtn("J", VK.J, Modifier.weight(1f))
+                KeyBtn("K", VK.K, Modifier.weight(1f))
+                KeyBtn("L", VK.L, Modifier.weight(1f))
+                KeyBtn(";", VK.OEM_1, Modifier.weight(1f))
+                KeyBtn("'", VK.OEM_7, Modifier.weight(1f))
+                KeyBtn("↵", VK.RETURN, Modifier.weight(2.2f), fn = true)
+            }
+            // 第 6 行:ZXCV 行 ⇧ Z-/ ⇧
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(3.dp),
+            ) {
+                KeyBtn("⇧", VK.LSHIFT, Modifier.weight(2.2f), fn = true)
+                KeyBtn("Z", VK.Z, Modifier.weight(1f))
+                KeyBtn("X", VK.X, Modifier.weight(1f))
+                KeyBtn("C", VK.C, Modifier.weight(1f))
+                KeyBtn("V", VK.V, Modifier.weight(1f))
+                KeyBtn("B", VK.B, Modifier.weight(1f))
+                KeyBtn("N", VK.N, Modifier.weight(1f))
+                KeyBtn("M", VK.M, Modifier.weight(1f))
+                KeyBtn(",", VK.OEM_COMMA, Modifier.weight(1f))
+                KeyBtn(".", VK.OEM_PERIOD, Modifier.weight(1f))
+                KeyBtn("/", VK.OEM_2, Modifier.weight(1f))
+                KeyBtn("⇧", VK.RSHIFT, Modifier.weight(2.2f), fn = true)
+            }
+            // 第 7 行:修饰键行 Ctrl Win Alt 空格 Alt Fn Menu Ctrl
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(3.dp),
+            ) {
+                KeyBtn("Ctrl", VK.LCONTROL, Modifier.weight(1f), fn = true)
+                KeyBtn("Win", VK.LWIN, Modifier.weight(1f), fn = true)
+                KeyBtn("Alt", VK.LMENU, Modifier.weight(1f), fn = true)
+                KeyBtn("空格", VK.SPACE, Modifier.weight(5.6f), small = true)
+                KeyBtn("Alt", VK.RMENU, Modifier.weight(1f), fn = true)
+                KeyBtn("Fn", VK.FN, Modifier.weight(1f), fn = true)
+                KeyBtn("Menu", VK.MENU_KEY, Modifier.weight(1f), fn = true)
+                KeyBtn("Ctrl", VK.RCONTROL, Modifier.weight(1f), fn = true)
+            }
+            // 第 8 行:PrtSc ScrLk Pause | Ins Home PgUp | ↑
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(3.dp),
+            ) {
+                KeyBtn("PrtSc", VK.SNAPSHOT, Modifier.weight(3f), fn = true, small = true)
+                KeyBtn("ScrLk", VK.SCROLL, Modifier.weight(3f), fn = true, small = true)
+                KeyBtn("Pause", VK.PAUSE, Modifier.weight(3f), fn = true, small = true)
+                KeyGap(Modifier.weight(1f))
+                KeyBtn("Ins", VK.INSERT, Modifier.weight(1f), fn = true)
+                KeyBtn("Home", VK.HOME, Modifier.weight(1f), fn = true)
+                KeyBtn("PgUp", VK.PRIOR, Modifier.weight(1f), fn = true)
+                KeyGap(Modifier.weight(0.4f))
+                KeyBtn("↑", VK.UP, Modifier.weight(1f), fn = true)
+            }
+            // 第 9 行:Del End PgDn | ← ↓ →
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(3.dp),
+            ) {
+                KeyBtn("Del", VK.DELETE, Modifier.weight(3f), fn = true, small = true)
+                KeyBtn("End", VK.END, Modifier.weight(3f), fn = true, small = true)
+                KeyBtn("PgDn", VK.NEXT, Modifier.weight(3f), fn = true, small = true)
+                KeyGap(Modifier.weight(1f))
+                KeyBtn("←", VK.LEFT, Modifier.weight(1f), fn = true)
+                KeyBtn("↓", VK.DOWN, Modifier.weight(1f), fn = true)
+                KeyBtn("→", VK.RIGHT, Modifier.weight(1f), fn = true)
+            }
+
+            // ── 快捷键槽位区(对齐设计稿 kbd-slot:8 个 + 编辑/完成切换) ──
+            QuickKeySlots()
+        }
+    }
+
+    /**
+     * 8 个可编辑快捷键槽位(对齐设计稿)。
+     * - 非编辑模式:点击槽位 → 解析为 VK 序列并下发;有按下视觉反馈
+     * - 编辑模式:点击槽位 → 显示输入框,可输入 "Ctrl+C" 等组合,完成时持久化
+     * - 空槽位显示 "+" 图标,虚线边框
+     */
+    @Composable
+    fun QuickKeySlots() {
+        val quickKeys by vm.quickKeys.collectAsState()
+        var editMode by remember { mutableStateOf(false) }
+        // 编辑模式下每个槽位的临时输入值
+        val editValues = remember { mutableStateListOf<String>().apply { addAll(quickKeys) } }
+        // 进入编辑模式时同步一次
+        LaunchedEffect(editMode) {
+            if (editMode) {
+                editValues.clear()
+                editValues.addAll(quickKeys)
+            }
+        }
+
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+            horizontalArrangement = Arrangement.spacedBy(3.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            // 标题
+            Row(
+                modifier = Modifier.weight(1f),
+                verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(4.dp),
             ) {
-                KeyBtn("Space", VK.SPACE, Modifier.weight(1.4f))
-                KeyBtn("Back", VK.BACK, Modifier.weight(1f))
-                KeyBtn("Del", VK.DELETE, Modifier.weight(1f))
-                KeyBtn("Home", VK.HOME, Modifier.weight(1f))
-                KeyBtn("End", VK.END, Modifier.weight(1f))
-                KeyBtn("PgUp", VK.PRIOR, Modifier.weight(1f))
-                KeyBtn("PgDn", VK.NEXT, Modifier.weight(1f))
+                Icon(Icons.Default.Keyboard, null, Modifier.size(12.dp), tint = MaterialTheme.colorScheme.primary)
+                Text("快捷键", fontSize = 10.sp, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurface)
+            }
+            // 编辑/完成按钮
+            Box(
+                modifier = Modifier
+                    .height(20.dp)
+                    .background(MaterialTheme.colorScheme.surface, RoundedCornerShape(4.dp))
+                    .border(1.dp, MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(4.dp))
+                    .clickable {
+                        if (editMode) {
+                            // 退出编辑模式:批量保存所有槽位
+                            for (i in editValues.indices) {
+                                vm.setQuickKey(i, editValues[i])
+                            }
+                        }
+                        editMode = !editMode
+                    }
+                    .padding(horizontal = 6.dp),
+                contentAlignment = Alignment.Center,
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                        if (editMode) Icons.Default.Check else Icons.Default.Edit,
+                        null, Modifier.size(10.dp),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Spacer(Modifier.width(3.dp))
+                    Text(
+                        if (editMode) "完成" else "编辑",
+                        fontSize = 10.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+        }
+        Spacer(Modifier.height(4.dp))
+        // 槽位网格 4 列 x 2 行
+        Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
+            for (row in 0 until 2) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(3.dp),
+                ) {
+                    for (col in 0 until 4) {
+                        val index = row * 4 + col
+                        val value = if (editMode) editValues.getOrNull(index) ?: ""
+                        else quickKeys.getOrNull(index) ?: ""
+                        QuickKeySlotCell(
+                            value = value,
+                            editMode = editMode,
+                            modifier = Modifier.weight(1f),
+                            onValueChange = { v ->
+                                if (editMode && index < editValues.size) {
+                                    editValues[index] = v
+                                }
+                            },
+                            onCommit = {
+                                if (!editMode) {
+                                    // 非编辑模式:触发组合键
+                                    val ok = vm.fireQuickKey(index)
+                                    if (ok) vm.playFeedbackSound() else showToast("快捷键未设置或格式无效")
+                                }
+                            },
+                            onCommitEdit = {
+                                // 完成编辑:写入持久化
+                                val v = editValues.getOrNull(index) ?: ""
+                                vm.setQuickKey(index, v)
+                            },
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    @Composable
+    fun QuickKeySlotCell(
+        value: String,
+        editMode: Boolean,
+        modifier: Modifier = Modifier,
+        onValueChange: (String) -> Unit,
+        onCommit: () -> Unit,
+        onCommitEdit: () -> Unit,
+    ) {
+        var pressed by remember { mutableStateOf(false) }
+        val scope = rememberCoroutineScope()
+        val isSet = value.isNotBlank()
+        val borderColor = if (editMode) MaterialTheme.colorScheme.primary
+        else MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f)
+        val borderStyle = if (isSet || editMode) BorderStroke(1.dp, borderColor)
+        else BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+        // 按下反馈色
+        val bgColor = when {
+            pressed -> MaterialTheme.colorScheme.primary
+            editMode -> MaterialTheme.colorScheme.surface
+            else -> MaterialTheme.colorScheme.surfaceVariant
+        }
+        val fgColor = when {
+            pressed -> Color.White
+            editMode -> MaterialTheme.colorScheme.onSurface
+            else -> MaterialTheme.colorScheme.onSurfaceVariant
+        }
+
+        Box(
+            modifier = modifier
+                .height(if (isLandscape) 24.dp else 30.dp)
+                .background(bgColor, RoundedCornerShape(6.dp))
+                .border(borderStyle, RoundedCornerShape(6.dp))
+                .then(
+                    if (editMode) Modifier
+                    else Modifier.clickable {
+                        pressed = true
+                        onCommit()
+                        // 短暂高亮反馈
+                        scope.launch {
+                            delay(200)
+                            pressed = false
+                        }
+                    }
+                ),
+            contentAlignment = Alignment.Center,
+        ) {
+            if (editMode) {
+                // 编辑模式:输入框
+                BasicTextField(
+                    value = value,
+                    onValueChange = onValueChange,
+                    singleLine = true,
+                    textStyle = TextStyle(
+                        fontSize = 10.sp,
+                        color = fgColor,
+                        fontWeight = FontWeight.Medium,
+                        textAlign = TextAlign.Center,
+                    ),
+                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+                    keyboardActions = KeyboardActions(onDone = { onCommitEdit() }),
+                    cursorBrush = androidx.compose.ui.graphics.SolidColor(MaterialTheme.colorScheme.primary),
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp),
+                )
+            } else {
+                if (isSet) {
+                    Text(
+                        value,
+                        fontSize = 10.sp,
+                        color = fgColor,
+                        fontWeight = FontWeight.Medium,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                } else {
+                    Icon(Icons.Default.Add, null, Modifier.size(12.dp), tint = fgColor.copy(alpha = 0.6f))
+                }
             }
         }
     }
@@ -1079,6 +1675,7 @@ fun TouchpadScreen(
     fun VoicePanel() {
         var selectedTab by remember { mutableStateOf(0) }  // 0=语音, 1=键盘
         val micEnabled by vm.micEnabled.collectAsState()
+        val isRecording by vm.isRecording.collectAsState()
 
         Column(modifier = Modifier.padding(horizontal = 12.dp)) {
             // Tab 行(下划线风格)
@@ -1105,7 +1702,27 @@ fun TouchpadScreen(
 
             when (selectedTab) {
                 0 -> {
-                    // 语音 Tab:PTT 录音 + 历史播放 + 快捷槽位
+                    // 语音 Tab:麦克风状态 orb + PTT 录音 + 历史播放 + 快捷槽位
+                    // 顶部:状态指示器 + 状态文字(对齐设计稿 mm-mic-status)
+                    Column(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                    ) {
+                        MicOrb()
+                        Spacer(Modifier.height(6.dp))
+                        val statusText = when {
+                            isRecording -> "录音中"
+                            micEnabled -> "麦克风已开启"
+                            else -> "麦克风已关闭"
+                        }
+                        val statusColor = when {
+                            isRecording -> MaterialTheme.colorScheme.error
+                            micEnabled -> MaterialTheme.colorScheme.primary
+                            else -> MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
+                        }
+                        Text(statusText, fontSize = 11.sp, color = statusColor, fontWeight = FontWeight.Medium)
+                    }
+                    Spacer(Modifier.height(10.dp))
                     PttButton(modifier = Modifier.fillMaxWidth())
                     if (micEnabled) {
                         Spacer(Modifier.height(4.dp))
@@ -1135,20 +1752,22 @@ fun TouchpadScreen(
                     horizontalArrangement = Arrangement.spacedBy(6.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    Box(
-                        modifier = Modifier
-                            .size(28.dp)
-                            .background(MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(8.dp))
-                            .border(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f), RoundedCornerShape(8.dp))
-                            .clickable { onDisconnect() },
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        Icon(Icons.Default.ArrowBack, "返回", Modifier.size(16.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
-                    }
+                    // 返回按钮
+                    IconButtonSmall(
+                        icon = Icons.Default.ArrowBack,
+                        contentDescription = "返回",
+                        onClick = onDisconnect,
+                    )
                     StatusBar()
                     Spacer(Modifier.weight(1f))
-                    // 横屏也放更多菜单
-                    ActionBar()
+                    // 独立旋转按钮(对齐设计稿横屏操作栏)
+                    IconButtonSmall(
+                        icon = Icons.Default.ScreenRotation,
+                        contentDescription = "切换竖屏",
+                        onClick = { requestPortrait() },
+                    )
+                    // 更多菜单(横屏外层已渲染返回/旋转按钮,此处只显示更多)
+                    ActionBar(showBack = false, showRotate = false)
                 }
                 Spacer(Modifier.height(6.dp))
                 TouchArea(modifier = Modifier.weight(1f).fillMaxWidth())
@@ -1214,6 +1833,7 @@ private fun MouseBtn(
     modifier: Modifier,
     tooltipText: String,
     onTooltip: (String) -> Unit,
+    onPressed: () -> Unit = {},
 ) {
     var pressed by remember { mutableStateOf(false) }
 
@@ -1235,6 +1855,7 @@ private fun MouseBtn(
                     onPress = {
                         pressed = true
                         NativeBridge.sendButtonDown(buttonMask)
+                        onPressed()
                         try {
                             tryAwaitRelease()
                         } finally {

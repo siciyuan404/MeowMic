@@ -13,6 +13,7 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import com.meowmic.client.ui.ConnectScreen
+import com.meowmic.client.ui.LauncherScreen
 import com.meowmic.client.ui.MeowMicTheme
 import com.meowmic.client.ui.TouchpadScreen
 
@@ -45,6 +46,15 @@ class MainActivity : ComponentActivity() {
                                     vm.disconnect()
                                     navController.popBackStack("connect", inclusive = false)
                                 },
+                                onOpenLauncher = {
+                                    navController.navigate("launcher")
+                                },
+                            )
+                        }
+                        composable("launcher") {
+                            LauncherScreen(
+                                vm = vm,
+                                onBack = { navController.popBackStack() },
                             )
                         }
                     }

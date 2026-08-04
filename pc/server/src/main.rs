@@ -23,6 +23,7 @@ use meowmic_net::{MdnsAdvertiser, NetError, PairingManager, PortLayout, Server, 
 mod touch_inject;
 mod audio_play;
 mod stats;
+mod apps;
 
 #[derive(Parser, Debug)]
 #[command(name = "meowmic-server", version, about = "MeowMic 服务端 - 极低延迟手机外设")]
@@ -179,15 +180,19 @@ async fn run_server(bind: &str, port: u16, output_device: Option<&str>) -> Resul
     // 供手机端 mDNS 发现后做三态轮询(UNKNOWN/ONLINE/OFFLINE),参考 Moonlight+Sunshine
     // 与 /stats 分离:/stats 仅本机访问(PC 控制台用),/serverinfo 对局域网开放
     // 同时暴露 server_pubkey_b64 供客户端识别服务端身份(用于配对流程)
+    // 另挂 /applist /app_icon /launch 端点(快捷启动,借鉴 Sunshine)
     let serverinfo_port = port + 4;
     let serverinfo_addr: SocketAddr = format!("0.0.0.0:{}", serverinfo_port).parse()?;
     let stats_for_info = stats.clone();
     let serverinfo_name = host_name.clone();
     let serverinfo_pairing = pairing_manager.clone();
+    let apps_lib = Arc::new(apps::load_apps());
+    info!("快捷启动应用库: {} 个应用", apps_lib.len());
     tokio::spawn(async move {
-        run_serverinfo_server(stats_for_info, serverinfo_name, serverinfo_pairing, serverinfo_addr).await;
+        run_serverinfo_server(stats_for_info, serverinfo_name, serverinfo_pairing, apps_lib, serverinfo_addr).await;
     });
     info!("serverinfo HTTP 监听: http://{}/serverinfo", serverinfo_addr);
+    info!("快捷启动端点: /applist /app_icon /launch");
 
     // 启动 HTTP /pairing 服务(监听 127.0.0.1:{base_port + 5})
     // 供 PC 控制台查询当前 PIN / 已配对客户端列表 / 重置配对
@@ -470,6 +475,7 @@ async fn run_serverinfo_server(
     stats: Arc<Mutex<stats::Stats>>,
     hostname: String,
     pairing: Option<Arc<PairingManager>>,
+    apps_lib: Arc<Vec<apps::AppEntry>>,
     addr: SocketAddr,
 ) {
     let listener = match TcpListener::bind(addr).await {
@@ -490,9 +496,11 @@ async fn run_serverinfo_server(
         let stats = stats.clone();
         let hostname = hostname.clone();
         let pairing = pairing.clone();
+        let apps_lib = apps_lib.clone();
         tokio::spawn(async move {
             // 读取请求(只关心第一行 METHOD PATH HTTP/1.1)
-            let mut buf = [0u8; 1024];
+            // 快捷启动图标请求可能略大,扩到 4096
+            let mut buf = [0u8; 4096];
             let n = match stream.read(&mut buf).await {
                 Ok(n) if n > 0 => n,
                 _ => return,
@@ -507,7 +515,8 @@ async fn run_serverinfo_server(
                 None => (raw_path, ""),
             };
 
-            let (status, body) = if method == "GET" && path == "/serverinfo" {
+            // (status, content_type, body)
+            let (status, content_type, body): (&str, &str, Vec<u8>) = if method == "GET" && path == "/serverinfo" {
                 let (connected, uptime) = stats.lock().await.snapshot_info();
                 let pubkey_b64 = pairing
                     .as_ref()
@@ -541,26 +550,89 @@ async fn run_serverinfo_server(
                     macs_json,
                     pair_status_field,
                 );
-                ("200 OK", body)
+                ("200 OK", "application/json", body.into_bytes())
+            } else if method == "GET" && path == "/applist" {
+                // 快捷启动:返回应用库 JSON
+                // 鉴权:要求 pubkey 且已配对(参考 Sunshine 的 HTTPS client cert 鉴权)
+                if !check_paired(&pairing, query).await {
+                    ("403 Forbidden", "application/json", br#"{"error":"not paired"}"#.to_vec())
+                } else {
+                    match serde_json::to_string(&*apps_lib) {
+                        Ok(json) => ("200 OK", "application/json", json.into_bytes()),
+                        Err(e) => {
+                            let body = format!(r#"{{"error":"{}"}}"#, e);
+                            ("500 Internal Server Error", "application/json", body.into_bytes())
+                        }
+                    }
+                }
+            } else if method == "GET" && path == "/app_icon" {
+                // 快捷启动:返回 exe 图标 PNG
+                if !check_paired(&pairing, query).await {
+                    ("403 Forbidden", "application/json", br#"{"error":"not paired"}"#.to_vec())
+                } else {
+                    let id = extract_query_param(query, "id").unwrap_or_default();
+                    match apps::find_app(&apps_lib, &id) {
+                        Some(app) => match apps::extract_icon_png(&app.command) {
+                            Some(png) => ("200 OK", "image/png", png),
+                            None => ("404 Not Found", "application/json", br#"{"error":"no icon"}"#.to_vec()),
+                        },
+                        None => ("404 Not Found", "application/json", br#"{"error":"app not found"}"#.to_vec()),
+                    }
+                }
+            } else if method == "POST" && path == "/launch" {
+                // 快捷启动:启动指定应用
+                if !check_paired(&pairing, query).await {
+                    ("403 Forbidden", "application/json", br#"{"error":"not paired"}"#.to_vec())
+                } else {
+                    let id = extract_query_param(query, "id").unwrap_or_default();
+                    match apps::find_app(&apps_lib, &id) {
+                        Some(app) => match apps::launch_app(app) {
+                            Ok(()) => ("200 OK", "application/json", br#"{"ok":true}"#.to_vec()),
+                            Err(e) => {
+                                let body = format!(r#"{{"ok":false,"error":"{}"}}"#, e);
+                                ("500 Internal Server Error", "application/json", body.into_bytes())
+                            }
+                        },
+                        None => ("404 Not Found", "application/json", br#"{"error":"app not found"}"#.to_vec()),
+                    }
+                }
             } else {
                 (
                     "404 Not Found",
-                    r#"{"error":"not found"}"#.to_string(),
+                    "application/json",
+                    br#"{"error":"not found"}"#.to_vec(),
                 )
             };
 
             let response = format!(
-                "HTTP/1.1 {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\nAccess-Control-Allow-Origin: *\r\n\r\n{}",
+                "HTTP/1.1 {}\r\nContent-Type: {}\r\nContent-Length: {}\r\nConnection: close\r\nAccess-Control-Allow-Origin: *\r\n\r\n",
                 status,
+                content_type,
                 body.len(),
-                body
             );
             let _ = stream.write_all(response.as_bytes()).await;
+            let _ = stream.write_all(&body).await;
             let _ = stream.shutdown().await;
             // peer 仅用于调试日志,避免未使用警告
             let _ = peer;
         });
     }
+}
+
+/// 校验客户端是否已配对(用于 /applist /app_icon /launch 鉴权)
+async fn check_paired(pairing: &Option<Arc<PairingManager>>, query: &str) -> bool {
+    let pm = match pairing {
+        Some(pm) => pm,
+        None => return false, // 未启用配对则禁止启动应用(安全兜底)
+    };
+    let client_pk = match extract_query_param(query, "pubkey") {
+        Some(pk) => url_decode(&pk),
+        None => return false,
+    };
+    if client_pk.is_empty() {
+        return false;
+    }
+    pm.is_client_paired_b64(&client_pk).await
 }
 
 /// HTTP /pairing 服务:监听 127.0.0.1:port,供 PC 控制台查询/管理配对状态

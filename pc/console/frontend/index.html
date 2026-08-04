@@ -79,7 +79,8 @@
             align-items: center;
             justify-content: center;
             min-height: 100vh;
-            background: var(--mm-muted);
+            /* 透明背景:让 Tauri 透明窗口露出桌面,而不是显示灰色外层 */
+            background: transparent;
             font-family: var(--mm-font-sans);
             color: var(--mm-foreground);
             font-size: 14px;
@@ -87,6 +88,8 @@
             -webkit-font-smoothing: antialiased;
             user-select: none;
             -webkit-user-select: none;
+            /* 给 app-shell 的阴影留出空间(上下左右各 16px) */
+            padding: 16px;
         }
 
         .mono {
@@ -99,8 +102,8 @@
         .mm-app-shell {
             width: 720px;
             height: 640px;
-            max-width: 100vw;
-            max-height: 100vh;
+            max-width: calc(100vw - 32px);
+            max-height: calc(100vh - 32px);
             display: flex;
             flex-direction: column;
             overflow: hidden;
@@ -110,13 +113,18 @@
             box-shadow: var(--mm-shadow-2);
             transition: border-color .2s ease, box-shadow .2s ease, border-radius .2s ease;
         }
-        /* 最大化:去掉圆角/边框/阴影,贴满屏幕 */
+        /* 最大化:去掉圆角/边框/阴影/padding,贴满屏幕 */
+        body.maximized {
+            padding: 0;
+        }
         body.maximized .mm-app-shell {
             border-radius: 0;
             border: none;
             box-shadow: none;
             width: 100vw;
             height: 100vh;
+            max-width: 100vw;
+            max-height: 100vh;
         }
         /* 失焦:边框和阴影变淡 */
         body.unfocused .mm-app-shell {

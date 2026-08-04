@@ -1,6 +1,7 @@
 package com.meowmic.client
 
 import android.content.Context
+import android.graphics.Bitmap
 import android.net.Uri
 import android.util.Log
 import androidx.lifecycle.ViewModel
@@ -23,6 +24,20 @@ sealed class ConnectionState {
     object Connecting : ConnectionState()
     data class Connected(val serverAddr: String) : ConnectionState()
     data class Error(val message: String) : ConnectionState()
+}
+
+/**
+ * 快捷启动应用库加载状态
+ */
+sealed class AppListState {
+    /** 未加载(未连接或未触发拉取) */
+    object Idle : AppListState()
+    /** 加载中 */
+    object Loading : AppListState()
+    /** 加载成功 */
+    data class Loaded(val apps: List<AppEntry>) : AppListState()
+    /** 加载失败 */
+    data class Error(val message: String) : AppListState()
 }
 
 /**
@@ -132,6 +147,21 @@ class MeowMicViewModel : ViewModel() {
         private const val KEY_QUICK_SLOTS = "quick_slots"
         private const val MAX_AUDIO_HISTORY = 10
         const val QUICK_SLOT_COUNT = 8
+
+        // 快捷键面板(8 个自定义槽位)
+        private const val KEY_QUICK_KEYS = "quick_keys"
+        const val QUICK_KEY_COUNT = 8
+        /** 默认预设:前 7 个填入常用组合,第 8 个为空 */
+        val DEFAULT_QUICK_KEYS = listOf(
+            "Ctrl+C", "Ctrl+V", "Ctrl+Z", "Alt+Tab",
+            "Win+D", "Ctrl+S", "Ctrl+X", "",
+        )
+
+        // 快捷启动(用户从 PC 应用库挑选的应用 id 列表,JSON 数组持久化)
+        private const val KEY_QUICK_APPS = "quick_launch_ids"
+
+        // 操作反馈音效开关
+        private const val KEY_SOUND_FEEDBACK = "sound_feedback"
     }
 
     private val _connectionState = MutableStateFlow<ConnectionState>(ConnectionState.Disconnected)
@@ -184,6 +214,10 @@ class MeowMicViewModel : ViewModel() {
     private val _muteSpeaker = MutableStateFlow(false)
     val muteSpeaker: StateFlow<Boolean> = _muteSpeaker.asStateFlow()
 
+    // 操作反馈音效开关(对齐设计稿"提示音"语义:真实播放音效,非 Toast)
+    private val _soundFeedback = MutableStateFlow(false)
+    val soundFeedback: StateFlow<Boolean> = _soundFeedback.asStateFlow()
+
     private val audioInputManager = AudioInputManager()
     val currentAudioMode: StateFlow<AudioInputManager.InputMode> = audioInputManager.currentMode
 
@@ -199,8 +233,32 @@ class MeowMicViewModel : ViewModel() {
     private val _quickSlots = MutableStateFlow<List<QuickAudioSlot?>>(List(QUICK_SLOT_COUNT) { null })
     val quickSlots: StateFlow<List<QuickAudioSlot?>> = _quickSlots.asStateFlow()
 
+    // 快捷键面板:8 个自定义槽位(空字符串表示未设置)
+    private val _quickKeys = MutableStateFlow<List<String>>(DEFAULT_QUICK_KEYS)
+    val quickKeys: StateFlow<List<String>> = _quickKeys.asStateFlow()
+
     // 当前正在编辑的 slot 索引(等待文件选择)
     private var pendingSlotIndex: Int = -1
+
+    // ============ 快捷启动(借鉴 Sunshine/Moonlight) ============
+    // PC 端应用库(从 /applist 拉取,展示给用户挑选)
+    private val _appListState = MutableStateFlow<AppListState>(AppListState.Idle)
+    val appListState: StateFlow<AppListState> = _appListState.asStateFlow()
+
+    // 用户已挑选的应用 id 列表(顺序即展示顺序,持久化于 SharedPreferences)
+    private val _quickAppIds = MutableStateFlow<List<String>>(emptyList())
+    val quickAppIds: StateFlow<List<String>> = _quickAppIds.asStateFlow()
+
+    // 应用图标内存缓存(appId → Bitmap),避免列表滚动重复请求
+    private val _iconCache = mutableMapOf<String, Bitmap>()
+    val iconCache: Map<String, Bitmap> get() = _iconCache
+    // 图标缓存版本号:每次图标加载完成后递增,驱动 UI 重组(因 iconCache 是普通 Map)
+    private val _iconVersion = MutableStateFlow(0)
+    val iconVersion: StateFlow<Int> = _iconVersion.asStateFlow()
+
+    // 启动反馈(一次性消息,UI 提示后清除)
+    private val _launchFeedback = MutableStateFlow<String?>(null)
+    val launchFeedback: StateFlow<String?> = _launchFeedback.asStateFlow()
 
     // ============ 自动更新 ============
     private val _updateState = MutableStateFlow<UpdateState>(UpdateState.Idle)
@@ -217,6 +275,7 @@ class MeowMicViewModel : ViewModel() {
         loadHistory()
         loadAudioPanel()
         loadManualPcs()
+        loadQuickApps()
 
         // 设置配对状态文件目录(必须在 nativeConnect 之前)
         try {
@@ -662,6 +721,33 @@ class MeowMicViewModel : ViewModel() {
         }
     }
 
+    /**
+     * 设置操作反馈音效开关。开启后,鼠标按键、快捷键、录音等操作会播放短促音效。
+     * 持久化到 SharedPreferences,重启后保留。
+     */
+    fun setSoundFeedback(enabled: Boolean) {
+        _soundFeedback.value = enabled
+        context?.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)?.edit()?.putBoolean(KEY_SOUND_FEEDBACK, enabled)?.apply()
+    }
+
+    /**
+     * 播放操作反馈音效(短促"嘀"声)。仅在 [soundFeedback] 开启时发声。
+     * 调用方无需判断状态,内部自检。
+     */
+    fun playFeedbackSound() {
+        if (!_soundFeedback.value) return
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val ctx = context ?: return@launch
+                // 直接用 AudioManager 系统音效,无需自带音频资源,延迟最低
+                val am = ctx.getSystemService(android.content.Context.AUDIO_SERVICE) as android.media.AudioManager
+                am.playSoundEffect(android.view.SoundEffectConstants.CLICK)
+            } catch (e: Exception) {
+                Log.w(TAG, "播放反馈音效失败: ${e.message}")
+            }
+        }
+    }
+
     // ==================== PTT 录音(按住说话 → 产生文件 → 入库 + 推流) ====================
 
     /**
@@ -751,24 +837,6 @@ class MeowMicViewModel : ViewModel() {
         return NativeBridge.sendButtonUp(button)
     }
 
-    // ============ 键盘事件转发 ============
-
-    fun sendKeyDown(keyCode: Int): Boolean {
-        return NativeBridge.sendKeyDown(keyCode)
-    }
-
-    fun sendKeyUp(keyCode: Int): Boolean {
-        return NativeBridge.sendKeyUp(keyCode)
-    }
-
-    fun sendKeyPress(keyCode: Int): Boolean {
-        return NativeBridge.sendKeyPress(keyCode)
-    }
-
-    fun sendKeyCombo(vararg keyCodes: Int): Boolean {
-        return NativeBridge.sendKeyCombo(*keyCodes)
-    }
-
     private fun startStatsPolling() {
         viewModelScope.launch(Dispatchers.IO) {
             while (_connectionState.value is ConnectionState.Connected) {
@@ -833,6 +901,18 @@ class MeowMicViewModel : ViewModel() {
             }
         }
         _quickSlots.value = slotList
+
+        // 快捷键槽位
+        val keyList = mutableListOf<String>()
+        for (i in 0 until QUICK_KEY_COUNT) {
+            val raw = prefs.getString("${KEY_QUICK_KEYS}_$i", null)
+            // null 表示首次使用,用默认值填充
+            keyList.add(raw ?: (DEFAULT_QUICK_KEYS.getOrNull(i) ?: ""))
+        }
+        _quickKeys.value = keyList
+
+        // 操作反馈音效开关
+        _soundFeedback.value = prefs.getBoolean(KEY_SOUND_FEEDBACK, false)
     }
 
     private fun persistAudioPanel() {
@@ -849,6 +929,10 @@ class MeowMicViewModel : ViewModel() {
                 } else {
                     putString("${KEY_QUICK_SLOTS}_$i", "${slot.name}\u0001${slot.path}")
                 }
+            }
+            for (i in 0 until QUICK_KEY_COUNT) {
+                val v = _quickKeys.value.getOrNull(i) ?: ""
+                putString("${KEY_QUICK_KEYS}_$i", v)
             }
             apply()
         }
@@ -938,6 +1022,97 @@ class MeowMicViewModel : ViewModel() {
         return playMusicFile(slot.path)
     }
 
+    // ============ 快捷键槽位(自定义组合键) ============
+
+    /**
+     * 设置某个槽位的快捷键字符串(如 "Ctrl+C");空串表示清除。
+     * 字符串原样持久化,发送时由 [parseKeyCombo] 解析为 VK code 序列。
+     */
+    fun setQuickKey(index: Int, value: String) {
+        if (index !in 0 until QUICK_KEY_COUNT) return
+        val list = _quickKeys.value.toMutableList()
+        list[index] = value.trim()
+        _quickKeys.value = list
+        persistAudioPanel()
+    }
+
+    /**
+     * 解析快捷键字符串为 Windows VK code 序列,并立即发送。
+     * 支持格式:"Ctrl+Shift+A" / "Win+D" / "F5" / "←"(单键)等。
+     * @return true 表示解析并下发成功
+     */
+    fun fireQuickKey(index: Int): Boolean {
+        val raw = _quickKeys.value.getOrNull(index)?.takeIf { it.isNotBlank() } ?: return false
+        val codes = parseKeyCombo(raw) ?: return false
+        return NativeBridge.sendKeyCombo(*codes.toIntArray())
+    }
+
+    /**
+     * 解析快捷键字符串 → VK code 列表。
+     * 不区分大小写;+ 分隔;未知 token 返回 null(整体失败,避免发错键)。
+     */
+    private fun parseKeyCombo(text: String): List<Int>? {
+        val tokens = text.split("+").map { it.trim().lowercase() }.filter { it.isNotEmpty() }
+        if (tokens.isEmpty()) return null
+        val codes = mutableListOf<Int>()
+        for (t in tokens) {
+            val code = tokenToVk(t) ?: return null
+            codes.add(code)
+        }
+        return codes
+    }
+
+    /** 单个 token → VK code;不支持者返回 null */
+    private fun tokenToVk(t: String): Int? = when {
+        // 修饰键
+        t == "ctrl" || t == "control" -> 0x11
+        t == "shift" -> 0x10
+        t == "alt" || t == "menu" -> 0x12
+        t == "win" || t == "lwin" || t == "super" || t == "meta" -> 0x5B
+        // 单字母
+        t.length == 1 && t[0] in 'a'..'z' -> t[0].code - 0x20  // 'a' → 0x41
+        // 单数字
+        t.length == 1 && t[0] in '0'..'9' -> t[0].code  // '0' → 0x30
+        // 功能键
+        t == "f1" -> 0x70; t == "f2" -> 0x71; t == "f3" -> 0x72; t == "f4" -> 0x73
+        t == "f5" -> 0x74; t == "f6" -> 0x75; t == "f7" -> 0x76; t == "f8" -> 0x77
+        t == "f9" -> 0x78; t == "f10" -> 0x79; t == "f11" -> 0x7A; t == "f12" -> 0x7B
+        // 编辑键
+        t == "tab" -> 0x09
+        t == "enter" || t == "return" || t == "↵" -> 0x0D
+        t == "esc" || t == "escape" -> 0x1B
+        t == "space" || t == "空格" -> 0x20
+        t == "back" || t == "backspace" || t == "⌫" -> 0x08
+        t == "del" || t == "delete" -> 0x2E
+        t == "ins" || t == "insert" -> 0x2D
+        t == "home" -> 0x24
+        t == "end" -> 0x23
+        t == "pgup" || t == "pageup" -> 0x21
+        t == "pgdn" || t == "pagedown" -> 0x22
+        t == "caps" || t == "capslock" -> 0x14
+        t == "prtsc" || t == "printscreen" -> 0x2C
+        t == "scroll" || t == "scrclk" -> 0x90
+        t == "pause" -> 0x13
+        // 方向键
+        t == "left" || t == "←" -> 0x25
+        t == "up" || t == "↑" -> 0x26
+        t == "right" || t == "→" -> 0x27
+        t == "down" || t == "↓" -> 0x28
+        // 符号键(数字行)
+        t == "`" -> 0xC0
+        t == "-" -> 0xBD
+        t == "=" -> 0xBB
+        t == "[" -> 0xDB
+        t == "]" -> 0xDD
+        t == "\\" -> 0xDC
+        t == ";" -> 0xBA
+        t == "'" -> 0xDE
+        t == "," -> 0xBC
+        t == "." -> 0xBE
+        t == "/" -> 0xBF
+        else -> null
+    }
+
     // ============ 自动更新 ============
 
     /** 当前应用版本名(来自 PackageInfo) */
@@ -1007,6 +1182,138 @@ class MeowMicViewModel : ViewModel() {
             Log.w(TAG, "nativeDisconnect 失败: ${e.message}")
         }
         _connectionState.value = ConnectionState.Disconnected
+        // 清空快捷启动状态(应用库和图标与 PC 绑定,断开后失效)
+        _appListState.value = AppListState.Idle
+        _iconCache.clear()
+        _launchFeedback.value = null
+    }
+
+    // ==================== 快捷启动(借鉴 Sunshine/Moonlight) ====================
+
+    /**
+     * 拉取 PC 端应用库。仅在 [ConnectionState.Connected] 时可用。
+     * 拉取后填充 [appListState],UI 据此展示供用户挑选。
+     */
+    fun loadAppList() {
+        val addr = (_connectionState.value as? ConnectionState.Connected)?.serverAddr
+        if (addr == null) {
+            _appListState.value = AppListState.Error("未连接到 PC")
+            return
+        }
+        val pk = clientPubkeyB64()
+        if (pk.isBlank()) {
+            _appListState.value = AppListState.Error("客户端公钥不可用")
+            return
+        }
+        _appListState.value = AppListState.Loading
+        viewModelScope.launch {
+            val list = LauncherRepository.fetchAppList(addr, pk)
+            _appListState.value = if (list != null) {
+                AppListState.Loaded(list)
+            } else {
+                AppListState.Error("拉取应用库失败")
+            }
+            // 拉取成功后预加载已选中应用的图标
+            if (list != null) {
+                _quickAppIds.value.forEach { id ->
+                    if (id !in _iconCache) loadIconInternal(addr, pk, id)
+                }
+            }
+        }
+    }
+
+    /**
+     * 触发 PC 端启动指定应用。
+     * @param appId 应用 id(来自 [AppEntry.id])
+     */
+    fun launchApp(appId: String) {
+        val addr = (_connectionState.value as? ConnectionState.Connected)?.serverAddr
+        if (addr == null) {
+            _launchFeedback.value = "未连接到 PC"
+            return
+        }
+        val pk = clientPubkeyB64()
+        if (pk.isBlank()) {
+            _launchFeedback.value = "客户端公钥不可用"
+            return
+        }
+        viewModelScope.launch {
+            val ok = LauncherRepository.launchApp(addr, appId, pk)
+            _launchFeedback.value = if (ok) null else "启动失败"
+        }
+    }
+
+    /** 清除一次性启动反馈 */
+    fun clearLaunchFeedback() { _launchFeedback.value = null }
+
+    /**
+     * 拉取单个应用图标并写入 [_iconCache](触发重组)。
+     * UI 通过 [iconCache] 读取;未命中时调用本方法,加载完成后状态变化驱动重组。
+     */
+    fun loadIcon(appId: String) {
+        if (appId in _iconCache) return
+        val addr = (_connectionState.value as? ConnectionState.Connected)?.serverAddr ?: return
+        val pk = clientPubkeyB64().ifBlank { return }
+        loadIconInternal(addr, pk, appId)
+    }
+
+    private fun loadIconInternal(addr: String, pk: String, appId: String) {
+        viewModelScope.launch {
+            val bmp = LauncherRepository.fetchIcon(addr, appId, pk)
+            if (bmp != null) {
+                _iconCache[appId] = bmp
+                _iconVersion.value += 1 // 驱动 UI 重组
+            }
+        }
+    }
+
+    /** 添加应用到快捷启动页(已存在则忽略) */
+    fun addQuickApp(appId: String) {
+        if (appId in _quickAppIds.value) return
+        _quickAppIds.value = _quickAppIds.value + appId
+        persistQuickApps()
+        loadIcon(appId)
+    }
+
+    /** 移除快捷启动页中的应用 */
+    fun removeQuickApp(appId: String) {
+        _quickAppIds.value = _quickAppIds.value - appId
+        persistQuickApps()
+    }
+
+    /** 调整顺序(用于拖拽排序) */
+    fun moveQuickApp(from: Int, to: Int) {
+        val list = _quickAppIds.value.toMutableList()
+        if (from !in list.indices || to !in list.indices) return
+        val item = list.removeAt(from)
+        list.add(to, item)
+        _quickAppIds.value = list
+        persistQuickApps()
+    }
+
+    /** 查找应用详情(从已加载的 appListState) */
+    fun findApp(appId: String): AppEntry? {
+        return (_appListState.value as? AppListState.Loaded)?.apps?.find { it.id == appId }
+    }
+
+    /** 加载持久化的快捷启动 id 列表 */
+    private fun loadQuickApps() {
+        val prefs = context?.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE) ?: return
+        val json = prefs.getString(KEY_QUICK_APPS, null) ?: return
+        try {
+            val arr = JSONArray(json)
+            _quickAppIds.value = (0 until arr.length()).map { arr.optString(it) }.filter { it.isNotBlank() }
+        } catch (e: Exception) {
+            Log.w(TAG, "加载 quick_apps 失败: ${e.message}")
+        }
+    }
+
+    /** 持久化快捷启动 id 列表 */
+    private fun persistQuickApps() {
+        val prefs = context?.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE) ?: return
+        val arr = JSONArray()
+        _quickAppIds.value.forEach { arr.put(it) }
+        prefs.edit().putString(KEY_QUICK_APPS, arr.toString()).apply()
     }
 
     /** 连接到发现到的服务端(快捷方法) */
