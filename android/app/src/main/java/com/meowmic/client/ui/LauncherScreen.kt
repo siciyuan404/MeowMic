@@ -1,6 +1,7 @@
 package com.meowmic.client.ui
 
 import android.graphics.Bitmap
+import androidx.compose.animation.animateColorAsState
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -21,7 +22,9 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.drawscope.Stroke
@@ -63,6 +66,7 @@ fun LauncherScreen(
 
     var editMode by remember { mutableStateOf(false) }
     var showAddDialog by remember { mutableStateOf(false) }
+    var locked by remember { mutableStateOf(false) }
 
     // 进入页面时拉取应用库(仅一次,且需已连接)
     LaunchedEffect(connectionState) {
@@ -96,9 +100,14 @@ fun LauncherScreen(
             // 2. 顶部操作栏
             TopBar(
                 editMode = editMode,
+                locked = locked,
                 onBack = onBack,
                 onToggleEdit = { editMode = !editMode },
                 onAdd = { showAddDialog = true },
+                onToggleLock = {
+                    if (!locked) editMode = false
+                    locked = !locked
+                },
             )
 
             // 3. 分页网格
@@ -131,6 +140,7 @@ fun LauncherScreen(
                             quickAppIds = quickAppIds,
                             vm = vm,
                             editMode = editMode,
+                            locked = locked,
                             onLaunch = { id -> vm.launchApp(id) },
                             onRemove = { id -> vm.removeQuickApp(id) },
                             onAdd = { showAddDialog = true },
@@ -222,13 +232,15 @@ private fun StatusBar(addr: String) {
     }
 }
 
-/** 顶部操作栏:返回(secondary) / 标题 / 编辑(ghost) / 添加(ghost) */
+/** 顶部操作栏:返回(secondary) / 标题 / 编辑(ghost) / 添加(ghost) / 锁定(ghost) */
 @Composable
 private fun TopBar(
     editMode: Boolean,
+    locked: Boolean,
     onBack: () -> Unit,
     onToggleEdit: () -> Unit,
     onAdd: () -> Unit,
+    onToggleLock: () -> Unit,
 ) {
     Row(
         modifier = Modifier.fillMaxWidth(),
@@ -266,11 +278,12 @@ private fun TopBar(
             fontWeight = FontWeight.SemiBold,
             color = MaterialTheme.colorScheme.onSurface,
         )
-        // 编辑按钮:ghost 风格(透明背景,激活时主色)
+        // 编辑按钮:ghost 风格(透明背景,激活时主色),锁定时禁用
         Box(
             modifier = Modifier
                 .size(28.dp)
-                .clickable(onClick = onToggleEdit),
+                .alpha(if (locked) 0.35f else 1f)
+                .clickable(enabled = !locked, onClick = onToggleEdit),
             contentAlignment = Alignment.Center,
         ) {
             Icon(
@@ -281,11 +294,12 @@ private fun TopBar(
                 else MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
-        // 添加按钮:ghost 风格
+        // 添加按钮:ghost 风格,锁定时禁用
         Box(
             modifier = Modifier
                 .size(28.dp)
-                .clickable(onClick = onAdd),
+                .alpha(if (locked) 0.35f else 1f)
+                .clickable(enabled = !locked, onClick = onAdd),
             contentAlignment = Alignment.Center,
         ) {
             Icon(
@@ -295,6 +309,37 @@ private fun TopBar(
                 tint = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
+        // 锁定按钮:ghost 风格,激活时主色高亮
+        LockButton(locked = locked, onClick = onToggleLock)
+    }
+}
+
+/** 锁定按钮:锁定/解锁切换,锁定时品牌色高亮 */
+@Composable
+private fun LockButton(locked: Boolean, onClick: () -> Unit) {
+    val backgroundColor by animateColorAsState(
+        targetValue = if (locked) MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)
+        else Color.Transparent,
+        label = "lockBg",
+    )
+    val iconTint by animateColorAsState(
+        targetValue = if (locked) MaterialTheme.colorScheme.primary
+        else MaterialTheme.colorScheme.onSurfaceVariant,
+        label = "lockTint",
+    )
+    Box(
+        modifier = Modifier
+            .size(28.dp)
+            .background(backgroundColor, RoundedCornerShape(8.dp))
+            .clickable(onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) {
+        Icon(
+            if (locked) Icons.Default.Lock else Icons.Default.LockOpen,
+            contentDescription = if (locked) "解锁" else "锁定",
+            modifier = Modifier.size(18.dp),
+            tint = iconTint,
+        )
     }
 }
 
@@ -308,6 +353,7 @@ private fun PagerGrid(
     quickAppIds: List<String>,
     vm: MeowMicViewModel,
     editMode: Boolean,
+    locked: Boolean,
     onLaunch: (String) -> Unit,
     onRemove: (String) -> Unit,
     onAdd: () -> Unit,
@@ -340,12 +386,13 @@ private fun PagerGrid(
                                     name = vm.findApp(appId)?.name ?: appId,
                                     vm = vm,
                                     editMode = editMode,
+                                    locked = locked,
                                     onLaunch = onLaunch,
                                     onRemove = onRemove,
                                 )
                             } else {
                                 // 所有空位都显示"添加"(对齐设计稿)
-                                AddCell(onClick = onAdd)
+                                AddCell(onClick = onAdd, locked = locked)
                             }
                         }
                     }
@@ -355,7 +402,7 @@ private fun PagerGrid(
     }
 }
 
-/** 快捷启动格子:图标 + 名称,点击启动,长按(编辑模式)删除 */
+/** 快捷启动格子:图标 + 名称,点击启动,长按(编辑模式)删除,锁定时禁用长按 */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun QuickAppCell(
@@ -363,6 +410,7 @@ private fun QuickAppCell(
     name: String,
     vm: MeowMicViewModel,
     editMode: Boolean,
+    locked: Boolean,
     onLaunch: (String) -> Unit,
     onRemove: (String) -> Unit,
 ) {
@@ -373,7 +421,7 @@ private fun QuickAppCell(
                 onClick = {
                     if (editMode) onRemove(appId) else onLaunch(appId)
                 },
-                onLongClick = { onRemove(appId) },
+                onLongClick = if (locked) null else { { onRemove(appId) } },
             )
             .padding(start = 2.dp, end = 2.dp, top = 4.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
@@ -469,13 +517,14 @@ private fun Modifier.dashedBorder(
     }
 )
 
-/** 空位"添加"格子(虚线边框 + 加号图标) */
+/** 空位"添加"格子(虚线边框 + 加号图标),锁定时禁用 */
 @Composable
-private fun AddCell(onClick: () -> Unit) {
+private fun AddCell(onClick: () -> Unit, locked: Boolean = false) {
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .clickable { onClick() }
+            .alpha(if (locked) 0.3f else 1f)
+            .clickable(enabled = !locked) { onClick() }
             .padding(start = 2.dp, end = 2.dp, top = 4.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(4.dp),
