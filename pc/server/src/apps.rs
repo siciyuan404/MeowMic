@@ -206,6 +206,68 @@ pub fn find_app<'a>(apps: &'a [AppEntry], id: &str) -> Option<&'a AppEntry> {
     apps.iter().find(|a| a.id == id)
 }
 
+/// 将应用名转换为稳定的 id(小写、空格→下划线、去除非法字符)
+fn name_to_id(name: &str) -> String {
+    let id: String = name
+        .trim()
+        .to_lowercase()
+        .chars()
+        .map(|c| {
+            if c.is_alphanumeric() { c }
+            else if c == ' ' || c == '-' { '_' }
+            else { '_' }
+        })
+        .collect();
+    let id = id.trim_matches('_').to_string();
+    if id.is_empty() { "app".to_string() } else { id }
+}
+
+/// 添加自定义应用到应用库并持久化到 apps.json
+///
+/// id 自动生成(基于 name,冲突时追加数字后缀),返回生成的 id。
+pub fn add_app(apps: &mut Vec<AppEntry>, name: &str, command: &str, args: Vec<String>, working_dir: &str) -> String {
+    let base_id = name_to_id(name);
+    let mut id = base_id.clone();
+    let mut suffix = 1;
+    while apps.iter().any(|a| a.id == id) {
+        id = format!("{}_{}", base_id, suffix);
+        suffix += 1;
+    }
+    apps.push(AppEntry {
+        id: id.clone(),
+        name: name.trim().to_string(),
+        command: command.trim().to_string(),
+        args,
+        working_dir: working_dir.trim().to_string(),
+    });
+    let _ = save_apps(apps);
+    id
+}
+
+/// 从应用库中移除指定应用并持久化
+pub fn remove_app(apps: &mut Vec<AppEntry>, id: &str) -> bool {
+    let before = apps.len();
+    apps.retain(|a| a.id != id);
+    let removed = apps.len() < before;
+    if removed {
+        let _ = save_apps(apps);
+    }
+    removed
+}
+
+/// 持久化应用库到 apps.json
+fn save_apps(apps: &[AppEntry]) -> std::io::Result<()> {
+    let path = apps_config_path();
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let file = AppsFile { apps: apps.to_vec() };
+    let json = serde_json::to_string_pretty(&file)?;
+    std::fs::write(&path, json)?;
+    tracing::info!("应用库已保存: {} ({} 个应用)", path.display(), apps.len());
+    Ok(())
+}
+
 /// 启动指定应用(非阻塞,spawn 后立即返回)
 pub fn launch_app(app: &AppEntry) -> std::io::Result<()> {
     let command = expand_env(&app.command);

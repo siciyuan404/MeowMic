@@ -8,6 +8,7 @@
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
+use tokio::sync::RwLock;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
@@ -186,13 +187,13 @@ async fn run_server(bind: &str, port: u16, output_device: Option<&str>) -> Resul
     let stats_for_info = stats.clone();
     let serverinfo_name = host_name.clone();
     let serverinfo_pairing = pairing_manager.clone();
-    let apps_lib = Arc::new(apps::load_apps());
-    info!("快捷启动应用库: {} 个应用", apps_lib.len());
+    let apps_lib = Arc::new(RwLock::new(apps::load_apps()));
+    info!("快捷启动应用库: {} 个应用", apps_lib.read().await.len());
     tokio::spawn(async move {
         run_serverinfo_server(stats_for_info, serverinfo_name, serverinfo_pairing, apps_lib, serverinfo_addr).await;
     });
     info!("serverinfo HTTP 监听: http://{}/serverinfo", serverinfo_addr);
-    info!("快捷启动端点: /applist /app_icon /launch");
+    info!("快捷启动端点: /applist /app_icon /launch /add_app /remove_app");
 
     // 启动 HTTP /pairing 服务(监听 127.0.0.1:{base_port + 5})
     // 供 PC 控制台查询当前 PIN / 已配对客户端列表 / 重置配对
@@ -475,7 +476,7 @@ async fn run_serverinfo_server(
     stats: Arc<Mutex<stats::Stats>>,
     hostname: String,
     pairing: Option<Arc<PairingManager>>,
-    apps_lib: Arc<Vec<apps::AppEntry>>,
+    apps_lib: Arc<RwLock<Vec<apps::AppEntry>>>,
     addr: SocketAddr,
 ) {
     let listener = match TcpListener::bind(addr).await {
@@ -513,6 +514,41 @@ async fn run_serverinfo_server(
             let (path, query) = match raw_path.split_once('?') {
                 Some((p, q)) => (p, q),
                 None => (raw_path, ""),
+            };
+
+            // 解析请求体(POST /add_app 需要)
+            // 找到 \r\n\r\n 分隔头部和 body,并根据 Content-Length 读取完整 body
+            let body_str: String = if method == "POST" {
+                let header_end = req.find("\r\n\r\n").map(|p| p + 4);
+                let mut body_so_far: Vec<u8> = if let Some(start) = header_end {
+                    buf[start..n].to_vec()
+                } else {
+                    Vec::new()
+                };
+                // 解析 Content-Length
+                let content_length = req.lines()
+                    .skip(1)
+                    .find_map(|line| {
+                        let line = line.trim();
+                        if line.to_lowercase().starts_with("content-length:") {
+                            line[15..].trim().parse::<usize>().ok()
+                        } else {
+                            None
+                        }
+                    })
+                    .unwrap_or(0);
+                // 继续读取直到 body 完整
+                while body_so_far.len() < content_length {
+                    let mut tmp = [0u8; 4096];
+                    match stream.read(&mut tmp).await {
+                        Ok(0) => break,
+                        Ok(m) => body_so_far.extend_from_slice(&tmp[..m]),
+                        Err(_) => break,
+                    }
+                }
+                String::from_utf8_lossy(&body_so_far).to_string()
+            } else {
+                String::new()
             };
 
             // (status, content_type, body)
@@ -557,7 +593,8 @@ async fn run_serverinfo_server(
                 if !check_paired(&pairing, query).await {
                     ("403 Forbidden", "application/json", br#"{"error":"not paired"}"#.to_vec())
                 } else {
-                    match serde_json::to_string(&*apps_lib) {
+                    let apps = apps_lib.read().await;
+                    match serde_json::to_string(&*apps) {
                         Ok(json) => ("200 OK", "application/json", json.into_bytes()),
                         Err(e) => {
                             let body = format!(r#"{{"error":"{}"}}"#, e);
@@ -571,8 +608,12 @@ async fn run_serverinfo_server(
                     ("403 Forbidden", "application/json", br#"{"error":"not paired"}"#.to_vec())
                 } else {
                     let id = extract_query_param(query, "id").unwrap_or_default();
-                    match apps::find_app(&apps_lib, &id) {
-                        Some(app) => match apps::extract_icon_png(&app.command) {
+                    let app_cmd = {
+                        let apps = apps_lib.read().await;
+                        apps::find_app(&apps, &id).map(|a| a.command.clone())
+                    };
+                    match app_cmd {
+                        Some(cmd) => match apps::extract_icon_png(&cmd) {
                             Some(png) => ("200 OK", "image/png", png),
                             None => ("404 Not Found", "application/json", br#"{"error":"no icon"}"#.to_vec()),
                         },
@@ -585,8 +626,12 @@ async fn run_serverinfo_server(
                     ("403 Forbidden", "application/json", br#"{"error":"not paired"}"#.to_vec())
                 } else {
                     let id = extract_query_param(query, "id").unwrap_or_default();
-                    match apps::find_app(&apps_lib, &id) {
-                        Some(app) => match apps::launch_app(app) {
+                    let app = {
+                        let apps = apps_lib.read().await;
+                        apps::find_app(&apps, &id).cloned()
+                    };
+                    match app {
+                        Some(app) => match apps::launch_app(&app) {
                             Ok(()) => ("200 OK", "application/json", br#"{"ok":true}"#.to_vec()),
                             Err(e) => {
                                 let body = format!(r#"{{"ok":false,"error":"{}"}}"#, e);
@@ -594,6 +639,41 @@ async fn run_serverinfo_server(
                             }
                         },
                         None => ("404 Not Found", "application/json", br#"{"error":"app not found"}"#.to_vec()),
+                    }
+                }
+            } else if method == "POST" && path == "/add_app" {
+                // 快捷启动:添加自定义应用到应用库
+                if !check_paired(&pairing, query).await {
+                    ("403 Forbidden", "application/json", br#"{"error":"not paired"}"#.to_vec())
+                } else {
+                    let mut apps = apps_lib.write().await;
+                    match serde_json::from_str::<apps::AppEntry>(&body_str) {
+                        Ok(entry) if !entry.name.is_empty() && !entry.command.is_empty() => {
+                            let id = apps::add_app(&mut apps, &entry.name, &entry.command, entry.args, &entry.working_dir);
+                            let resp = format!(r#"{{"ok":true,"id":"{}"}}"#, id);
+                            ("200 OK", "application/json", resp.into_bytes())
+                        }
+                        Ok(_) => {
+                            ("400 Bad Request", "application/json", br#"{"error":"name and command required"}"#.to_vec())
+                        }
+                        Err(e) => {
+                            let body = format!(r#"{{"error":"{}"}}"#, e);
+                            ("400 Bad Request", "application/json", body.into_bytes())
+                        }
+                    }
+                }
+            } else if method == "POST" && path == "/remove_app" {
+                // 快捷启动:从应用库移除应用
+                if !check_paired(&pairing, query).await {
+                    ("403 Forbidden", "application/json", br#"{"error":"not paired"}"#.to_vec())
+                } else {
+                    let id = extract_query_param(query, "id").unwrap_or_default();
+                    let mut apps = apps_lib.write().await;
+                    let removed = apps::remove_app(&mut apps, &id);
+                    if removed {
+                        ("200 OK", "application/json", br#"{"ok":true}"#.to_vec())
+                    } else {
+                        ("404 Not Found", "application/json", br#"{"error":"app not found"}"#.to_vec())
                     }
                 }
             } else {

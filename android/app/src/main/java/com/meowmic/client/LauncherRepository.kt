@@ -6,6 +6,7 @@ import android.util.Log
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
+import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URL
 import java.net.URLEncoder
@@ -156,6 +157,51 @@ object LauncherRepository {
             } catch (e: Exception) {
                 Log.w(TAG, "launchApp 失败 $appId: ${e.message}")
                 false
+            }
+        }
+
+    /**
+     * 添加自定义应用到 PC 端应用库。
+     * @param name 应用显示名
+     * @param command 可执行文件路径(支持 %APPDATA% 等环境变量)
+     * @return 成功时返回 PC 端生成的 appId;失败返回 null
+     */
+    suspend fun addApp(serverAddr: String, name: String, command: String, pubkey: String): String? =
+        withContext(Dispatchers.IO) {
+            val url = "${httpBaseUrl(serverAddr)}/add_app?pubkey=${encodeParam(pubkey)}"
+            try {
+                val payload = JSONObject().apply {
+                    put("name", name)
+                    put("command", command)
+                    put("args", JSONArray())
+                    put("working_dir", "")
+                }.toString()
+                val payloadBytes = payload.toByteArray(Charsets.UTF_8)
+                val conn = (URL(url).openConnection() as HttpURLConnection).apply {
+                    connectTimeout = CONNECT_TIMEOUT_MS
+                    readTimeout = READ_TIMEOUT_MS
+                    requestMethod = "POST"
+                    useCaches = false
+                    instanceFollowRedirects = false
+                    doOutput = true
+                    setFixedLengthStreamingMode(payloadBytes.size)
+                    setRequestProperty("Content-Type", "application/json")
+                }
+                try {
+                    conn.outputStream.use { it.write(payloadBytes) }
+                    if (conn.responseCode == 200) {
+                        val body = conn.inputStream.bufferedReader().use { it.readText() }
+                        JSONObject(body).optString("id").ifBlank { null }
+                    } else {
+                        Log.w(TAG, "addApp HTTP ${conn.responseCode}")
+                        null
+                    }
+                } finally {
+                    conn.disconnect()
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "addApp 失败: ${e.message}")
+                null
             }
         }
 }

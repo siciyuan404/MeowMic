@@ -1275,6 +1275,41 @@ class MeowMicViewModel : ViewModel() {
         loadIcon(appId)
     }
 
+    /**
+     * 添加自定义应用到 PC 端应用库,并加入快捷启动页。
+     * @param name 应用显示名(如 "Spotify")
+     * @param command 可执行文件路径(如 "C:\\Program Files\\Spotify\\Spotify.exe")
+     * @return 成功返回 true;失败返回 false(同时设置 launchFeedback 错误信息)
+     */
+    fun addCustomApp(name: String, command: String, onResult: (Boolean) -> Unit = {}) {
+        val addr = (_connectionState.value as? ConnectionState.Connected)?.serverAddr
+        if (addr == null) {
+            _launchFeedback.value = "未连接到 PC"
+            onResult(false)
+            return
+        }
+        val pk = clientPubkeyB64()
+        if (pk.isBlank()) {
+            _launchFeedback.value = "客户端公钥不可用"
+            onResult(false)
+            return
+        }
+        viewModelScope.launch {
+            val appId = LauncherRepository.addApp(addr, name, command, pk)
+            if (appId != null) {
+                // 刷新应用库缓存
+                loadAppList()
+                // 加入快捷启动
+                addQuickApp(appId)
+                _launchFeedback.value = "已添加: $name"
+                onResult(true)
+            } else {
+                _launchFeedback.value = "添加失败,请检查路径"
+                onResult(false)
+            }
+        }
+    }
+
     /** 移除快捷启动页中的应用 */
     fun removeQuickApp(appId: String) {
         _quickAppIds.value = _quickAppIds.value - appId

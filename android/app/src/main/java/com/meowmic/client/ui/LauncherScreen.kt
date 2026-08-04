@@ -10,6 +10,8 @@ import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -159,6 +161,7 @@ fun LauncherScreen(
         AddAppDialog(
             appListState = appListState,
             quickAppIds = quickAppIds,
+            vm = vm,
             onAdd = { id -> vm.addQuickApp(id) },
             onDismiss = { showAddDialog = false },
         )
@@ -606,58 +609,141 @@ private fun DockItem(appId: String, vm: MeowMicViewModel, onClick: () -> Unit) {
     }
 }
 
-/** 添加应用对话框:从 PC 应用库中挑选未添加的应用 */
+/** 添加应用对话框:从 PC 应用库挑选 + 手动添加自定义应用 */
 @Composable
 private fun AddAppDialog(
     appListState: AppListState,
     quickAppIds: List<String>,
+    vm: MeowMicViewModel,
     onAdd: (String) -> Unit,
     onDismiss: () -> Unit,
 ) {
     val apps = (appListState as? AppListState.Loaded)?.apps ?: emptyList()
     val available = apps.filter { it.id !in quickAppIds }
+    var showManualForm by remember { mutableStateOf(false) }
+    var manualName by remember { mutableStateOf("") }
+    var manualPath by remember { mutableStateOf("") }
+    var submitting by remember { mutableStateOf(false) }
 
     AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("添加应用") },
+        onDismissRequest = { if (!submitting) onDismiss() },
+        title = {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("添加应用", modifier = Modifier.weight(1f))
+                if (!showManualForm) {
+                    TextButton(onClick = { showManualForm = true }) {
+                        Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(14.dp))
+                        Spacer(Modifier.width(4.dp))
+                        Text("手动添加", fontSize = 11.sp)
+                    }
+                }
+            }
+        },
         text = {
-            if (apps.isEmpty()) {
-                Text(
-                    if (appListState is AppListState.Loading) "加载中..."
-                    else "应用库为空",
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    fontSize = 13.sp,
-                )
-            } else if (available.isEmpty()) {
-                Text("已添加全部应用", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp)
-            } else {
+            if (showManualForm) {
+                // 手动添加表单
                 Column(
-                    modifier = Modifier.fillMaxWidth().heightIn(max = 360.dp),
-                    verticalArrangement = Arrangement.spacedBy(4.dp),
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
-                    available.forEach { app ->
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clickable { onAdd(app.id) }
-                                .padding(vertical = 6.dp, horizontal = 4.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        ) {
-                            Icon(
-                                Icons.Default.Apps,
-                                contentDescription = null,
-                                modifier = Modifier.size(20.dp),
-                                tint = MaterialTheme.colorScheme.primary,
-                            )
-                            Text(app.name, fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurface)
+                    OutlinedTextField(
+                        value = manualName,
+                        onValueChange = { manualName = it },
+                        label = { Text("应用名称", fontSize = 12.sp) },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                        textStyle = androidx.compose.ui.text.TextStyle(fontSize = 13.sp),
+                    )
+                    OutlinedTextField(
+                        value = manualPath,
+                        onValueChange = { manualPath = it },
+                        label = { Text("exe 路径", fontSize = 12.sp) },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                        textStyle = androidx.compose.ui.text.TextStyle(fontSize = 13.sp),
+                        placeholder = { Text("C:\\Program Files\\App\\app.exe", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)) },
+                    )
+                    Text(
+                        "支持 %APPDATA%、%LOCALAPPDATA% 等环境变量",
+                        fontSize = 10.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+                    )
+                    if (submitting) {
+                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            CircularProgressIndicator(modifier = Modifier.size(14.dp), strokeWidth = 2.dp)
+                            Text("添加中...", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                    }
+                }
+            } else {
+                if (apps.isEmpty()) {
+                    Text(
+                        if (appListState is AppListState.Loading) "加载中..."
+                        else "应用库为空,可点击\"手动添加\"自定义",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        fontSize = 13.sp,
+                    )
+                } else if (available.isEmpty()) {
+                    Text("已添加全部应用", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp)
+                } else {
+                    Column(
+                        modifier = Modifier.fillMaxWidth().heightIn(max = 320.dp).verticalScroll(rememberScrollState()),
+                        verticalArrangement = Arrangement.spacedBy(2.dp),
+                    ) {
+                        available.forEach { app ->
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable { onAdd(app.id) }
+                                    .padding(vertical = 8.dp, horizontal = 4.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            ) {
+                                Icon(
+                                    Icons.Default.Apps,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(20.dp),
+                                    tint = MaterialTheme.colorScheme.primary,
+                                )
+                                Text(app.name, fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurface)
+                                Spacer(Modifier.weight(1f))
+                                Icon(
+                                    Icons.Default.Add,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(16.dp),
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f),
+                                )
+                            }
                         }
                     }
                 }
             }
         },
         confirmButton = {
-            TextButton(onClick = onDismiss) { Text("完成") }
+            if (showManualForm) {
+                Row {
+                    TextButton(onClick = { showManualForm = false }, enabled = !submitting) { Text("返回") }
+                    Spacer(Modifier.width(4.dp))
+                    Button(
+                        onClick = {
+                            if (manualName.isNotBlank() && manualPath.isNotBlank()) {
+                                submitting = true
+                                vm.addCustomApp(manualName.trim(), manualPath.trim()) { ok ->
+                                    submitting = false
+                                    if (ok) {
+                                        showManualForm = false
+                                        manualName = ""
+                                        manualPath = ""
+                                    }
+                                }
+                            }
+                        },
+                        enabled = manualName.isNotBlank() && manualPath.isNotBlank() && !submitting,
+                    ) { Text("添加") }
+                }
+            } else {
+                TextButton(onClick = onDismiss) { Text("完成") }
+            }
         },
     )
 }
