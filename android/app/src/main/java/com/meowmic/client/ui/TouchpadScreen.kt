@@ -823,15 +823,11 @@ fun TouchpadScreen(
                 val animatedH by anim.animateFloat(
                     initialValue = 3f,
                     targetValue = if (active) h else 3f,
-                    animationSpec = if (active) {
-                        infiniteRepeatable(
-                            animation = tween(600, easing = { it }),
-                            repeatMode = RepeatMode.Reverse,
-                            initialStartOffset = StartOffset(phases[i]),
-                        )
-                    } else {
-                        tween(200)
-                    },
+                    animationSpec = infiniteRepeatable(
+                        animation = tween(600, easing = { it }),
+                        repeatMode = RepeatMode.Reverse,
+                        initialStartOffset = StartOffset(phases[i]),
+                    ),
                     label = "bar-h-$i",
                 )
                 Box(
