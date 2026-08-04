@@ -2,6 +2,7 @@ package com.meowmic.client.ui
 
 import android.graphics.Bitmap
 import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -53,8 +54,6 @@ fun LauncherScreen(
     val appListState by vm.appListState.collectAsState()
     val quickAppIds by vm.quickAppIds.collectAsState()
     val launchFeedback by vm.launchFeedback.collectAsState()
-    val iconVersion by vm.iconVersion.collectAsState() // 订阅图标更新驱动重组
-    val _ = iconVersion // 显式引用避免被优化
 
     var editMode by remember { mutableStateOf(false) }
     var showAddDialog by remember { mutableStateOf(false) }
@@ -332,6 +331,7 @@ private fun PagerGrid(
 }
 
 /** 快捷启动格子:图标 + 名称,点击启动,长按(编辑模式)删除 */
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun QuickAppCell(
     appId: String,
@@ -467,9 +467,8 @@ private fun PageIndicator(
     val currentPage = pagerState.currentPage
     Row(
         modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.Center,
+        horizontalArrangement = Arrangement.spacedBy(4.dp, Alignment.CenterHorizontally),
         verticalAlignment = Alignment.CenterVertically,
-        verticalArrangement = Arrangement.spacedBy(4.dp),
     ) {
         repeat(pageCount) { i ->
             val active = i == currentPage

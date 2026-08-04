@@ -10,6 +10,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.*
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.StartOffset
+import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
@@ -128,6 +129,225 @@ private object VK {
     // Fn / Menu 没有独立 VK code,用占位值避免误触
     const val FN = 0x7F       // F24(实际不可用,仅占位)
     const val MENU_KEY = 0x5D // AppsKey
+}
+
+/** 小尺寸图标按钮(对齐设计稿顶栏 28dp 圆角方块) */
+@Composable
+private fun IconButtonSmall(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    contentDescription: String,
+    onClick: () -> Unit,
+) {
+    Box(
+        modifier = Modifier
+            .size(28.dp)
+            .background(
+                MaterialTheme.colorScheme.surfaceVariant,
+                RoundedCornerShape(8.dp),
+            )
+            .border(
+                1.dp,
+                MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f),
+                RoundedCornerShape(8.dp),
+            )
+            .clickable(onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) {
+        Icon(icon, contentDescription, Modifier.size(16.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
+    }
+}
+
+/**
+ * 8 个可编辑快捷键槽位(对齐设计稿)。
+ * - 非编辑模式:点击槽位 → 解析为 VK 序列并下发;有按下视觉反馈
+ * - 编辑模式:点击槽位 → 显示输入框,可输入 "Ctrl+C" 等组合,完成时持久化
+ * - 空槽位显示 "+" 图标,虚线边框
+ */
+@Composable
+private fun QuickKeySlots(
+    vm: MeowMicViewModel,
+    showToast: (String) -> Unit,
+) {
+    val quickKeys by vm.quickKeys.collectAsState()
+    var editMode by remember { mutableStateOf(false) }
+    // 编辑模式下每个槽位的临时输入值
+    val editValues = remember { mutableStateListOf<String>().apply { addAll(quickKeys) } }
+    // 进入编辑模式时同步一次
+    LaunchedEffect(editMode) {
+        if (editMode) {
+            editValues.clear()
+            editValues.addAll(quickKeys)
+        }
+    }
+
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+        horizontalArrangement = Arrangement.spacedBy(3.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        // 标题
+        Row(
+            modifier = Modifier.weight(1f),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            Icon(Icons.Default.Keyboard, null, Modifier.size(12.dp), tint = MaterialTheme.colorScheme.primary)
+            Text("快捷键", fontSize = 10.sp, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurface)
+        }
+        // 编辑/完成按钮
+        Box(
+            modifier = Modifier
+                .height(20.dp)
+                .background(MaterialTheme.colorScheme.surface, RoundedCornerShape(4.dp))
+                .border(1.dp, MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(4.dp))
+                .clickable {
+                    if (editMode) {
+                        // 退出编辑模式:批量保存所有槽位
+                        for (i in editValues.indices) {
+                            vm.setQuickKey(i, editValues[i])
+                        }
+                    }
+                    editMode = !editMode
+                }
+                .padding(horizontal = 6.dp),
+            contentAlignment = Alignment.Center,
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(
+                    if (editMode) Icons.Default.Check else Icons.Default.Edit,
+                    null, Modifier.size(10.dp),
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(Modifier.width(3.dp))
+                Text(
+                    if (editMode) "完成" else "编辑",
+                    fontSize = 10.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+    }
+    Spacer(Modifier.height(4.dp))
+    // 槽位网格 4 列 x 2 行
+    Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
+        for (row in 0 until 2) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(3.dp),
+            ) {
+                for (col in 0 until 4) {
+                    val index = row * 4 + col
+                    val value = if (editMode) editValues.getOrNull(index) ?: ""
+                    else quickKeys.getOrNull(index) ?: ""
+                    QuickKeySlotCell(
+                        value = value,
+                        editMode = editMode,
+                        isLandscape = false,
+                        modifier = Modifier.weight(1f),
+                        onValueChange = { v ->
+                            if (editMode && index < editValues.size) {
+                                editValues[index] = v
+                            }
+                        },
+                        onCommit = {
+                            if (!editMode) {
+                                // 非编辑模式:触发组合键
+                                val ok = vm.fireQuickKey(index)
+                                if (ok) vm.playFeedbackSound() else showToast("快捷键未设置或格式无效")
+                            }
+                        },
+                        onCommitEdit = {
+                            // 完成编辑:写入持久化
+                            val v = editValues.getOrNull(index) ?: ""
+                            vm.setQuickKey(index, v)
+                        },
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun QuickKeySlotCell(
+    value: String,
+    editMode: Boolean,
+    isLandscape: Boolean,
+    modifier: Modifier = Modifier,
+    onValueChange: (String) -> Unit,
+    onCommit: () -> Unit,
+    onCommitEdit: () -> Unit,
+) {
+    var pressed by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
+    val isSet = value.isNotBlank()
+    val borderColor = if (editMode) MaterialTheme.colorScheme.primary
+    else MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f)
+    val borderStyle = if (isSet || editMode) BorderStroke(1.dp, borderColor)
+    else BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+    // 按下反馈色
+    val bgColor = when {
+        pressed -> MaterialTheme.colorScheme.primary
+        editMode -> MaterialTheme.colorScheme.surface
+        else -> MaterialTheme.colorScheme.surfaceVariant
+    }
+    val fgColor = when {
+        pressed -> Color.White
+        editMode -> MaterialTheme.colorScheme.onSurface
+        else -> MaterialTheme.colorScheme.onSurfaceVariant
+    }
+
+    Box(
+        modifier = modifier
+            .height(if (isLandscape) 24.dp else 30.dp)
+            .background(bgColor, RoundedCornerShape(6.dp))
+            .border(borderStyle, RoundedCornerShape(6.dp))
+            .then(
+                if (editMode) Modifier
+                else Modifier.clickable {
+                    pressed = true
+                    onCommit()
+                    // 短暂高亮反馈
+                    scope.launch {
+                        delay(200)
+                        pressed = false
+                    }
+                }
+            ),
+        contentAlignment = Alignment.Center,
+    ) {
+        if (editMode) {
+            // 编辑模式:输入框
+            BasicTextField(
+                value = value,
+                onValueChange = onValueChange,
+                singleLine = true,
+                textStyle = TextStyle(
+                    fontSize = 10.sp,
+                    color = fgColor,
+                    fontWeight = FontWeight.Medium,
+                    textAlign = TextAlign.Center,
+                ),
+                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+                keyboardActions = KeyboardActions(onDone = { onCommitEdit() }),
+                cursorBrush = androidx.compose.ui.graphics.SolidColor(MaterialTheme.colorScheme.primary),
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp),
+            )
+        } else {
+            if (isSet) {
+                Text(
+                    value,
+                    fontSize = 10.sp,
+                    color = fgColor,
+                    fontWeight = FontWeight.Medium,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            } else {
+                Icon(Icons.Default.Add, null, Modifier.size(12.dp), tint = fgColor.copy(alpha = 0.6f))
+            }
+        }
+    }
 }
 
 @OptIn(ExperimentalComposeUiApi::class)
@@ -373,34 +593,6 @@ fun TouchpadScreen(
                     )
                 }
             }
-        }
-    }
-
-    /**
-     * 小尺寸图标按钮(对齐设计稿顶栏 28dp 圆角方块)
-     */
-    @Composable
-    fun IconButtonSmall(
-        icon: androidx.compose.ui.graphics.vector.ImageVector,
-        contentDescription: String,
-        onClick: () -> Unit,
-    ) {
-        Box(
-            modifier = Modifier
-                .size(28.dp)
-                .background(
-                    MaterialTheme.colorScheme.surfaceVariant,
-                    RoundedCornerShape(8.dp),
-                )
-                .border(
-                    1.dp,
-                    MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f),
-                    RoundedCornerShape(8.dp),
-                )
-                .clickable(onClick = onClick),
-            contentAlignment = Alignment.Center,
-        ) {
-            Icon(icon, contentDescription, Modifier.size(16.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
         }
     }
 
@@ -1478,197 +1670,10 @@ fun TouchpadScreen(
             }
 
             // ── 快捷键槽位区(对齐设计稿 kbd-slot:8 个 + 编辑/完成切换) ──
-            QuickKeySlots()
+            QuickKeySlots(vm = vm, showToast = { showToast(it) })
         }
     }
 
-    /**
-     * 8 个可编辑快捷键槽位(对齐设计稿)。
-     * - 非编辑模式:点击槽位 → 解析为 VK 序列并下发;有按下视觉反馈
-     * - 编辑模式:点击槽位 → 显示输入框,可输入 "Ctrl+C" 等组合,完成时持久化
-     * - 空槽位显示 "+" 图标,虚线边框
-     */
-    @Composable
-    fun QuickKeySlots() {
-        val quickKeys by vm.quickKeys.collectAsState()
-        var editMode by remember { mutableStateOf(false) }
-        // 编辑模式下每个槽位的临时输入值
-        val editValues = remember { mutableStateListOf<String>().apply { addAll(quickKeys) } }
-        // 进入编辑模式时同步一次
-        LaunchedEffect(editMode) {
-            if (editMode) {
-                editValues.clear()
-                editValues.addAll(quickKeys)
-            }
-        }
-
-        Row(
-            modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
-            horizontalArrangement = Arrangement.spacedBy(3.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            // 标题
-            Row(
-                modifier = Modifier.weight(1f),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(4.dp),
-            ) {
-                Icon(Icons.Default.Keyboard, null, Modifier.size(12.dp), tint = MaterialTheme.colorScheme.primary)
-                Text("快捷键", fontSize = 10.sp, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurface)
-            }
-            // 编辑/完成按钮
-            Box(
-                modifier = Modifier
-                    .height(20.dp)
-                    .background(MaterialTheme.colorScheme.surface, RoundedCornerShape(4.dp))
-                    .border(1.dp, MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(4.dp))
-                    .clickable {
-                        if (editMode) {
-                            // 退出编辑模式:批量保存所有槽位
-                            for (i in editValues.indices) {
-                                vm.setQuickKey(i, editValues[i])
-                            }
-                        }
-                        editMode = !editMode
-                    }
-                    .padding(horizontal = 6.dp),
-                contentAlignment = Alignment.Center,
-            ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(
-                        if (editMode) Icons.Default.Check else Icons.Default.Edit,
-                        null, Modifier.size(10.dp),
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                    Spacer(Modifier.width(3.dp))
-                    Text(
-                        if (editMode) "完成" else "编辑",
-                        fontSize = 10.sp,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-            }
-        }
-        Spacer(Modifier.height(4.dp))
-        // 槽位网格 4 列 x 2 行
-        Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
-            for (row in 0 until 2) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(3.dp),
-                ) {
-                    for (col in 0 until 4) {
-                        val index = row * 4 + col
-                        val value = if (editMode) editValues.getOrNull(index) ?: ""
-                        else quickKeys.getOrNull(index) ?: ""
-                        QuickKeySlotCell(
-                            value = value,
-                            editMode = editMode,
-                            modifier = Modifier.weight(1f),
-                            onValueChange = { v ->
-                                if (editMode && index < editValues.size) {
-                                    editValues[index] = v
-                                }
-                            },
-                            onCommit = {
-                                if (!editMode) {
-                                    // 非编辑模式:触发组合键
-                                    val ok = vm.fireQuickKey(index)
-                                    if (ok) vm.playFeedbackSound() else showToast("快捷键未设置或格式无效")
-                                }
-                            },
-                            onCommitEdit = {
-                                // 完成编辑:写入持久化
-                                val v = editValues.getOrNull(index) ?: ""
-                                vm.setQuickKey(index, v)
-                            },
-                        )
-                    }
-                }
-            }
-        }
-    }
-
-    @Composable
-    fun QuickKeySlotCell(
-        value: String,
-        editMode: Boolean,
-        modifier: Modifier = Modifier,
-        onValueChange: (String) -> Unit,
-        onCommit: () -> Unit,
-        onCommitEdit: () -> Unit,
-    ) {
-        var pressed by remember { mutableStateOf(false) }
-        val scope = rememberCoroutineScope()
-        val isSet = value.isNotBlank()
-        val borderColor = if (editMode) MaterialTheme.colorScheme.primary
-        else MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f)
-        val borderStyle = if (isSet || editMode) BorderStroke(1.dp, borderColor)
-        else BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
-        // 按下反馈色
-        val bgColor = when {
-            pressed -> MaterialTheme.colorScheme.primary
-            editMode -> MaterialTheme.colorScheme.surface
-            else -> MaterialTheme.colorScheme.surfaceVariant
-        }
-        val fgColor = when {
-            pressed -> Color.White
-            editMode -> MaterialTheme.colorScheme.onSurface
-            else -> MaterialTheme.colorScheme.onSurfaceVariant
-        }
-
-        Box(
-            modifier = modifier
-                .height(if (isLandscape) 24.dp else 30.dp)
-                .background(bgColor, RoundedCornerShape(6.dp))
-                .border(borderStyle, RoundedCornerShape(6.dp))
-                .then(
-                    if (editMode) Modifier
-                    else Modifier.clickable {
-                        pressed = true
-                        onCommit()
-                        // 短暂高亮反馈
-                        scope.launch {
-                            delay(200)
-                            pressed = false
-                        }
-                    }
-                ),
-            contentAlignment = Alignment.Center,
-        ) {
-            if (editMode) {
-                // 编辑模式:输入框
-                BasicTextField(
-                    value = value,
-                    onValueChange = onValueChange,
-                    singleLine = true,
-                    textStyle = TextStyle(
-                        fontSize = 10.sp,
-                        color = fgColor,
-                        fontWeight = FontWeight.Medium,
-                        textAlign = TextAlign.Center,
-                    ),
-                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
-                    keyboardActions = KeyboardActions(onDone = { onCommitEdit() }),
-                    cursorBrush = androidx.compose.ui.graphics.SolidColor(MaterialTheme.colorScheme.primary),
-                    modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp),
-                )
-            } else {
-                if (isSet) {
-                    Text(
-                        value,
-                        fontSize = 10.sp,
-                        color = fgColor,
-                        fontWeight = FontWeight.Medium,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                } else {
-                    Icon(Icons.Default.Add, null, Modifier.size(12.dp), tint = fgColor.copy(alpha = 0.6f))
-                }
-            }
-        }
-    }
 
     // 语音/键盘控制面板:Tab 切换(必须在 KeyboardPanel 之后定义,局部函数不能前向引用)
     @Composable
