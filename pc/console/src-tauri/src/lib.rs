@@ -7,10 +7,20 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4, TcpStream};
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
-use tauri::{Manager, State};
+use tauri::{
+    CustomMenuItem, Manager, State, SystemTray, SystemTrayEvent, SystemTrayMenu,
+    SystemTrayMenuItem, WindowEvent,
+};
 
 const CONFIG_FILE: &str = "meowmic-console.json";
+/// Windows 开机启动注册表键(当前用户)
+#[cfg(target_os = "windows")]
+const RUN_REGISTRY_KEY: &str = "Software\\Microsoft\\Windows\\CurrentVersion\\Run";
+/// 注册表中开机启动项的名称
+const AUTOSTART_REG_NAME: &str = "MeowMicConsole";
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct AppConfig {
@@ -19,6 +29,12 @@ pub struct AppConfig {
     pub mute_speaker: bool,
     pub auto_start: bool,
     pub sensitivity: f32,
+    /// 开机启动(写入 Windows 注册表 HKCU\...\Run)
+    #[serde(default)]
+    pub launch_at_login: bool,
+    /// 关闭窗口时最小化到系统托盘(而非退出)
+    #[serde(default)]
+    pub minimize_to_tray: bool,
 }
 
 impl Default for AppConfig {
@@ -29,6 +45,8 @@ impl Default for AppConfig {
             mute_speaker: false,
             auto_start: false,
             sensitivity: 1.2,
+            launch_at_login: false,
+            minimize_to_tray: true,
         }
     }
 }
@@ -452,7 +470,10 @@ pub struct AppState {
 
 #[tauri::command]
 fn get_config() -> AppConfig {
-    load_config()
+    let mut config = load_config();
+    // launch_at_login 以注册表实际状态为准(避免外部删除/修改后配置文件不一致)
+    config.launch_at_login = query_launch_at_login();
+    config
 }
 
 #[tauri::command]
@@ -587,6 +608,107 @@ fn url_encode(s: &str) -> String {
     out
 }
 
+// ============ 开机启动(Windows 注册表)============
+
+/// 设置/取消开机启动(写入 HKCU\Software\Microsoft\Windows\CurrentVersion\Run)
+/// 开启时写入:"<当前 exe 路径>" --tray
+/// 关闭时删除该键
+#[cfg(target_os = "windows")]
+fn set_launch_at_login(enabled: bool) -> Result<(), String> {
+    use winreg::enums::HKEY_CURRENT_USER;
+    use winreg::RegKey;
+
+    let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+    let (key, _) = hkcu
+        .create_subkey(RUN_REGISTRY_KEY)
+        .map_err(|e| format!("打开注册表失败: {}", e))?;
+
+    if enabled {
+        let exe = env::current_exe().map_err(|e| format!("获取当前路径失败: {}", e))?;
+        let exe_str = exe.to_string_lossy();
+        // 加 --tray 启动参数:开机启动后直接最小化到托盘,不弹窗
+        let value = format!("\"{}\" --tray", exe_str);
+        key.set_value(AUTOSTART_REG_NAME, &value)
+            .map_err(|e| format!("写入注册表失败: {}", e))?;
+    } else {
+        // 删除键值(不存在时返回 Ok,无需特殊处理)
+        let _ = key.delete_value(AUTOSTART_REG_NAME);
+    }
+    Ok(())
+}
+
+#[cfg(not(target_os = "windows"))]
+fn set_launch_at_login(_enabled: bool) -> Result<(), String> {
+    Ok(())
+}
+
+/// 查询当前开机启动状态(读注册表)
+#[cfg(target_os = "windows")]
+fn query_launch_at_login() -> bool {
+    use winreg::enums::HKEY_CURRENT_USER;
+    use winreg::RegKey;
+
+    let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+    if let Ok(key) = hkcu.open_subkey(RUN_REGISTRY_KEY) {
+        if let Ok(val) = key.get_value::<String, _>(AUTOSTART_REG_NAME) {
+            // 校验路径是否是当前 exe(避免残留旧值)
+            if let Ok(exe) = env::current_exe() {
+                let exe_str = exe.to_string_lossy().to_lowercase();
+                return val.to_lowercase().contains(&exe_str);
+            }
+            return true;
+        }
+    }
+    false
+}
+
+#[cfg(not(target_os = "windows"))]
+fn query_launch_at_login() -> bool {
+    false
+}
+
+/// 切换开机启动(命令):同时更新注册表和配置文件
+#[tauri::command]
+fn set_launch_at_login_cmd(enabled: bool) -> Result<(), String> {
+    set_launch_at_login(enabled)?;
+    let mut config = load_config();
+    config.launch_at_login = enabled;
+    save_config(&config)
+}
+
+/// 切换"关闭时最小化到托盘"(命令):仅更新配置
+#[tauri::command]
+fn set_minimize_to_tray(enabled: bool) -> Result<(), String> {
+    let mut config = load_config();
+    config.minimize_to_tray = enabled;
+    save_config(&config)
+}
+
+/// 退出应用(完全退出,与窗口关闭按钮的"最小化到托盘"行为区分)
+#[tauri::command]
+fn quit_app(app: tauri::AppHandle) {
+    app.exit(0);
+}
+
+/// 显示主窗口(从托盘恢复)
+#[tauri::command]
+fn show_main_window(app: tauri::AppHandle) -> Result<(), String> {
+    if let Some(window) = app.get_window("main") {
+        window.show().map_err(|e| e.to_string())?;
+        window.set_focus().map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+/// 隐藏主窗口到托盘
+#[tauri::command]
+fn hide_main_window(app: tauri::AppHandle) -> Result<(), String> {
+    if let Some(window) = app.get_window("main") {
+        window.hide().map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
 /// 检查 Windows 防火墙是否已配置 MeowMic Server 入站规则
 /// 返回 true 表示规则已存在(手机可连接),false 表示未配置(可能被拦截)
 #[tauri::command]
@@ -683,13 +805,89 @@ fn fix_firewall_rule() -> Result<String, String> {
 pub fn run() {
 
     let config = load_config();
+    let minimize_to_tray_default = config.minimize_to_tray;
     let state = AppState {
         service: std::sync::Mutex::new(ServiceManager::new()),
     };
 
+    // 检查 --tray 启动参数:开机启动时直接隐藏窗口到托盘
+    let start_in_tray = env::args().any(|a| a == "--tray");
+
+    // 系统托盘菜单:显示主窗口 / 分隔线 / 退出
+    let tray_menu = SystemTrayMenu::new()
+        .add_item(CustomMenuItem::new("show", "显示主窗口"))
+        .add_item(CustomMenuItem::new("hide", "隐藏到托盘"))
+        .add_native_item(SystemTrayMenuItem::Separator)
+        .add_item(CustomMenuItem::new("quit", "退出 MeowMic"));
+
+    let tray = SystemTray::new().with_menu(tray_menu).with_tooltip("MeowMic 控制台");
+
+    // 用于跨线程传递"是否已通过托盘退出"标志
+    // (app.exit 触发的窗口关闭不应被 prevent_close 拦截)
+    let quitting = Arc::new(AtomicBool::new(false));
+    let quitting_tray = quitting.clone();
+
     tauri::Builder::default()
         .manage(state)
+        .system_tray(tray)
+        .on_window_event(move |event| {
+            // 拦截窗口关闭按钮:若启用"最小化到托盘",则隐藏窗口而非退出
+            if let WindowEvent::CloseRequested { api, .. } = event.event() {
+                if minimize_to_tray_default && !quitting.load(Ordering::Relaxed) {
+                    // 阻止默认关闭行为,改为隐藏
+                    api.prevent_close();
+                    let _ = event.window().hide();
+                }
+            }
+        })
+        .on_system_tray_event(move |app, event| match event {
+            // 左键单击:切换显示/隐藏
+            SystemTrayEvent::LeftClick { .. } => {
+                if let Some(window) = app.get_window("main") {
+                    if window.is_visible().unwrap_or(false) {
+                        let _ = window.hide();
+                    } else {
+                        let _ = window.show();
+                        let _ = window.set_focus();
+                    }
+                }
+            }
+            // 双击:显示窗口
+            SystemTrayEvent::DoubleClick { .. } => {
+                if let Some(window) = app.get_window("main") {
+                    let _ = window.show();
+                    let _ = window.set_focus();
+                }
+            }
+            // 菜单项点击
+            SystemTrayEvent::MenuItemClick { id, .. } => match id.as_str() {
+                "show" => {
+                    if let Some(window) = app.get_window("main") {
+                        let _ = window.show();
+                        let _ = window.set_focus();
+                    }
+                }
+                "hide" => {
+                    if let Some(window) = app.get_window("main") {
+                        let _ = window.hide();
+                    }
+                }
+                "quit" => {
+                    // 标记正在退出,避免 CloseRequested 中的 prevent_close 拦截
+                    quitting_tray.store(true, Ordering::Relaxed);
+                    app.exit(0);
+                }
+                _ => {}
+            },
+            _ => {}
+        })
         .setup(move |app| {
+            // --tray 启动参数:启动后立即隐藏窗口(开机启动场景)
+            if start_in_tray {
+                if let Some(window) = app.get_window("main") {
+                    let _ = window.hide();
+                }
+            }
             // 自动启动:在 setup 中执行,此时已可获取 AppHandle 用于日志转发
             if config.auto_start {
                 let state = app.state::<AppState>();
@@ -715,6 +913,11 @@ pub fn run() {
             check_firewall_rule,
             fix_firewall_rule,
             get_local_ips,
+            set_launch_at_login_cmd,
+            set_minimize_to_tray,
+            quit_app,
+            show_main_window,
+            hide_main_window,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -1421,6 +1421,16 @@
                             <input type="checkbox" class="mm-checkbox" id="autoStart">
                             <span class="mm-checkbox-label">启动控制台时自动启动服务</span>
                         </label>
+                        <div class="mm-field-hint" style="margin-top:8px;font-weight:600;color:var(--mm-text);">启动与托盘</div>
+                        <label class="mm-checkbox-row">
+                            <input type="checkbox" class="mm-checkbox" id="launchAtLogin" onchange="onLaunchAtLoginChange()">
+                            <span class="mm-checkbox-label">开机启动（登录 Windows 时自动运行并最小化到托盘）</span>
+                        </label>
+                        <label class="mm-checkbox-row">
+                            <input type="checkbox" class="mm-checkbox" id="minimizeToTray" onchange="onMinimizeToTrayChange()">
+                            <span class="mm-checkbox-label">关闭窗口时最小化到系统托盘（而非退出）</span>
+                        </label>
+                        <p class="mm-field-hint">关闭后程序常驻右下角托盘,左键托盘图标可切换显示/隐藏,右键菜单可退出</p>
                     </div>
                 </section>
 
@@ -1589,6 +1599,8 @@
             mute_speaker: false,
             auto_start: false,
             sensitivity: 1.2,
+            launch_at_login: false,
+            minimize_to_tray: true,
         };
         let statusInterval = null;
         let updateManifest = null;       // 当前已检查到的新版本 manifest
@@ -1885,6 +1897,8 @@
             }
             document.getElementById('muteSpeaker').checked = cfg.mute_speaker;
             document.getElementById('autoStart').checked = cfg.auto_start;
+            document.getElementById('launchAtLogin').checked = !!cfg.launch_at_login;
+            document.getElementById('minimizeToTray').checked = cfg.minimize_to_tray !== false;
         }
 
         function getConfigFromUI() {
@@ -1894,6 +1908,8 @@
                 mute_speaker: document.getElementById('muteSpeaker').checked,
                 auto_start: document.getElementById('autoStart').checked,
                 sensitivity: 1.2,
+                launch_at_login: document.getElementById('launchAtLogin').checked,
+                minimize_to_tray: document.getElementById('minimizeToTray').checked,
             };
         }
 
@@ -1941,6 +1957,33 @@
             } catch(e) {
                 showError(String(e));
                 document.getElementById('muteSpeaker').checked = !muted;
+            }
+        }
+
+        // ============ 开机启动 / 最小化到托盘 ============
+        async function onLaunchAtLoginChange() {
+            const Tauri = window.__TAURI__;
+            const enabled = document.getElementById('launchAtLogin').checked;
+            try {
+                await Tauri.invoke('set_launch_at_login_cmd', { enabled: enabled });
+                config.launch_at_login = enabled;
+                showToast(enabled ? '已设置开机启动' : '已取消开机启动');
+            } catch(e) {
+                showError('设置开机启动失败: ' + String(e));
+                document.getElementById('launchAtLogin').checked = !enabled;
+            }
+        }
+
+        async function onMinimizeToTrayChange() {
+            const Tauri = window.__TAURI__;
+            const enabled = document.getElementById('minimizeToTray').checked;
+            try {
+                await Tauri.invoke('set_minimize_to_tray', { enabled: enabled });
+                config.minimize_to_tray = enabled;
+                showToast(enabled ? '关闭按钮将最小化到托盘' : '关闭按钮将退出程序');
+            } catch(e) {
+                showError('设置失败: ' + String(e));
+                document.getElementById('minimizeToTray').checked = !enabled;
             }
         }
 
