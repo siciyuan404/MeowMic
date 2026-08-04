@@ -1295,17 +1295,27 @@ class MeowMicViewModel : ViewModel() {
             return
         }
         viewModelScope.launch {
-            val appId = LauncherRepository.addApp(addr, name, command, pk)
-            if (appId != null) {
-                // 刷新应用库缓存
-                loadAppList()
-                // 加入快捷启动
-                addQuickApp(appId)
-                _launchFeedback.value = "已添加: $name"
-                onResult(true)
-            } else {
-                _launchFeedback.value = "添加失败,请检查路径"
-                onResult(false)
+            when (val result = LauncherRepository.addApp(addr, name, command, pk)) {
+                is AddAppResult.Success -> {
+                    loadAppList()
+                    addQuickApp(result.appId)
+                    _launchFeedback.value = "已添加: $name"
+                    onResult(true)
+                }
+                is AddAppResult.HttpError -> {
+                    val hint = when (result.code) {
+                        404 -> "PC 端版本过旧,请更新 PC 控制台到 v0.15.0+"
+                        403 -> "未配对,请重新连接"
+                        400 -> "请求格式错误: ${result.body}"
+                        else -> "HTTP ${result.code}: ${result.body}"
+                    }
+                    _launchFeedback.value = "添加失败: $hint"
+                    onResult(false)
+                }
+                is AddAppResult.Exception -> {
+                    _launchFeedback.value = "添加失败: ${result.message}"
+                    onResult(false)
+                }
             }
         }
     }

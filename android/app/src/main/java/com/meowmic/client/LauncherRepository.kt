@@ -32,6 +32,15 @@ data class DirEntry(
 )
 
 /**
+ * 添加应用的结果(包含错误详情,便于 UI 提示)
+ */
+sealed class AddAppResult {
+    data class Success(val appId: String) : AddAppResult()
+    data class HttpError(val code: Int, val body: String) : AddAppResult()
+    data class Exception(val message: String) : AddAppResult()
+}
+
+/**
  * 目录浏览结果
  */
 data class DirListing(
@@ -183,9 +192,9 @@ object LauncherRepository {
      * 添加自定义应用到 PC 端应用库。
      * @param name 应用显示名
      * @param command 可执行文件路径(支持 %APPDATA% 等环境变量)
-     * @return 成功时返回 PC 端生成的 appId;失败返回 null
+     * @return AddAppResult 包含成功 appId 或具体错误信息
      */
-    suspend fun addApp(serverAddr: String, name: String, command: String, pubkey: String): String? =
+    suspend fun addApp(serverAddr: String, name: String, command: String, pubkey: String): AddAppResult =
         withContext(Dispatchers.IO) {
             val url = "${httpBaseUrl(serverAddr)}/add_app?pubkey=${encodeParam(pubkey)}"
             try {
@@ -208,20 +217,26 @@ object LauncherRepository {
                 }
                 try {
                     conn.outputStream.use { it.write(payloadBytes) }
-                    if (conn.responseCode == 200) {
+                    val code = conn.responseCode
+                    if (code == 200) {
                         val body = conn.inputStream.bufferedReader().use { it.readText() }
-                        JSONObject(body).optString("id").ifBlank { null }
+                        val appId = JSONObject(body).optString("id").ifBlank { null }
+                        if (appId != null) {
+                            AddAppResult.Success(appId)
+                        } else {
+                            AddAppResult.HttpError(200, "响应缺少 id: $body")
+                        }
                     } else {
-                        val errBody = conn.errorStream?.bufferedReader()?.use { it.readText() }
-                        Log.w(TAG, "addApp HTTP ${conn.responseCode}: $errBody")
-                        null
+                        val errBody = conn.errorStream?.bufferedReader()?.use { it.readText() } ?: ""
+                        Log.w(TAG, "addApp HTTP $code: $errBody")
+                        AddAppResult.HttpError(code, errBody)
                     }
                 } finally {
                     conn.disconnect()
                 }
             } catch (e: Exception) {
                 Log.w(TAG, "addApp 失败: ${e.message}")
-                null
+                AddAppResult.Exception(e.message ?: "未知错误")
             }
         }
 
