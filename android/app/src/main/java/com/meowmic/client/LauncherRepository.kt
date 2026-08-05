@@ -76,6 +76,38 @@ data class DirListing(
 )
 
 /**
+ * 拉取应用库失败的结构化错误分类(随 [AppListFetchException.kind] 抛出,便于 UI 给出人性化提示)。
+ *
+ * 分类:
+ * - [NotPaired403]:HTTP 403 + body 含 "not paired" → 第二台手机尚未在 PC 配对弹窗点「同意」
+ * - [Forbidden403]:其他 403(比如未带 pubkey,或服务端鉴权异常)
+ * - [HttpError]:非 200/非 403 的 HTTP 错误(如 500)
+ * - [Network]:IOException(连接失败/超时/DNS 解析失败等)
+ * - [ParseError]:HTTP 200 但 JSON 解析失败/不是合法 List<AppEntry>
+ */
+sealed class AppListFetchKind {
+    data class NotPaired403(val body: String) : AppListFetchKind()
+    data class Forbidden403(val body: String) : AppListFetchKind()
+    data class HttpError(val code: Int, val body: String) : AppListFetchKind()
+    data class Network(val message: String) : AppListFetchKind()
+    data class ParseError(val message: String, val raw: String) : AppListFetchKind()
+}
+
+/** 包装 [AppListFetchKind] 的异常,供 Kotlin Result.failure() 携带结构化错误。 */
+class AppListFetchException(
+    val kind: AppListFetchKind,
+    message: String? = kind.toString(),
+    cause: Throwable? = null,
+) : Exception(message, cause)
+
+/** 读取 HTTP 响应 body(错误优先, 兼容重定向/非 2xx 路径);读取失败返回空字符串。 */
+private fun java.net.HttpURLConnection.readBodySafe(): String {
+    val stream = try { this.errorStream ?: this.inputStream } catch (_: Exception) { null }
+    return if (stream == null) ""
+    else try { stream.bufferedReader().use { it.readText() } } catch (_: Exception) { "" }
+}
+
+/**
  * 快捷启动 HTTP 客户端
  *
  * 端点(挂在 base_port+4,与 /serverinfo 同服务,复用配对鉴权):
@@ -116,7 +148,17 @@ object LauncherRepository {
      * @param pubkey 客户端公钥 base64(用于配对鉴权)
      * @return 应用列表;失败返回 null
      */
-    suspend fun fetchAppList(serverAddr: String, pubkey: String): List<AppEntry>? =
+    /**
+     * 拉取 PC 端应用库。
+     * @param serverAddr "host:port"(control 端口)
+     * @param pubkey 客户端公钥 base64(用于配对鉴权)
+     * @return 成功: Result.success(应用列表);
+     *         失败: Result.failure([AppListFetchException]),其 [AppListFetchException.kind] 给出结构化分类。
+     */
+    suspend fun fetchAppList(
+        serverAddr: String,
+        pubkey: String,
+    ): Result<List<AppEntry>> =
         withContext(Dispatchers.IO) {
             val url = "${httpBaseUrl(serverAddr)}/applist?pubkey=${encodeParam(pubkey)}"
             try {
@@ -128,19 +170,70 @@ object LauncherRepository {
                     instanceFollowRedirects = false
                 }
                 try {
-                    if (conn.responseCode == 200) {
+                    val code = conn.responseCode
+                    if (code == 200) {
                         val body = conn.inputStream.bufferedReader().use { it.readText() }
-                        parseAppList(body)
+                        val parsed = parseAppList(body)
+                        if (parsed != null) {
+                            Result.success(parsed)
+                        } else {
+                            Result.failure(
+                                AppListFetchException(
+                                    AppListFetchKind.ParseError("parseAppList returned null", body),
+                                ),
+                            )
+                        }
                     } else {
-                        Log.w(TAG, "fetchAppList HTTP ${conn.responseCode}")
-                        null
+                        val body = conn.readBodySafe()
+                        Log.w(TAG, "fetchAppList HTTP $code body=$body")
+                        val kind = when (code) {
+                            403 -> {
+                                val hasNotPaired = body.contains(""not paired"")
+                                    || body.contains("not paired")
+                                if (hasNotPaired)
+                                    AppListFetchKind.NotPaired403(body)
+                                else
+                                    AppListFetchKind.Forbidden403(body)
+                            }
+                            else -> AppListFetchKind.HttpError(code, body)
+                        }
+                        Result.failure(AppListFetchException(kind))
                     }
                 } finally {
                     conn.disconnect()
                 }
+            } catch (e: java.net.ConnectException) {
+                Log.w(TAG, "fetchAppList connect: ${e.message}")
+                Result.failure(
+                    AppListFetchException(
+                        AppListFetchKind.Network("连接失败:${e.message ?: ""}"),
+                        cause = e,
+                    ),
+                )
+            } catch (e: java.net.SocketTimeoutException) {
+                Log.w(TAG, "fetchAppList timeout: ${e.message}")
+                Result.failure(
+                    AppListFetchException(
+                        AppListFetchKind.Network("连接超时:${e.message ?: ""}"),
+                        cause = e,
+                    ),
+                )
+            } catch (e: java.io.IOException) {
+                Log.w(TAG, "fetchAppList IO: ${e.message}")
+                Result.failure(
+                    AppListFetchException(
+                        AppListFetchKind.Network("网络错误:${e.message ?: ""}"),
+                        cause = e,
+                    ),
+                )
             } catch (e: Exception) {
                 Log.w(TAG, "fetchAppList 失败: ${e.message}")
-                null
+                Result.failure(
+                    AppListFetchException(
+                        AppListFetchKind.Network("未知错误:${e.message ?: ""}"),
+                        cause = e,
+                    ),
+                )
             }
         }
 

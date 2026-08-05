@@ -9,7 +9,8 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream, UdpSocket};
-use tokio::sync::mpsc;
+use std::collections::HashSet;
+use tokio::sync::{mpsc, RwLock};
 
 use meowmic_protocol::{
     ControlMessage, decode_control, encode_control, monotonic_ns,
@@ -29,6 +30,8 @@ pub enum ServerEvent {
         audio_sample_rate: u32,
         audio_channels: u8,
         audio_frame_ms: u16,
+        /// 客户端公钥 base64(配对 HelloPaired 才有;无配对兼容路径为 None)
+        client_pubkey_b64: Option<String>,
     },
     /// 收到触摸包
     Touch {
@@ -49,7 +52,7 @@ pub enum ServerEvent {
         opus: Vec<u8>,
     },
     /// 客户端断开
-    ClientDisconnected { client_id: u32 },
+    ClientDisconnected { client_id: u32, client_pubkey_b64: Option<String> },
     /// 客户端请求切换外放静音状态
     SetMuteSpeaker { client_id: u32, muted: bool },
     /// 客户端键盘事件(模拟键盘按下/抬起)
@@ -93,7 +96,12 @@ impl Server {
     /// 启动服务端,返回事件接收端
     ///
     /// - bind_addr: 监听地址(如 "0.0.0.0")
-    pub async fn run(self, bind_addr: &str, event_tx: mpsc::Sender<ServerEvent>) -> Result<(), NetError> {
+    pub async fn run(
+        self,
+        bind_addr: &str,
+        event_tx: mpsc::Sender<ServerEvent>,
+        active_clients: std::sync::Arc<RwLock<HashSet<String>>>,
+    ) -> Result<(), NetError> {
         let control_addr = format!("{}:{}", bind_addr, self.ports.control);
         let touch_addr = format!("{}:{}", bind_addr, self.ports.touch);
         let audio_addr = format!("{}:{}", bind_addr, self.ports.audio);
@@ -129,8 +137,9 @@ impl Server {
                     let sync = sync.clone();
                     let event_tx = event_tx.clone();
                     let pairing = pairing.clone();
+                    let active_clients = active_clients.clone();
                     tokio::spawn(async move {
-                        if let Err(e) = handle_control_conn(stream, peer, sync, event_tx, pairing).await {
+                        if let Err(e) = handle_control_conn(stream, peer, sync, event_tx, pairing, active_clients).await {
                             tracing::warn!("控制连接处理失败: {}", e);
                         }
                     });
@@ -203,6 +212,7 @@ async fn handle_control_conn(
     sync: ClockSynchronizer,
     event_tx: mpsc::Sender<ServerEvent>,
     pairing: Option<Arc<PairingManager>>,
+    active_clients: std::sync::Arc<RwLock<HashSet<String>>>,
 ) -> Result<(), NetError> {
     tracing::info!("控制连接来自 {}", peer);
 
@@ -212,14 +222,20 @@ async fn handle_control_conn(
     let mut frame = Vec::with_capacity(4096);
     // 每个连接独立 nonce(用于本次 PairRequired 握手)
     let mut pending_nonce: Option<u64> = None;
+    // 本连接成功完成 HelloPaired 后的客户端公钥 base64(用于 ClientDisconnected 时从 active_clients 移除)
+    let mut conn_pubkey_b64: Option<String> = None;
 
     loop {
         let mut tmp = [0u8; 4096];
         let n = stream.read(&mut tmp).await?;
         if n == 0 {
-            // 对端关闭
+            // 对端关闭:清理 active_clients 公钥登记
+            if let Some(ref pk) = conn_pubkey_b64 {
+                let mut set = active_clients.write().await;
+                set.remove(pk);
+            }
             let _ = event_tx
-                .send(ServerEvent::ClientDisconnected { client_id })
+                .send(ServerEvent::ClientDisconnected { client_id, client_pubkey_b64: conn_pubkey_b64.clone() })
                 .await;
             tracing::info!("控制连接关闭: {}", peer);
             return Ok(());
@@ -249,6 +265,8 @@ async fn handle_control_conn(
                         &event_tx,
                         pairing.as_deref(),
                         &mut pending_nonce,
+                        &active_clients,
+                        &mut conn_pubkey_b64,
                     )
                     .await
                     {
@@ -275,6 +293,8 @@ async fn handle_control_msg(
     event_tx: &mpsc::Sender<ServerEvent>,
     pairing: Option<&PairingManager>,
     pending_nonce: &mut Option<u64>,
+    active_clients: &std::sync::Arc<RwLock<HashSet<String>>>,
+    conn_pubkey_b64: &mut Option<String>,
 ) -> Option<ControlMessage> {
     match msg {
         ControlMessage::Hello {
@@ -317,6 +337,7 @@ async fn handle_control_msg(
                     audio_sample_rate: *audio_sample_rate,
                     audio_channels: *audio_channels,
                     audio_frame_ms: *audio_frame_ms,
+                    client_pubkey_b64: None,
                 })
                 .await;
             Some(ControlMessage::HelloAck {
@@ -347,8 +368,13 @@ async fn handle_control_msg(
                 Ok(()) => {
                     *client_id = monotonic_ns() as u32;
                     *audio_cfg = (*audio_sample_rate, *audio_channels, *audio_frame_ms);
+                    // 登记活跃客户端公钥:HTTP /applist 等端点做 OR 鉴权用(第二台手机关键路径)
+                    use base64::{Engine as _, engine::general_purpose::STANDARD as B64};
+                    let pk_b64 = B64.encode(client_pubkey);
+                    active_clients.write().await.insert(pk_b64.clone());
+                    *conn_pubkey_b64 = Some(pk_b64.clone());
                     tracing::info!(
-                        "已配对握手成功: client={} proto={} audio={}/{}/{}ms",
+                        "已配对握手成功: client={} proto={} audio={}/{}/{}ms pubkey_registered",
                         client_name,
                         protocol_version,
                         audio_sample_rate,
@@ -362,6 +388,7 @@ async fn handle_control_msg(
                             audio_sample_rate: *audio_sample_rate,
                             audio_channels: *audio_channels,
                             audio_frame_ms: *audio_frame_ms,
+                            client_pubkey_b64: Some(pk_b64),
                         })
                         .await;
                     Some(ControlMessage::HelloAck {

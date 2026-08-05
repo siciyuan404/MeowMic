@@ -12,8 +12,8 @@ android {
         applicationId = "com.meowmic.client"
         minSdk = 26
         targetSdk = 34
-        versionCode = 23
-        versionName = "0.23.0"
+        versionCode = 24
+        versionName = "0.24.0"
 
         // 只支持主流 ABI,减小体积
         ndk {

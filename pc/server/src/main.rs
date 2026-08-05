@@ -190,8 +190,15 @@ async fn run_server(bind: &str, port: u16, output_device: Option<&str>) -> Resul
     let serverinfo_pairing = pairing_manager.clone();
     let apps_lib = Arc::new(RwLock::new(apps::load_apps()));
     info!("快捷启动应用库: {} 个应用", apps_lib.read().await.len());
+    // 活跃连接客户端公钥集合:用于 /applist 等 HTTP 端点鉴权(第二台手机即使配对过,也可能需要走这里)
+    // 当 TCP 控制连接通过 HelloPaired 验证时登记公钥,断开时移除;check_paired() 对其做 OR 判定。
+    use std::collections::HashSet;
+    let active_clients: Arc<RwLock<HashSet<String>>> = Arc::new(RwLock::new(HashSet::new()));
+    let active_for_http = active_clients.clone();
+    let active_for_events = active_clients.clone();
+
     tokio::spawn(async move {
-        run_serverinfo_server(stats_for_info, serverinfo_name, serverinfo_pairing, apps_lib, serverinfo_addr).await;
+        run_serverinfo_server(stats_for_info, serverinfo_name, serverinfo_pairing, apps_lib, active_for_http, serverinfo_addr).await;
     });
     info!("serverinfo HTTP 监听: http://{}/serverinfo", serverinfo_addr);
     info!("快捷启动端点: /applist /app_icon /launch /add_app /remove_app /list_dir");
@@ -210,7 +217,7 @@ async fn run_server(bind: &str, port: u16, output_device: Option<&str>) -> Resul
 
     // 事件循环
     let server_handle = tokio::spawn(async move {
-        if let Err(e) = server.run(&bind, event_tx).await {
+        if let Err(e) = server.run(&bind, event_tx, active_for_events).await {
             match e {
                 NetError::Io(e) => {
                     anyhow::bail!("网络 IO 错误: {}", e);
@@ -229,6 +236,7 @@ async fn run_server(bind: &str, port: u16, output_device: Option<&str>) -> Resul
                 audio_sample_rate,
                 audio_channels,
                 audio_frame_ms,
+                ..
             } => {
                 info!(
                     "✓ 客户端已连接 id={} peer={} audio={}/{}/{}ms",
@@ -278,7 +286,7 @@ async fn run_server(bind: &str, port: u16, output_device: Option<&str>) -> Resul
                     Err(e) => warn!("音频解码失败: {}", e),
                 }
             }
-            ServerEvent::ClientDisconnected { client_id } => {
+            ServerEvent::ClientDisconnected { client_id, .. } => {
                 info!("✗ 客户端断开 id={}", client_id);
                 stats.lock().await.record_disconnect();
             }
@@ -479,8 +487,11 @@ async fn run_serverinfo_server(
     hostname: String,
     pairing: Option<Arc<PairingManager>>,
     apps_lib: Arc<RwLock<Vec<apps::AppEntry>>>,
+    active_clients: Arc<RwLock<std::collections::HashSet<String>>>,
     addr: SocketAddr,
 ) {
+    // 最大客户端数:从硬编码 1 提升到 4,便于多手机连接(第二个 P40 Pro 场景)
+    const MAX_CLIENTS: usize = 4;
     let listener = match TcpListener::bind(addr).await {
         Ok(l) => l,
         Err(e) => {
@@ -500,6 +511,7 @@ async fn run_serverinfo_server(
         let hostname = hostname.clone();
         let pairing = pairing.clone();
         let apps_lib = apps_lib.clone();
+        let active_clients = active_clients.clone();
         tokio::spawn(async move {
             // 读取请求(只关心第一行 METHOD PATH HTTP/1.1)
             // 快捷启动图标请求可能略大,扩到 4096
@@ -577,12 +589,19 @@ async fn run_serverinfo_server(
                     .map(|m| format!("\"{}\"", m))
                     .collect::<Vec<_>>()
                     .join(",");
-                // JSON 字段顺序稳定(便于客户端解析)
+                // 活跃客户端数:优先用 active_clients 真实 pubkey 集合大小;无配对(None)时仍回退 stats
+                let connected_count = if pairing.is_some() {
+                    active_clients.read().await.len() as u64
+                } else {
+                    connected as u64
+                };
+                // JSON 字段顺序稳定(便于客户端解析);max_clients 提升到 4(允许多手机连接)
                 let body = format!(
-                    r#"{{"name":"MeowMic-Server","hostname":"{}","version":{},"state":"ONLINE","connected_clients":{},"max_clients":1,"uptime_secs":{},"server_pubkey_b64":"{}","macs":[{}]{}}}"#,
+                    r#"{{"name":"MeowMic-Server","hostname":"{}","version":{},"state":"ONLINE","connected_clients":{},"max_clients":{},"uptime_secs":{},"server_pubkey_b64":"{}","macs":[{}]{}}}"#,
                     hostname,
                     meowmic_net::PROTOCOL_VERSION,
-                    connected,
+                    connected_count,
+                    MAX_CLIENTS,
                     uptime,
                     pubkey_b64,
                     macs_json,
@@ -592,7 +611,7 @@ async fn run_serverinfo_server(
             } else if method == "GET" && path == "/applist" {
                 // 快捷启动:返回应用库 JSON
                 // 鉴权:要求 pubkey 且已配对(参考 Sunshine 的 HTTPS client cert 鉴权)
-                if !check_paired(&pairing, query).await {
+                if !check_paired(&pairing, &active_clients, query).await {
                     ("403 Forbidden", "application/json", br#"{"error":"not paired"}"#.to_vec())
                 } else {
                     let apps = apps_lib.read().await;
@@ -606,7 +625,7 @@ async fn run_serverinfo_server(
                 }
             } else if method == "GET" && path == "/app_icon" {
                 // 快捷启动:返回 exe 图标 PNG
-                if !check_paired(&pairing, query).await {
+                if !check_paired(&pairing, &active_clients, query).await {
                     ("403 Forbidden", "application/json", br#"{"error":"not paired"}"#.to_vec())
                 } else {
                     let id = extract_query_param(query, "id").unwrap_or_default();
@@ -624,7 +643,7 @@ async fn run_serverinfo_server(
                 }
             } else if method == "POST" && path == "/launch" {
                 // 快捷启动:启动指定应用
-                if !check_paired(&pairing, query).await {
+                if !check_paired(&pairing, &active_clients, query).await {
                     ("403 Forbidden", "application/json", br#"{"error":"not paired"}"#.to_vec())
                 } else {
                     let id = extract_query_param(query, "id").unwrap_or_default();
@@ -645,7 +664,7 @@ async fn run_serverinfo_server(
                 }
             } else if method == "POST" && path == "/add_app" {
                 // 快捷启动:添加自定义应用到应用库
-                if !check_paired(&pairing, query).await {
+                if !check_paired(&pairing, &active_clients, query).await {
                     ("403 Forbidden", "application/json", br#"{"error":"not paired"}"#.to_vec())
                 } else {
                     let mut apps = apps_lib.write().await;
@@ -667,7 +686,7 @@ async fn run_serverinfo_server(
                 }
             } else if method == "POST" && path == "/remove_app" {
                 // 快捷启动:从应用库移除应用
-                if !check_paired(&pairing, query).await {
+                if !check_paired(&pairing, &active_clients, query).await {
                     ("403 Forbidden", "application/json", br#"{"error":"not paired"}"#.to_vec())
                 } else {
                     let id = extract_query_param(query, "id").unwrap_or_default();
@@ -681,7 +700,7 @@ async fn run_serverinfo_server(
                 }
             } else if method == "GET" && path == "/list_dir" {
                 // 快捷启动:浏览 PC 目录(用于 exe 路径选择)
-                if !check_paired(&pairing, query).await {
+                if !check_paired(&pairing, &active_clients, query).await {
                     ("403 Forbidden", "application/json", br#"{"error":"not paired"}"#.to_vec())
                 } else {
                     let dir_path = extract_query_param(query, "path").unwrap_or_default();
@@ -708,7 +727,7 @@ async fn run_serverinfo_server(
                 }
             } else if method == "GET" && path == "/running_apps" {
                 // 任务栏:返回运行中应用窗口列表(JSON 数组,按 exe 路径分组)
-                if !check_paired(&pairing, query).await {
+                if !check_paired(&pairing, &active_clients, query).await {
                     ("403 Forbidden", "application/json", br#"{"error":"not paired"}"#.to_vec())
                 } else {
                     let apps_list = windows::enumerate_running_apps();
@@ -722,7 +741,7 @@ async fn run_serverinfo_server(
                 }
             } else if method == "GET" && path == "/exe_icon" {
                 // 任务栏:返回 exe 图标 PNG(按 exe 路径直接提取,不依赖应用库)
-                if !check_paired(&pairing, query).await {
+                if !check_paired(&pairing, &active_clients, query).await {
                     ("403 Forbidden", "application/json", br#"{"error":"not paired"}"#.to_vec())
                 } else {
                     let exe_raw = extract_query_param(query, "path").unwrap_or_default();
@@ -738,7 +757,7 @@ async fn run_serverinfo_server(
                 }
             } else if method == "POST" && path == "/focus_window" {
                 // 任务栏:前台激活指定窗口(模拟任务栏点击)
-                if !check_paired(&pairing, query).await {
+                if !check_paired(&pairing, &active_clients, query).await {
                     ("403 Forbidden", "application/json", br#"{"error":"not paired"}"#.to_vec())
                 } else {
                     let hwnd_str = extract_query_param(query, "hwnd").unwrap_or_default();
@@ -753,7 +772,7 @@ async fn run_serverinfo_server(
                 }
             } else if method == "POST" && path == "/close_window" {
                 // 任务栏:优雅关闭指定窗口(发送 WM_CLOSE)
-                if !check_paired(&pairing, query).await {
+                if !check_paired(&pairing, &active_clients, query).await {
                     ("403 Forbidden", "application/json", br#"{"error":"not paired"}"#.to_vec())
                 } else {
                     let hwnd_str = extract_query_param(query, "hwnd").unwrap_or_default();
@@ -789,12 +808,13 @@ async fn run_serverinfo_server(
     }
 }
 
-/// 校验客户端是否已配对(用于 /applist /app_icon /launch 鉴权)
-async fn check_paired(pairing: &Option<Arc<PairingManager>>, query: &str) -> bool {
-    let pm = match pairing {
-        Some(pm) => pm,
-        None => return false, // 未启用配对则禁止启动应用(安全兜底)
-    };
+/// 校验客户端是否已配对或当前活跃连接(用于 /applist /app_icon /launch 鉴权)
+/// 匹配优先级:持久化配对白名单 OR 已通过 HelloPaired 校验的活跃TCP连接公钥
+async fn check_paired(
+    pairing: &Option<Arc<PairingManager>>,
+    active_clients: &Arc<RwLock<std::collections::HashSet<String>>>,
+    query: &str,
+) -> bool {
     let client_pk = match extract_query_param(query, "pubkey") {
         Some(pk) => url_decode(&pk),
         None => return false,
@@ -802,7 +822,15 @@ async fn check_paired(pairing: &Option<Arc<PairingManager>>, query: &str) -> boo
     if client_pk.is_empty() {
         return false;
     }
-    pm.is_client_paired_b64(&client_pk).await
+    match pairing {
+        // 启用配对:持久化白名单 OR 已通过 HelloPaired 校验的活跃 TCP 连接公钥
+        Some(pm) => {
+            pm.is_client_paired_b64(&client_pk).await
+                || active_clients.read().await.contains(&client_pk)
+        }
+        // 未启用配对:仅允许活跃连接中的公钥访问(比一律禁止更友好)
+        None => active_clients.read().await.contains(&client_pk),
+    }
 }
 
 /// HTTP /pairing 服务:监听 127.0.0.1:port,供 PC 控制台查询/管理配对状态
