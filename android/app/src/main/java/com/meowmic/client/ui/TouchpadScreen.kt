@@ -163,6 +163,41 @@ private fun IconButtonSmall(
 }
 
 /**
+ * 带激活态的小图标按钮(用于顶栏开关组)
+ *
+ * 激活时:主色 12% 背景 + 主色图标;未激活时:透明背景 + onSurfaceVariant 图标
+ * 与 IconButtonSmall 等宽(28dp),便于顶栏对齐
+ */
+@Composable
+private fun ToggleButtonSmall(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    contentDescription: String,
+    isOn: Boolean,
+    onClick: () -> Unit,
+    tintOff: Color = MaterialTheme.colorScheme.onSurfaceVariant,
+    tintOn: Color = MaterialTheme.colorScheme.primary,
+) {
+    Box(
+        modifier = Modifier
+            .size(28.dp)
+            .background(
+                if (isOn) MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)
+                else MaterialTheme.colorScheme.surfaceVariant,
+                RoundedCornerShape(8.dp),
+            )
+            .border(
+                1.dp,
+                MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f),
+                RoundedCornerShape(8.dp),
+            )
+            .clickable(onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) {
+        Icon(icon, contentDescription, Modifier.size(16.dp), tint = if (isOn) tintOn else tintOff)
+    }
+}
+
+/**
  * 8 个可编辑快捷键槽位(对齐设计稿)。
  * - 非编辑模式:点击槽位 → 解析为 VK 序列并下发;有按下视觉反馈
  * - 编辑模式:点击槽位 → 显示输入框,可输入 "Ctrl+C" 等组合,完成时持久化
@@ -474,11 +509,10 @@ fun TouchpadScreen(
         }
     }
 
-    // ── 顶部操作栏(返回 / 快捷启动(居中) / 更多) ──
-    // showBack:横屏布局自己已渲染返回按钮,调用方可设为 false 避免重复
+    // ── 顶部操作栏:返回 / 快捷启动 / 旋转 / 开关组 / 断开连接 ──
+    // 原"更多"下拉菜单已拆解为顶栏平铺小图标按钮,所有开关直显激活态
     @Composable
-    fun ActionBar(showBack: Boolean = true) {
-        var menuExpanded by remember { mutableStateOf(false) }
+    fun ActionBar(showBack: Boolean = true, showRotate: Boolean = true) {
         val micEnabled by vm.micEnabled.collectAsState()
         val muteSpk by vm.muteSpeaker.collectAsState()
         Row(
@@ -506,103 +540,52 @@ fun TouchpadScreen(
 
             Spacer(Modifier.weight(1f))
 
-            // 更多按钮
-            Box {
-                Box(
-                    modifier = Modifier
-                        .size(28.dp)
-                        .clickable { menuExpanded = true },
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Icon(Icons.Default.MoreHoriz, "更多", Modifier.size(16.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
-                }
-                DropdownMenu(
-                    expanded = menuExpanded,
-                    onDismissRequest = { menuExpanded = false },
-                ) {
-                    // 横屏切换(菜单项保留,与独立按钮等价)
-                    DropdownMenuItem(
-                        text = { Text(if (isLandscape) "竖屏" else "横屏", fontSize = 12.sp) },
-                        onClick = {
-                            if (isLandscape) requestPortrait() else requestLandscape()
-                            menuExpanded = false
-                        },
-                        leadingIcon = { Icon(Icons.Default.RotateRight, null, Modifier.size(16.dp)) },
-                    )
-                    HorizontalDivider()
-                    // 麦克风开关(常开推流)
-                    DropdownMenuItem(
-                        text = { Text("麦克风", fontSize = 12.sp) },
-                        onClick = { vm.setMicEnabled(!micEnabled) },
-                        leadingIcon = { Icon(Icons.Default.Mic, null, Modifier.size(16.dp)) },
-                        trailingIcon = {
-                            Switch(
-                                checked = micEnabled,
-                                onCheckedChange = { vm.setMicEnabled(it) },
-                                modifier = Modifier.scale(0.7f),
-                            )
-                        },
-                    )
-                    // 扬声器开关(静音 PC 扬声器)
-                    DropdownMenuItem(
-                        text = { Text("扬声器", fontSize = 12.sp) },
-                        onClick = { vm.setMuteSpeaker(!muteSpk) },
-                        leadingIcon = {
-                            Icon(
-                                if (muteSpk) Icons.Default.VolumeOff else Icons.Default.VolumeUp,
-                                null, Modifier.size(16.dp),
-                            )
-                        },
-                        trailingIcon = {
-                            Switch(
-                                checked = !muteSpk,
-                                onCheckedChange = { vm.setMuteSpeaker(!it) },
-                                modifier = Modifier.scale(0.7f),
-                            )
-                        },
-                    )
-                    // 操作反馈音效开关(对齐设计稿"提示音"语义)
-                    DropdownMenuItem(
-                        text = { Text("提示音", fontSize = 12.sp) },
-                        onClick = { vm.setSoundFeedback(!soundFeedback) },
-                        leadingIcon = { Icon(Icons.Default.Notifications, null, Modifier.size(16.dp)) },
-                        trailingIcon = {
-                            Switch(
-                                checked = soundFeedback,
-                                onCheckedChange = { vm.setSoundFeedback(it) },
-                                modifier = Modifier.scale(0.7f),
-                            )
-                        },
-                    )
-                    // 触控风格切换(MAC 自然滚动 + 惯性 / THINKPAD 反向滚动 + 无惯性)
-                    DropdownMenuItem(
-                        text = { Text("自然滚动", fontSize = 12.sp) },
-                        onClick = {
-                            vm.setTouchStyle(if (touchStyle == TouchStyle.MAC) TouchStyle.THINKPAD else TouchStyle.MAC)
-                        },
-                        leadingIcon = { Icon(Icons.Default.SwapVert, null, Modifier.size(16.dp)) },
-                        trailingIcon = {
-                            Switch(
-                                checked = touchStyle == TouchStyle.MAC,
-                                onCheckedChange = {
-                                    vm.setTouchStyle(if (it) TouchStyle.MAC else TouchStyle.THINKPAD)
-                                },
-                                modifier = Modifier.scale(0.7f),
-                            )
-                        },
-                    )
-                    HorizontalDivider()
-                    // 断开连接
-                    DropdownMenuItem(
-                        text = { Text("断开连接", fontSize = 12.sp, color = MaterialTheme.colorScheme.error) },
-                        onClick = {
-                            menuExpanded = false
-                            onDisconnect()
-                        },
-                        leadingIcon = { Icon(Icons.Default.Logout, null, Modifier.size(16.dp), tint = MaterialTheme.colorScheme.error) },
-                    )
-                }
+            // 横屏切换(横屏外层已渲染独立按钮时,此处跳过避免重复)
+            if (showRotate) {
+                IconButtonSmall(
+                    icon = Icons.Default.RotateRight,
+                    contentDescription = if (isLandscape) "竖屏" else "横屏",
+                    onClick = { if (isLandscape) requestPortrait() else requestLandscape() },
+                )
             }
+            // 麦克风开关(常开推流)
+            ToggleButtonSmall(
+                icon = if (micEnabled) Icons.Default.Mic else Icons.Default.MicOff,
+                contentDescription = if (micEnabled) "关闭麦克风" else "开启麦克风",
+                isOn = micEnabled,
+                onClick = { vm.setMicEnabled(!micEnabled) },
+            )
+            // 扬声器开关(静音 PC 扬声器;未静音=开启=显示 VolumeUp)
+            ToggleButtonSmall(
+                icon = if (muteSpk) Icons.Default.VolumeOff else Icons.Default.VolumeUp,
+                contentDescription = if (muteSpk) "取消静音" else "静音外放",
+                isOn = !muteSpk,
+                onClick = { vm.setMuteSpeaker(!muteSpk) },
+            )
+            // 提示音开关(操作反馈音效)
+            ToggleButtonSmall(
+                icon = Icons.Default.Notifications,
+                contentDescription = if (soundFeedback) "关闭提示音" else "开启提示音",
+                isOn = soundFeedback,
+                onClick = { vm.setSoundFeedback(!soundFeedback) },
+            )
+            // 自然滚动开关(MAC 自然滚动 + 惯性 / THINKPAD 反向滚动 + 无惯性)
+            ToggleButtonSmall(
+                icon = Icons.Default.SwapVert,
+                contentDescription = if (touchStyle == TouchStyle.MAC) "切换反向滚动" else "切换自然滚动",
+                isOn = touchStyle == TouchStyle.MAC,
+                onClick = {
+                    vm.setTouchStyle(
+                        if (touchStyle == TouchStyle.MAC) TouchStyle.THINKPAD else TouchStyle.MAC
+                    )
+                },
+            )
+            // 断开连接(红色,无激活态)
+            IconButtonSmall(
+                icon = Icons.Default.Logout,
+                contentDescription = "断开连接",
+                onClick = onDisconnect,
+            )
         }
     }
 
@@ -1333,6 +1316,14 @@ fun TouchpadScreen(
     }
 
     fun fireKey(keyCode: Int) {
+        // 已处于长按锁定态的键:单击=解除锁定(仅发 keyup),不走 fireKey 流程
+        if (lockedKeys[keyCode] == true) {
+            if (NativeBridge.sendKeyUp(keyCode)) {
+                lockedKeys.remove(keyCode)
+                vm.playFeedbackSound()
+            }
+            return
+        }
         val activeMods = activeMods()
         val pressedMods = mutableListOf<Int>()
         var allSuccess = true
@@ -1357,6 +1348,39 @@ fun TouchpadScreen(
         if (allSuccess) {
             clearStickyOnly()
             vm.playFeedbackSound()
+        }
+    }
+
+    // ============ 长按锁定(对标实体键盘长按) ============
+    // lockedKeys: 当前处于"长按锁定"状态的 VK code → true
+    // 手势: 长按 + 向上滑动 → 锁定(发送 keydown 并保持,对标实体键盘按住不放)
+    //       再次单击 → 取消锁定(发送 keyup)
+    // 支持多个键同时锁定(如 W+Shift 跑动、Ctrl+Alt+Del 三键长按)
+    val lockedKeys = remember { mutableStateMapOf<Int, Boolean>() }
+
+    // 连接断开时清除所有锁定状态(服务端会自行清理,这里只重置 UI)
+    LaunchedEffect(connectionState) {
+        if (connectionState !is ConnectionState.Connected) {
+            lockedKeys.clear()
+        }
+    }
+
+    // 锁定指定键(发送 keydown 并标记锁定)
+    fun lockKey(keyCode: Int) {
+        if (lockedKeys[keyCode] != true) {
+            if (NativeBridge.sendKeyDown(keyCode)) {
+                lockedKeys[keyCode] = true
+                vm.playFeedbackSound()
+            }
+        }
+    }
+
+    // 解除锁定(发送 keyup 并清除标记)
+    fun unlockKey(keyCode: Int) {
+        if (lockedKeys[keyCode] == true) {
+            if (NativeBridge.sendKeyUp(keyCode)) {
+                lockedKeys.remove(keyCode)
+            }
         }
     }
 
@@ -1430,8 +1454,16 @@ fun TouchpadScreen(
         fn: Boolean = false,
         small: Boolean = false,
     ) {
-        val bgColor = if (fn) MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.7f)
-        else MaterialTheme.colorScheme.surfaceVariant
+        // 长按锁定态:对标实体键盘按住不放,持续 keydown
+        val isLocked = lockedKeys[vkCode] ?: false
+        val bgColor = when {
+            isLocked -> MaterialTheme.colorScheme.tertiary           // 锁定:区别色(与 StickyModBtn 锁定态一致)
+            fn -> MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.7f)
+            else -> MaterialTheme.colorScheme.surfaceVariant
+        }
+        val borderColor = if (isLocked) MaterialTheme.colorScheme.tertiary
+            else MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f)
+        val fgColor = if (isLocked) Color.White else MaterialTheme.colorScheme.onSurfaceVariant
         val fontSize = when {
             small -> 9.sp
             fn -> 10.sp
@@ -1442,18 +1474,50 @@ fun TouchpadScreen(
                 .height(if (isLandscape) 24.dp else 30.dp)
                 .background(bgColor, RoundedCornerShape(6.dp))
                 .border(
-                    1.dp,
-                    MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f),
+                    if (isLocked) 1.5.dp else 1.dp,
+                    borderColor,
                     RoundedCornerShape(6.dp),
                 )
-                .clickable { fireKey(vkCode) },
+                .pointerInput(vkCode) {
+                    // 手势: 长按 + 向上滑动 → 锁定; 再次单击 → 解锁
+                    val lockThreshold = 24.dp.toPx()  // 向上滑动锁定阈值
+                    awaitEachGesture {
+                        val down = awaitFirstDown(requireUnconsumed = false)
+                        val pointerId = down.pointerId
+                        val startY = down.position.y
+                        var gestureLocked = false  // 本次手势是否已触发锁定
+                        while (true) {
+                            val event = awaitPointerEvent(PointerEventPass.Main)
+                            val change = event.changes.firstOrNull { it.pointerId == pointerId } ?: continue
+                            val dy = change.position.y - startY
+                            // 向上滑动超过阈值 → 锁定(消费事件,阻止滚动)
+                            if (!gestureLocked && dy < -lockThreshold) {
+                                gestureLocked = true
+                                change.consume()
+                                lockKey(vkCode)
+                            }
+                            if (gestureLocked) {
+                                change.consume()
+                            }
+                            if (change.changedToUp()) {
+                                if (!gestureLocked) {
+                                    // 未触发锁定 → 单击行为(已锁定则解锁,否则发普通按键)
+                                    fireKey(vkCode)
+                                }
+                                // 已触发锁定 → 抬起时保持锁定,不做任何事
+                                break
+                            }
+                        }
+                    }
+                },
             contentAlignment = Alignment.Center,
         ) {
             Text(
-                label,
+                // 锁定态追加 🔒 视觉提示
+                text = if (isLocked) "$label 🔒" else label,
                 fontSize = fontSize,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                fontWeight = FontWeight.Medium,
+                color = fgColor,
+                fontWeight = if (isLocked) FontWeight.Bold else FontWeight.Medium,
                 maxLines = 1,
             )
         }
@@ -1471,6 +1535,13 @@ fun TouchpadScreen(
             modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp),
             verticalArrangement = Arrangement.spacedBy(3.dp),
         ) {
+            // 手势提示:长按上滑=锁定长按,再次点击=取消
+            Text(
+                "长按上滑=锁定长按(🔒),再次点击取消",
+                fontSize = 9.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
+                modifier = Modifier.fillMaxWidth().padding(bottom = 2.dp),
+            )
             // 第 1 行:功能键 Esc | F1-F4 | F5-F8 | F9-F12(对齐设计稿 vkb-row 功能键行)
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -1784,8 +1855,8 @@ fun TouchpadScreen(
                         contentDescription = "切换竖屏",
                         onClick = { requestPortrait() },
                     )
-                    // 更多菜单(横屏外层已渲染返回/旋转按钮,此处只显示更多)
-                    ActionBar(showBack = false)
+                    // 横屏:外层已渲染返回/旋转按钮,ActionBar 只显示开关组 + 断开连接
+                    ActionBar(showBack = false, showRotate = false)
                 }
                 Spacer(Modifier.height(6.dp))
                 TouchArea(modifier = Modifier.weight(1f).fillMaxWidth())
