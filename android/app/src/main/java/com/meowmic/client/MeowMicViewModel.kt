@@ -717,6 +717,14 @@ class MeowMicViewModel : ViewModel() {
         touchHandler?.let { it.screenRotation = rotation }
     }
 
+    /**
+     * 设置中键按下状态。THINKPAD 模式下,中键按下时单指移动会转为滚动(TrackPoint 中键滚动模式)。
+     * 由 UI 层 MouseBtn 中键 onPress/onRelease 调用,无需持久化(按键状态瞬态)。
+     */
+    fun setMiddleButtonPressed(pressed: Boolean) {
+        touchHandler?.middleButtonPressed = pressed
+    }
+
     fun setMicEnabled(enabled: Boolean) {
         _micEnabled.value = enabled
         if (enabled) {

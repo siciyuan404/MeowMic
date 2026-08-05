@@ -139,6 +139,35 @@ object NativeBridge {
     }
 
     /**
+     * 发送带标志位的滚轮事件(支持水平滚动 / 缩放)
+     * @param deltaY 垂直滚动量(正值向上)
+     * @param deltaX 水平滚动量(正值向右)
+     * @param buttonMask Scroll 事件标志位:
+     *        bit0=垂直滚动(默认) bit1=水平滚动 bit2=缩放(dy>0 放大 / dy<0 缩小)
+     *        传 0 等价于垂直滚动
+     */
+    fun sendScrollWithButton(deltaY: Float, deltaX: Float = 0f, buttonMask: Int = 1): Boolean {
+        return try {
+            nativeSendTouchWithButton(0x05, buttonMask, deltaX, deltaY)
+        } catch (e: UnsatisfiedLinkError) {
+            false
+        }
+    }
+
+    /** 垂直滚动便捷方法(等价于 sendScroll,但显式带 button_mask=1) */
+    fun sendVerticalScroll(deltaY: Float): Boolean = sendScrollWithButton(deltaY)
+
+    /** 水平滚动便捷方法 */
+    fun sendHorizontalScroll(deltaX: Float): Boolean =
+        sendScrollWithButton(0f, deltaX, buttonMask = 2)
+
+    /**
+     * 缩放便捷方法(MAC 风格双指捏合)
+     * @param dy 正值=放大,负值=缩小
+     */
+    fun sendZoom(dy: Float): Boolean = sendScrollWithButton(dy, buttonMask = 4)
+
+    /**
      * 发送一帧音频 PCM
      * @param pcm i16 PCM,长度必须 >= 960 (48kHz * 20ms)
      */

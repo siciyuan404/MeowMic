@@ -37,13 +37,20 @@ enum class TouchStyle {
  * - 单指长按:鼠标左键按下(拖拽模式)
  * - 双指滑动:鼠标滚轮滚动
  * - 双指轻触:鼠标右键单击
+ * - 双指捏合/张开:缩放(MAC 模式原生支持,dy>0 放大 / dy<0 缩小)
  *
  * 风格差异(由 [touchStyle] 控制):
  * - **滚动方向**:THINKPAD 反向(手指上滑 → 页面向下);MAC 自然(手指上滑 → 页面向上)
  * - **滚动惯性**:MAC 抬起后继续衰减滚动若干帧;THINKPAD 立即停止
+ * - **滚动加速曲线**:MAC 每帧应用 `delta^0.7 * 0.8` 加速;THINKPAD 线性无加速
+ * - **光标加速曲线**:THINKPAD 非线性(慢推精细 / 快推跨屏,模拟 TrackPoint 应变片);
+ *   MAC 线性(保持触控板直觉)
+ * - **中键+移动**:THINKPAD 模式下,中键按下时单指移动转为滚动(TrackPoint 中键滚动模式);
+ *   MAC 模式不启用此行为(中键按下仍是普通中键拖动)
  *
  * 事件类型常量: 0x02=Move 0x04=Button 0x05=Scroll
  * 按钮掩码位: bit0=左键 bit1=右键 bit2=中键
+ * Scroll 事件 button_mask 位: bit0=垂直 bit1=水平 bit2=缩放
  */
 class TouchHandler(
     private val sensitivity: Float = 1.0f,
@@ -53,6 +60,13 @@ class TouchHandler(
 
     /** 触控风格(运行时可切换,默认 THINKPAD) */
     var touchStyle: TouchStyle = TouchStyle.THINKPAD
+
+    /**
+     * 中键按下状态(由 UI 层 MouseBtn 中键 onPress/onRelease 调用 setMiddleButtonPressed 更新)。
+     * THINKPAD 模式下,中键按下时单指移动转为滚动(TrackPoint 中键滚动模式)。
+     */
+    @Volatile
+    var middleButtonPressed: Boolean = false
 
     // ============ Handler(主线程,用于定时触发长按和惯性滚动) ============
     private val handler = Handler(Looper.getMainLooper())
@@ -74,6 +88,11 @@ class TouchHandler(
     // ============ 事件类型常量 ============
     private val EVT_MOVE = 0x02
     private val EVT_SCROLL = 0x05
+
+    // ============ Scroll 事件 button_mask 位(与 protocol 注释一致) ============
+    private val SCROLL_VERTICAL = 0x01
+    private val SCROLL_HORIZONTAL = 0x02
+    private val SCROLL_ZOOM = 0x04
 
     // ============ 单指状态 ============
     private var lastX: Float = 0f
@@ -115,6 +134,18 @@ class TouchHandler(
     /** 惯性滚动间隔(ms),~60fps */
     private val inertiaIntervalMs = 16L
 
+    // ============ 双指捏合缩放状态(MAC 模式专用) ============
+    /** 当前是否处于"捏合/张开"手势中(距离变化占主导) */
+    private var isPinchZoom: Boolean = false
+    /** 上一次两指距离(用于计算 delta) */
+    private var lastPinchDistance: Float = 0f
+    /** 捏合手势启动时的初始距离(用于判定是否进入 zoom 模式) */
+    private var initialPinchDistance: Float = 0f
+    /** 进入 zoom 模式的距离变化阈值(相对初始距离的比例) */
+    private val pinchZoomEnterRatio = 0.08f
+    /** 捏合距离变化 → 缩放量转换系数(距离每变化 10px ≈ 1 个缩放单位) */
+    private val pinchZoomScale = 0.6f
+
     // ============ 点击/长按判定阈值(参考 moonlight-android) ============
     private val clickThreshold = 24f            // 点击允许的最大移动距离
     private val clickTimeout = 200L             // 点击时长阈值
@@ -155,6 +186,7 @@ class TouchHandler(
                 leftDragTriggered = false
                 lastScrollY = y
                 lastScrollDelta = 0f
+                isPinchZoom = false
                 pendingSingleX = x
                 pendingSingleY = y
                 handler.postDelayed(longPressRunnable, longPressTimeout)
@@ -171,10 +203,17 @@ class TouchHandler(
                 }
                 if (pointerCount == 2) {
                     isTwoFingerScroll = false
+                    isPinchZoom = false
                     val primaryIdx = event.findPointerIndex(primaryPointerId)
                     val secondaryIdx = event.findPointerIndex(secondaryPointerId)
                     if (primaryIdx >= 0 && secondaryIdx >= 0) {
                         lastScrollY = (event.getY(primaryIdx) + event.getY(secondaryIdx)) / 2f
+                        // 记录双指初始距离,用于后续判定是滚动还是捏合缩放
+                        val dxp = event.getX(primaryIdx) - event.getX(secondaryIdx)
+                        val dyp = event.getY(primaryIdx) - event.getY(secondaryIdx)
+                        val dist = hypot(dxp, dyp)
+                        initialPinchDistance = dist
+                        lastPinchDistance = dist
                     }
                     if (isLeftDrag) {
                         NativeBridge.sendButtonUp(BTN_LEFT)
@@ -203,38 +242,82 @@ class TouchHandler(
                     var handled = false
                     val historySize = event.historySize
                     var lastDelta = 0f
+
+                    // 逐历史采样处理:每帧判定滚动 / 缩放
                     for (i in 0 until historySize) {
-                        val histMidY = (event.getHistoricalY(primaryIdx, i) +
-                                event.getHistoricalY(secondaryIdx, i)) / 2f
+                        val histPrimaryX = event.getHistoricalX(primaryIdx, i)
+                        val histPrimaryY = event.getHistoricalY(primaryIdx, i)
+                        val histSecondaryX = event.getHistoricalX(secondaryIdx, i)
+                        val histSecondaryY = event.getHistoricalY(secondaryIdx, i)
+                        val histMidY = (histPrimaryY + histSecondaryY) / 2f
                         val deltaY = histMidY - lastScrollY
                         lastScrollY = histMidY
-                        if (!isTwoFingerScroll && abs(deltaY) > 10f) {
+
+                        // 当前两指距离(用于捏合缩放判定)
+                        val histDist = hypot(
+                            histPrimaryX - histSecondaryX,
+                            histPrimaryY - histSecondaryY,
+                        )
+                        val distDelta = histDist - lastPinchDistance
+                        lastPinchDistance = histDist
+
+                        // 模式判定:MAC 模式才允许进入缩放
+                        if (touchStyle == TouchStyle.MAC && !isTwoFingerScroll && !isPinchZoom) {
+                            decideScrollOrZoom(histDist, deltaY, distDelta)
+                        }
+                        // 已进入滚动模式:发送滚动(MAC 模式应用加速曲线)
+                        if (!isPinchZoom && abs(deltaY) > 10f && !isTwoFingerScroll) {
                             isTwoFingerScroll = true
                         }
                         if (isTwoFingerScroll && abs(deltaY) >= 1f) {
-                            sendScroll(applyScrollDirection(deltaY))
+                            sendScrollWithAccel(applyScrollDirection(deltaY))
                             lastDelta = deltaY
                             handled = true
                         }
+                        // 已进入缩放模式:发送缩放(距离增大 = 放大,距离减小 = 缩小)
+                        if (isPinchZoom && abs(distDelta) >= 1f) {
+                            NativeBridge.sendZoom(distDelta * pinchZoomScale)
+                            handled = true
+                        }
                     }
+
                     // 当前采样
-                    val midY = (event.getY(primaryIdx) + event.getY(secondaryIdx)) / 2f
-                    val deltaY = midY - lastScrollY
-                    lastScrollY = midY
-                    if (!isTwoFingerScroll && abs(deltaY) > 10f) {
+                    val curMidY = (event.getY(primaryIdx) + event.getY(secondaryIdx)) / 2f
+                    val deltaY = curMidY - lastScrollY
+                    lastScrollY = curMidY
+                    val curDist = hypot(
+                        event.getX(primaryIdx) - event.getX(secondaryIdx),
+                        event.getY(primaryIdx) - event.getY(secondaryIdx),
+                    )
+                    val distDelta = curDist - lastPinchDistance
+                    lastPinchDistance = curDist
+
+                    if (touchStyle == TouchStyle.MAC && !isTwoFingerScroll && !isPinchZoom) {
+                        decideScrollOrZoom(curDist, deltaY, distDelta)
+                    }
+                    if (!isPinchZoom && abs(deltaY) > 10f && !isTwoFingerScroll) {
                         isTwoFingerScroll = true
                     }
                     if (isTwoFingerScroll && abs(deltaY) >= 1f) {
-                        sendScroll(applyScrollDirection(deltaY))
+                        sendScrollWithAccel(applyScrollDirection(deltaY))
                         lastDelta = deltaY
                         handled = true
                     }
-                    // 记录最近一次 delta 用于 MAC 风格惯性初始化
-                    if (handled) lastScrollDelta = lastDelta
+                    if (isPinchZoom && abs(distDelta) >= 1f) {
+                        NativeBridge.sendZoom(distDelta * pinchZoomScale)
+                        handled = true
+                    }
+
+                    // 记录最近一次 delta 用于 MAC 风格惯性初始化(仅滚动模式)
+                    if (handled && isTwoFingerScroll) lastScrollDelta = lastDelta
                     return handled
                 }
 
                 // ============ 单指移动:遍历所有历史采样(关键:不卡顿的秘诀) ============
+                // THINKPAD 中键滚动模式:中键按下时,单指移动转为滚动(TrackPoint 风格)
+                val middleScrollMode = middleButtonPressed &&
+                        touchStyle == TouchStyle.THINKPAD &&
+                        !isLeftDrag
                 var sentAny = false
                 val historySize = event.historySize
                 for (i in 0 until historySize) {
@@ -242,7 +325,18 @@ class TouchHandler(
                     val histY = event.getHistoricalY(i)
                     val (dx, dy) = computeDelta(histX, histY)
                     if (abs(dx) >= 0.1f || abs(dy) >= 0.1f) {
-                        sendMove(dx, dy)
+                        if (middleScrollMode) {
+                            // 中键滚动:dy 转为垂直滚动(反方向,与 TrackPoint 中键一致)
+                            // 同时支持水平滚动(dx 转水平)
+                            if (abs(dy) >= 1f) {
+                                NativeBridge.sendVerticalScroll(-dy * 0.8f)
+                            }
+                            if (abs(dx) >= 1f) {
+                                NativeBridge.sendHorizontalScroll(dx * 0.8f)
+                            }
+                        } else {
+                            sendMove(dx, dy)
+                        }
                         sentAny = true
                     }
                     lastX = histX
@@ -252,7 +346,16 @@ class TouchHandler(
                 // 当前采样
                 val (curDx, curDy) = computeDelta(x, y)
                 if (abs(curDx) >= 0.1f || abs(curDy) >= 0.1f) {
-                    sendMove(curDx, curDy)
+                    if (middleScrollMode) {
+                        if (abs(curDy) >= 1f) {
+                            NativeBridge.sendVerticalScroll(-curDy * 0.8f)
+                        }
+                        if (abs(curDx) >= 1f) {
+                            NativeBridge.sendHorizontalScroll(curDx * 0.8f)
+                        }
+                    } else {
+                        sendMove(curDx, curDy)
+                    }
                     sentAny = true
                 }
                 lastX = x
@@ -278,11 +381,12 @@ class TouchHandler(
                     secondaryPointerId = MotionEvent.INVALID_POINTER_ID
                 }
                 if (pointerCount <= 2) {
-                    // MAC 风格:从双指变单指时启动惯性滚动
+                    // MAC 风格:从双指变单指时启动惯性滚动(仅滚动模式,捏合缩放不启动惯性)
                     if (touchStyle == TouchStyle.MAC && isTwoFingerScroll && abs(lastScrollDelta) > 1f) {
                         startInertia(lastScrollDelta)
                     }
                     isTwoFingerScroll = false
+                    isPinchZoom = false
                 }
                 // 双指轻触右键准备
                 if (downPointerCount >= 2 && !isTwoFingerScroll && pointerCount == 2) {
@@ -324,11 +428,12 @@ class TouchHandler(
                     hasLast = false
                     primaryPointerId = MotionEvent.INVALID_POINTER_ID
                     secondaryPointerId = MotionEvent.INVALID_POINTER_ID
+                    isPinchZoom = false
                     return true
                 }
 
-                // 双指轻触 → 右键
-                if (downPointerCount >= 2 && !isTwoFingerScroll) {
+                // 双指轻触 → 右键(仅在未触发滚动且未触发缩放时)
+                if (downPointerCount >= 2 && !isTwoFingerScroll && !isPinchZoom) {
                     val dx = x - pendingSingleX
                     val dy = y - pendingSingleY
                     val dist = hypot(dx, dy)
@@ -337,6 +442,7 @@ class TouchHandler(
                     secondaryPointerId = MotionEvent.INVALID_POINTER_ID
                     hasLast = false
                     isTwoFingerScroll = false
+                    isPinchZoom = false
                     if (dist < clickThreshold && elapsed < clickTimeout) {
                         return NativeBridge.sendButtonClick(BTN_RIGHT)
                     }
@@ -350,7 +456,7 @@ class TouchHandler(
                 val elapsed = currentTime - downTime
                 val isClick = totalDist < clickThreshold && elapsed < clickTimeout
 
-                if (isClick && !isTwoFingerScroll) {
+                if (isClick && !isTwoFingerScroll && !isPinchZoom) {
                     val sinceLastTap = currentTime - lastTapTime
                     val tapDx = x - lastTapX
                     val tapDy = y - lastTapY
@@ -372,6 +478,7 @@ class TouchHandler(
 
                 hasLast = false
                 isTwoFingerScroll = false
+                isPinchZoom = false
                 leftDragTriggered = false
                 primaryPointerId = MotionEvent.INVALID_POINTER_ID
                 secondaryPointerId = MotionEvent.INVALID_POINTER_ID
@@ -382,7 +489,12 @@ class TouchHandler(
     }
 
     /**
-     * 计算从 lastX/lastY 到 (x, y) 的相对位移,应用敏感度和屏幕旋转
+     * 计算从 lastX/lastY 到 (x, y) 的相对位移,应用敏感度、屏幕旋转、风格化加速曲线
+     *
+     * 风格差异:
+     * - **MAC**:线性曲线(位移即速度,保持触控板直觉)
+     * - **THINKPAD**:非线性加速曲线 `|dx|^1.15`(模拟 TrackPoint 应变片:
+     *   慢推 = 精细控制几乎 1:1,快推 = 跨屏加速)
      */
     private fun computeDelta(x: Float, y: Float): Pair<Float, Float> {
         var dx = (x - lastX) * sensitivity
@@ -394,7 +506,27 @@ class TouchHandler(
             180 -> { dx = -dx; dy = -dy }
             270 -> { val tmp = dx; dx = dy; dy = -tmp }
         }
+
+        // THINKPAD 风格:非线性光标加速曲线
+        if (touchStyle == TouchStyle.THINKPAD) {
+            dx = applyTrackPointCurve(dx)
+            dy = applyTrackPointCurve(dy)
+        }
+
         return dx to dy
+    }
+
+    /**
+     * TrackPoint 风格的非线性加速曲线
+     * - |d| < 1:1:1(死区附近保持精度)
+     * - |d| >= 1:`sign(d) * |d|^1.15`(慢推精细,快推跨屏)
+     */
+    private fun applyTrackPointCurve(d: Float): Float {
+        val absD = abs(d)
+        if (absD < 1f) return d
+        val sign = if (d >= 0f) 1f else -1f
+        // Math.pow 返回 double,转 float
+        return sign * Math.pow(absD.toDouble(), 1.15).toFloat()
     }
 
     private fun sendMove(dx: Float, dy: Float): Boolean {
@@ -411,6 +543,43 @@ class TouchHandler(
         } catch (e: UnsatisfiedLinkError) {
             false
         }
+    }
+
+    /**
+     * 带风格化加速曲线的滚动发送:
+     * - MAC:应用 `|delta|^0.7 * 0.8` 加速曲线(快滚更远,慢滚精细)
+     * - THINKPAD:线性,不加速(传统触控板行为)
+     *
+     * 输入 `delta` 应该是已经经过 `applyScrollDirection` 处理的方向值。
+     */
+    private fun sendScrollWithAccel(delta: Float): Boolean {
+        val accelerated = if (touchStyle == TouchStyle.MAC) {
+            applyScrollAcceleration(delta)
+        } else {
+            delta
+        }
+        return sendScroll(accelerated)
+    }
+
+    /**
+     * 判定双指手势是进入滚动还是捏合缩放
+     *
+     * 判定依据:
+     * - 距离相对初始距离的变化超过 [pinchZoomEnterRatio] → 进入缩放模式
+     * - 否则保持中性,等待 deltaY 或 distDelta 进一步变化
+     *
+     * 进入任一模式后不再切换(避免手势中途抖动导致模式来回切换)
+     */
+    private fun decideScrollOrZoom(curDist: Float, deltaY: Float, distDelta: Float) {
+        if (isTwoFingerScroll || isPinchZoom) return
+        if (initialPinchDistance < 1f) return
+        // 距离相对变化超过阈值 → 缩放
+        val distRatio = abs(curDist - initialPinchDistance) / initialPinchDistance
+        if (distRatio > pinchZoomEnterRatio && abs(distDelta) > abs(deltaY)) {
+            isPinchZoom = true
+            return
+        }
+        // 中点位移明显大于距离变化 → 滚动(由后续 isTwoFingerScroll 判定逻辑接管)
     }
 
     /**
@@ -442,12 +611,16 @@ class TouchHandler(
 
     /**
      * 启动惯性滚动(MAC 风格)
-     * @param lastDelta 抬起时最后一次双指滚动 delta
+     * @param lastDelta 抬起时最后一次双指滚动 delta(已经过 applyScrollDirection 处理,但未加速)
+     *
+     * 初速度取加速后值的一部分(0.5),与每帧滚动加速曲线保持一致,
+     * 避免惯性首帧速度突变。
      */
     private fun startInertia(lastDelta: Float) {
         if (isInertiaRunning) return
-        // 取上一次方向(已经过 applyScrollDirection 处理)
-        inertiaVelocity = applyScrollAcceleration(lastDelta) * 0.5f  // 初始速度取一部分
+        // MAC 模式:应用加速曲线后取 0.5 作为惯性初速度
+        // (startInertia 仅 MAC 模式调用,THINKPAD 不进入惯性)
+        inertiaVelocity = applyScrollAcceleration(lastDelta) * 0.5f
         if (abs(inertiaVelocity) < inertiaStopThreshold) return
         isInertiaRunning = true
         lastInertiaTime = System.currentTimeMillis()
@@ -486,8 +659,10 @@ class TouchHandler(
         stopInertia()
         hasLast = false
         isTwoFingerScroll = false
+        isPinchZoom = false
         isLeftDrag = false
         leftDragTriggered = false
+        middleButtonPressed = false
         primaryPointerId = MotionEvent.INVALID_POINTER_ID
         secondaryPointerId = MotionEvent.INVALID_POINTER_ID
         if (NativeBridge.isLoaded()) {

@@ -9,7 +9,7 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
     INPUT, INPUT_KEYBOARD, INPUT_MOUSE, KEYBDINPUT, KEYBD_EVENT_FLAGS, KEYEVENTF_KEYUP,
     MOUSE_EVENT_FLAGS, MOUSEINPUT, MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP,
     MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP, MOUSEEVENTF_MOVE, MOUSEEVENTF_RIGHTDOWN,
-    MOUSEEVENTF_RIGHTUP, MOUSEEVENTF_WHEEL, SendInput, VIRTUAL_KEY,
+    MOUSEEVENTF_RIGHTUP, MOUSEEVENTF_HWHEEL, MOUSEEVENTF_WHEEL, SendInput, VIRTUAL_KEY,
 };
 
 /// 事件类型常量(与 protocol::TouchEventType 对应)
@@ -23,6 +23,11 @@ const EVT_SCROLL: u8 = 0x05;
 const BTN_LEFT: u8 = 0x01;
 const BTN_RIGHT: u8 = 0x02;
 const BTN_MIDDLE: u8 = 0x04;
+
+/// Scroll 事件 button_mask 位定义(与 protocol 注释一致)
+const SCROLL_VERTICAL: u8 = 0x01; // 垂直滚动(dy 有效,默认)
+const SCROLL_HORIZONTAL: u8 = 0x02; // 水平滚动(dx 有效)
+const SCROLL_ZOOM: u8 = 0x04; // 缩放(dy>0 放大 / dy<0 缩小)
 
 pub struct TouchInjector;
 
@@ -64,22 +69,54 @@ impl TouchInjector {
                         }
                     }
                     EVT_SCROLL => {
-                        // dy 为滚动量(像素),转换为滚轮点击数(每 100 像素约 1 个刻度)
-                        let wheel_delta = (dy * -12.0).round() as i32;
-                        if wheel_delta != 0 {
-                            let mut input = INPUT {
-                                r#type: INPUT_MOUSE,
-                                Anonymous: std::mem::zeroed(),
-                            };
-                            input.Anonymous.mi = MOUSEINPUT {
-                                dx: 0,
-                                dy: 0,
-                                mouseData: wheel_delta as u32,
-                                dwFlags: MOUSEEVENTF_WHEEL,
-                                time: 0,
-                                dwExtraInfo: 0,
-                            };
-                            let _ = SendInput(&[input], std::mem::size_of::<INPUT>() as i32);
+                        // button_mask 区分滚动模式:
+                        //   bit0(默认)= 垂直滚动,bit1 = 水平滚动,bit2 = 缩放(Ctrl+滚轮)
+                        // 兼容旧客户端:button_mask=0 时按垂直滚动处理
+                        if button_mask & SCROLL_ZOOM != 0 {
+                            // 缩放:模拟 Ctrl+滚轮。dy>0 放大,dy<0 缩小
+                            // 滚轮方向与垂直滚动一致(dy 正 → wheel_delta 正 → 放大)
+                            let wheel_delta = (dy * 12.0).round() as i32;
+                            if wheel_delta != 0 {
+                                send_ctrl_wheel(wheel_delta);
+                            }
+                        } else if button_mask & SCROLL_HORIZONTAL != 0 {
+                            // 水平滚动:dx 为水平滚动量
+                            let wheel_delta = (dx * 12.0).round() as i32;
+                            if wheel_delta != 0 {
+                                let mut input = INPUT {
+                                    r#type: INPUT_MOUSE,
+                                    Anonymous: std::mem::zeroed(),
+                                };
+                                input.Anonymous.mi = MOUSEINPUT {
+                                    dx: 0,
+                                    dy: 0,
+                                    mouseData: wheel_delta as u32,
+                                    dwFlags: MOUSEEVENTF_HWHEEL,
+                                    time: 0,
+                                    dwExtraInfo: 0,
+                                };
+                                let _ = SendInput(&[input], std::mem::size_of::<INPUT>() as i32);
+                            }
+                        } else if button_mask & SCROLL_VERTICAL != 0 || button_mask == 0 {
+                            // 垂直滚动:dy 为滚动量(像素)
+                            // 滚轮点击数:每 100 像素约 1 个刻度(WHEEL_DELTA=120)
+                            // 兼容旧客户端:button_mask=0 时按垂直滚动处理
+                            let wheel_delta = (dy * -12.0).round() as i32;
+                            if wheel_delta != 0 {
+                                let mut input = INPUT {
+                                    r#type: INPUT_MOUSE,
+                                    Anonymous: std::mem::zeroed(),
+                                };
+                                input.Anonymous.mi = MOUSEINPUT {
+                                    dx: 0,
+                                    dy: 0,
+                                    mouseData: wheel_delta as u32,
+                                    dwFlags: MOUSEEVENTF_WHEEL,
+                                    time: 0,
+                                    dwExtraInfo: 0,
+                                };
+                                let _ = SendInput(&[input], std::mem::size_of::<INPUT>() as i32);
+                            }
                         }
                     }
                     EVT_BUTTON => {
@@ -176,4 +213,57 @@ fn button_flags(button_mask: u8, press: bool) -> MOUSE_EVENT_FLAGS {
         flags |= if press { MOUSEEVENTF_MIDDLEDOWN } else { MOUSEEVENTF_MIDDLEUP };
     }
     flags
+}
+
+/// 模拟 Ctrl+滚轮缩放(MAC 风格双指捏合缩放)
+/// 顺序:Ctrl down → Wheel → Ctrl up,确保不与其他按键状态冲突
+#[cfg(windows)]
+fn send_ctrl_wheel(wheel_delta: i32) {
+    unsafe {
+        // VK_CONTROL = 0x11,直接构造避免对常量字段访问的依赖
+        const VK_CTRL: u16 = 0x11;
+
+        // 1. Ctrl 按下
+        let mut ctrl_down = INPUT {
+            r#type: INPUT_KEYBOARD,
+            Anonymous: std::mem::zeroed(),
+        };
+        ctrl_down.Anonymous.ki = KEYBDINPUT {
+            wVk: VIRTUAL_KEY(VK_CTRL),
+            wScan: 0,
+            dwFlags: KEYBD_EVENT_FLAGS(0),
+            time: 0,
+            dwExtraInfo: 0,
+        };
+
+        // 2. 滚轮
+        let mut wheel = INPUT {
+            r#type: INPUT_MOUSE,
+            Anonymous: std::mem::zeroed(),
+        };
+        wheel.Anonymous.mi = MOUSEINPUT {
+            dx: 0,
+            dy: 0,
+            mouseData: wheel_delta as u32,
+            dwFlags: MOUSEEVENTF_WHEEL,
+            time: 0,
+            dwExtraInfo: 0,
+        };
+
+        // 3. Ctrl 抬起
+        let mut ctrl_up = INPUT {
+            r#type: INPUT_KEYBOARD,
+            Anonymous: std::mem::zeroed(),
+        };
+        ctrl_up.Anonymous.ki = KEYBDINPUT {
+            wVk: VIRTUAL_KEY(VK_CTRL),
+            wScan: 0,
+            dwFlags: KEYEVENTF_KEYUP,
+            time: 0,
+            dwExtraInfo: 0,
+        };
+
+        let inputs = [ctrl_down, wheel, ctrl_up];
+        let _ = SendInput(&inputs, std::mem::size_of::<INPUT>() as i32);
+    }
 }

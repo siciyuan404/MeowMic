@@ -77,6 +77,13 @@ pub enum TouchEventType {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TouchPayload {
     pub event_type: u8,
+    /// 按钮掩码,语义随 `event_type` 变化:
+    /// - `Button` 事件:bit0=左 bit1=右 bit2=中,表示当前触发哪些键
+    /// - `Scroll` 事件:bit0=垂直滚动(dy 有效,默认)
+    ///                 bit1=水平滚动(dx 有效)
+    ///                 bit2=缩放(dy>0 放大 / dy<0 缩小,PC 端模拟 Ctrl+滚轮)
+    ///                 bit0+bit2=惯性衰减帧(不再加速,仅延续)
+    /// - `Down/Move/Up` 事件:未使用,置 0
     pub button_mask: u8,
     /// 相对 X 位移(定点 Q16.16)
     pub dx_q16: i32,

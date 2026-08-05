@@ -3,6 +3,7 @@ package com.meowmic.client.ui
 import android.app.Activity
 import android.content.pm.ActivityInfo
 import android.content.res.Configuration
+import android.util.Log
 import android.view.MotionEvent
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -77,6 +78,9 @@ import org.json.JSONObject
 private const val BTN_LEFT = 0x01
 private const val BTN_RIGHT = 0x02
 private const val BTN_MIDDLE = 0x04
+
+// 键盘手势调试日志 tag:adb logcat -s MeowMicKey:D
+private const val KEY_TAG = "MeowMicKey"
 
 // ============ Windows VK code 常量(用于模拟键盘) ============
 private object VK {
@@ -194,6 +198,83 @@ private fun ToggleButtonSmall(
         contentAlignment = Alignment.Center,
     ) {
         Icon(icon, contentDescription, Modifier.size(16.dp), tint = if (isOn) tintOn else tintOff)
+    }
+}
+
+/**
+ * 触控风格切换双按钮组(MAC / THINKPAD)
+ *
+ * 设计:两个 26dp 方块无缝拼接,整体 52dp,圆角 8dp
+ * - 激活的一半:主色背景 + 白色图标
+ * - 未激活的一半:surfaceVariant 背景 + onSurfaceVariant 图标
+ * - 中间 1px 分隔线(outlineVariant)
+ *
+ * 视觉语义:左 = 触控板(Mouse 图标),右 = 小红点(Adjust 图标,中心十字)
+ * 与 ToggleButtonSmall 同高(28dp),保持顶栏视觉一致
+ */
+@Composable
+private fun TouchStyleToggle(
+    currentStyle: TouchStyle,
+    onChange: (TouchStyle) -> Unit,
+) {
+    val borderColor = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)
+    Row(
+        modifier = Modifier
+            .height(28.dp)
+            .background(
+                MaterialTheme.colorScheme.surfaceVariant,
+                RoundedCornerShape(8.dp),
+            )
+            .border(1.dp, borderColor, RoundedCornerShape(8.dp)),
+        horizontalArrangement = Arrangement.spacedBy(0.dp),
+    ) {
+        // Mac 触控板风格
+        Box(
+            modifier = Modifier
+                .size(26.dp)
+                .background(
+                    if (currentStyle == TouchStyle.MAC) MaterialTheme.colorScheme.primary
+                    else Color.Transparent,
+                    RoundedCornerShape(topStart = 8.dp, bottomStart = 8.dp),
+                )
+                .clickable { onChange(TouchStyle.MAC) },
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(
+                Icons.Default.Mouse,
+                "Mac 触控板风格",
+                Modifier.size(15.dp),
+                tint = if (currentStyle == TouchStyle.MAC) Color.White
+                else MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        // 中间分隔线
+        Box(
+            modifier = Modifier
+                .width(1.dp)
+                .height(18.dp)
+                .background(borderColor),
+        )
+        // ThinkPad 小红点风格
+        Box(
+            modifier = Modifier
+                .size(26.dp)
+                .background(
+                    if (currentStyle == TouchStyle.THINKPAD) MaterialTheme.colorScheme.primary
+                    else Color.Transparent,
+                    RoundedCornerShape(topEnd = 8.dp, bottomEnd = 8.dp),
+                )
+                .clickable { onChange(TouchStyle.THINKPAD) },
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(
+                Icons.Default.Adjust,
+                "ThinkPad 小红点风格",
+                Modifier.size(15.dp),
+                tint = if (currentStyle == TouchStyle.THINKPAD) Color.White
+                else MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
     }
 }
 
@@ -569,15 +650,19 @@ fun TouchpadScreen(
                 isOn = soundFeedback,
                 onClick = { vm.setSoundFeedback(!soundFeedback) },
             )
-            // 自然滚动开关(MAC 自然滚动 + 惯性 / THINKPAD 反向滚动 + 无惯性)
-            ToggleButtonSmall(
-                icon = Icons.Default.SwapVert,
-                contentDescription = if (touchStyle == TouchStyle.MAC) "切换反向滚动" else "切换自然滚动",
-                isOn = touchStyle == TouchStyle.MAC,
-                onClick = {
-                    vm.setTouchStyle(
-                        if (touchStyle == TouchStyle.MAC) TouchStyle.THINKPAD else TouchStyle.MAC
-                    )
+            // 触控风格切换:双按钮组(MAC / THINKPAD),激活态主色高亮
+            // MAC = 自然滚动+惯性+捏合缩放,THINKPAD = 反向滚动+无惯性+中键滚动模式
+            TouchStyleToggle(
+                currentStyle = touchStyle,
+                onChange = { newStyle ->
+                    if (newStyle != touchStyle) {
+                        vm.setTouchStyle(newStyle)
+                        val name = when (newStyle) {
+                            TouchStyle.MAC -> "Mac 触控板:自然滚动 + 惯性 + 双指缩放"
+                            TouchStyle.THINKPAD -> "ThinkPad:反向滚动 + 中键滚动 + 非线性加速"
+                        }
+                        Toast.makeText(context, name, Toast.LENGTH_SHORT).show()
+                    }
                 },
             )
             // 断开连接(红色,无激活态)
@@ -635,12 +720,13 @@ fun TouchpadScreen(
                     )
                     Spacer(Modifier.height(6.dp))
                     Text(
-                        if (touchStyle == TouchStyle.MAC)
-                            "滑动移动 · 双指右键 · 自然滚动"
-                        else
-                            "滑动移动 · 双指右键 · 反向滚动",
+                        when (touchStyle) {
+                            TouchStyle.MAC -> "滑动移动 · 双指滚动 · 捏合缩放 · 自然方向+惯性"
+                            TouchStyle.THINKPAD -> "滑动移动 · 双指滚动 · 中键+移动=滚动 · 反向+非线性"
+                        },
                         fontSize = if (isLandscape) 10.sp else 11.sp,
                         color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
+                        textAlign = TextAlign.Center,
                     )
                 }
             }
@@ -663,7 +749,7 @@ fun TouchpadScreen(
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 MouseBtn("左键", Icons.Default.Mouse, BTN_LEFT, Modifier.weight(1f).height(44.dp), "鼠标左键:单击/按住拖拽", { showToast(it) }, { vm.playFeedbackSound() })
-                MouseBtn("中键", Icons.Default.Mouse, BTN_MIDDLE, Modifier.weight(1f).height(44.dp), "鼠标中键:滚轮按键", { showToast(it) }, { vm.playFeedbackSound() })
+                MouseBtn("中键", Icons.Default.Mouse, BTN_MIDDLE, Modifier.weight(1f).height(44.dp), "鼠标中键:滚轮按键(THINKPAD 模式下按住可滚动)", { showToast(it) }, { vm.playFeedbackSound() }, onStateChange = { pressed -> vm.setMiddleButtonPressed(pressed) })
                 MouseBtn("右键", Icons.Default.Menu, BTN_RIGHT, Modifier.weight(1f).height(44.dp), "鼠标右键:上下文菜单", { showToast(it) }, { vm.playFeedbackSound() })
             }
         }
@@ -1292,7 +1378,7 @@ fun TouchpadScreen(
             verticalAlignment = Alignment.CenterVertically,
         ) {
             MouseBtn("左键", Icons.Default.Mouse, BTN_LEFT, Modifier.weight(1f).height(44.dp), "鼠标左键:单击/按住拖拽", { showToast(it) }, { vm.playFeedbackSound() })
-            MouseBtn("中键", Icons.Default.Mouse, BTN_MIDDLE, Modifier.weight(1f).height(44.dp), "鼠标中键:滚轮按键", { showToast(it) }, { vm.playFeedbackSound() })
+            MouseBtn("中键", Icons.Default.Mouse, BTN_MIDDLE, Modifier.weight(1f).height(44.dp), "鼠标中键:滚轮按键(THINKPAD 模式下按住可滚动)", { showToast(it) }, { vm.playFeedbackSound() }, onStateChange = { pressed -> vm.setMiddleButtonPressed(pressed) })
             MouseBtn("右键", Icons.Default.Menu, BTN_RIGHT, Modifier.weight(1f).height(44.dp), "鼠标右键:上下文菜单", { showToast(it) }, { vm.playFeedbackSound() })
         }
     }
@@ -1474,30 +1560,34 @@ fun TouchpadScreen(
                     val lockThreshold = 24.dp.toPx()  // 向上滑动锁定阈值
                     awaitEachGesture {
                         val down = awaitFirstDown(requireUnconsumed = false)
-                        val pointerId = down.id
                         val startY = down.position.y
                         var gestureLocked = false  // 本次手势是否已触发锁定
-                        while (true) {
+                        var done = false
+                        Log.d(KEY_TAG, "down vk=0x${vkCode.toString(16)} startY=${startY.toInt()} alreadyLocked=${lockedKeys[vkCode]}")
+                        // 遍历所有 change(多指场景下 event.changes 含多个指针),
+                        // 任何一个 up 都结束手势,避免 firstOrNull 取错手指导致 while 卡死
+                        while (!done) {
                             val event = awaitPointerEvent(PointerEventPass.Main)
-                            val change = event.changes.firstOrNull { it.id == pointerId } ?: continue
-                            val dy = change.position.y - startY
-                            // 向上滑动超过阈值 → 锁定(消费事件,阻止滚动)
-                            if (!gestureLocked && dy < -lockThreshold) {
-                                gestureLocked = true
-                                change.consume()
-                                lockKey(vkCode)
-                            }
-                            if (gestureLocked) {
-                                change.consume()
-                            }
-                            if (change.changedToUp()) {
-                                if (!gestureLocked) {
-                                    // 未触发锁定 → 单击行为(已锁定则解锁,否则发普通按键)
-                                    fireKey(vkCode)
+                            for (change in event.changes) {
+                                val dy = change.position.y - startY
+                                // 向上滑动超过阈值 → 锁定(仅未锁定时响应,避免已锁定键的误判阻止单击解锁)
+                                if (!gestureLocked && dy < -lockThreshold && lockedKeys[vkCode] != true) {
+                                    gestureLocked = true
+                                    change.consume()
+                                    lockKey(vkCode)
+                                    Log.d(KEY_TAG, "lock vk=0x${vkCode.toString(16)} dy=${dy.toInt()}")
                                 }
-                                // 已触发锁定 → 抬起时保持锁定,不做任何事
-                                break
+                                if (gestureLocked) change.consume()
+                                if (change.changedToUp()) {
+                                    done = true
+                                    Log.d(KEY_TAG, "up vk=0x${vkCode.toString(16)} gestureLocked=$gestureLocked")
+                                }
                             }
+                        }
+                        // 抬起后:未触发锁定 → 单击(已锁定则解锁,否则发普通按键)
+                        if (!gestureLocked) {
+                            Log.d(KEY_TAG, "fireKey vk=0x${vkCode.toString(16)} wasLocked=${lockedKeys[vkCode]}")
+                            fireKey(vkCode)
                         }
                     }
                 },
@@ -1902,6 +1992,9 @@ fun TouchpadScreen(
 /**
  * 鼠标按键按钮(对齐设计稿:透明背景、无边框,按下时高亮)
  * 支持按下/抬起,实现按住拖拽等场景。长按显示功能泡泡提示(由 showTooltips 控制)
+ *
+ * @param onStateChange 按下状态变化回调(true=按下,false=抬起)。
+ *        中键使用此回调联动 ViewModel.setMiddleButtonPressed,启用 THINKPAD 中键滚动模式。
  */
 @Composable
 private fun MouseBtn(
@@ -1912,6 +2005,7 @@ private fun MouseBtn(
     tooltipText: String,
     onTooltip: (String) -> Unit,
     onPressed: () -> Unit = {},
+    onStateChange: ((Boolean) -> Unit)? = null,
 ) {
     var pressed by remember { mutableStateOf(false) }
 
@@ -1929,11 +2023,13 @@ private fun MouseBtn(
                         pressed = true
                         NativeBridge.sendButtonDown(buttonMask)
                         onPressed()
+                        onStateChange?.invoke(true)
                         try {
                             tryAwaitRelease()
                         } finally {
                             NativeBridge.sendButtonUp(buttonMask)
                             pressed = false
+                            onStateChange?.invoke(false)
                         }
                     },
                     onLongPress = { onTooltip(tooltipText) },
