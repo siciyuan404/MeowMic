@@ -34,10 +34,17 @@ enum class TouchStyle {
  * - 单指滑动:鼠标移动(每个历史采样都发送)
  * - 单指轻触:鼠标左键单击
  * - 单指双击:鼠标左键双击(双击死区 250ms + 60px)
- * - 单指长按:鼠标左键按下(拖拽模式)
+ * - 单击双击第二下不松手 + 移动:左键拖动(框选,Windows 触控板风格)
+ * - 单指长按:鼠标左键按下(拖拽模式,Moonlight 风格兜底)
  * - 双指滑动:鼠标滚轮滚动
  * - 双指轻触:鼠标右键单击
  * - 双指捏合/张开:缩放(MAC 模式原生支持,dy>0 放大 / dy<0 缩小)
+ * - 三指上滑:Win+Tab(任务视图)
+ * - 三指下滑:Win+D 显示桌面(THINKPAD) / Alt+Tab 应用切换(MAC,对应 App Exposé)
+ * - 三指左/右滑:Win+Ctrl+←/→(切换虚拟桌面)
+ * - 三指单击:Win+S 搜索(仅 THINKPAD)
+ * - 四指滑动:同三指(任务视图 / 虚拟桌面切换)
+ * - 四指单击:Win+A 通知中心(仅 THINKPAD)
  *
  * 风格差异(由 [touchStyle] 控制):
  * - **滚动方向**:THINKPAD 反向(手指上滑 → 页面向下);MAC 自然(手指上滑 → 页面向上)
@@ -47,6 +54,8 @@ enum class TouchStyle {
  *   MAC 线性(保持触控板直觉)
  * - **中键+移动**:THINKPAD 模式下,中键按下时单指移动转为滚动(TrackPoint 中键滚动模式);
  *   MAC 模式不启用此行为(中键按下仍是普通中键拖动)
+ * - **三指下滑**:THINKPAD = Win+D(显示桌面);MAC = Alt+Tab(App Exposé 应用切换语义)
+ * - **多指单击**:THINKPAD 映射系统功能(三指=搜索 / 四指=通知中心);MAC 不处理
  *
  * 事件类型常量: 0x02=Move 0x04=Button 0x05=Scroll
  * 按钮掩码位: bit0=左键 bit1=右键 bit2=中键
@@ -93,6 +102,16 @@ class TouchHandler(
     private val SCROLL_VERTICAL = 0x01
     private val SCROLL_HORIZONTAL = 0x02
     private val SCROLL_ZOOM = 0x04
+
+    // ============ Windows VK 码(用于三指/四指手势映射到系统快捷键) ============
+    private val VK_LWIN = 0x5B
+    private val VK_CONTROL = 0x11
+    private val VK_MENU = 0x12        // Alt
+    private val VK_TAB = 0x09
+    private val VK_D = 0x44
+    private val VK_A = 0x41
+    private val VK_LEFT = 0x25
+    private val VK_RIGHT = 0x27
 
     // ============ 单指状态 ============
     private var lastX: Float = 0f
@@ -158,6 +177,27 @@ class TouchHandler(
     private var isLeftDrag: Boolean = false
     private var leftDragTriggered: Boolean = false
 
+    // ============ 双击拖动(Windows 触控板风格:双击第二下不松手 → 锁定左键拖动) ============
+    /** 当前 DOWN 是否为"双击的第二下"(用于触发拖动锁定) */
+    private var isDoubleTapDrag: Boolean = false
+
+    // ============ 三指/四指手势(Win11 风格) ============
+    /** 三指手势是否已触发(一次手势只触发一次,避免连续滑动重复发快捷键) */
+    private var threeFingerGestureFired: Boolean = false
+    /** 四指手势是否已触发 */
+    private var fourFingerGestureFired: Boolean = false
+    /** 三指/四指手势起始中点(用于判定主方向) */
+    private var multiFingerStartX: Float = 0f
+    private var multiFingerStartY: Float = 0f
+    /** 三指/四指按下时的时间(用于单击判定) */
+    private var multiFingerDownTime: Long = 0L
+    /** 三指/四指按下时的指头数(区分三指单击 vs 四指单击) */
+    private var multiFingerDownCount: Int = 0
+    /** 手势方向判定阈值(超过此位移才认定方向) */
+    private val multiFingerSwipeThreshold = 40f
+    /** 多指单击的时间阈值 */
+    private val multiFingerClickTimeout = 200L
+
     fun handle(event: MotionEvent): Boolean {
         if (!NativeBridge.isLoaded()) return false
 
@@ -184,12 +224,30 @@ class TouchHandler(
                 isTwoFingerScroll = false
                 isLeftDrag = false
                 leftDragTriggered = false
+                isDoubleTapDrag = false
                 lastScrollY = y
                 lastScrollDelta = 0f
                 isPinchZoom = false
                 pendingSingleX = x
                 pendingSingleY = y
-                handler.postDelayed(longPressRunnable, longPressTimeout)
+
+                // 双击拖动检测(Windows 触控板风格):
+                // 第二次 DOWN 距离上次 TAP 在 doubleTapTimeout 内且位置接近 → 锁定左键按下,
+                // 后续移动即拖动(框选),UP 时抬起。区别于 Moonlight 的长按拖动(650ms)。
+                val sinceLastTap = currentTime - lastTapTime
+                val tapDx = x - lastTapX
+                val tapDy = y - lastTapY
+                if (lastTapTime > 0 && sinceLastTap < doubleTapTimeout &&
+                    hypot(tapDx, tapDy) < doubleTapSlop
+                ) {
+                    isDoubleTapDrag = true
+                    NativeBridge.sendButtonDown(BTN_LEFT)
+                    // 双击的第二下:立即按下左键,不再走长按拖动路径
+                    handler.removeCallbacks(longPressRunnable)
+                    lastTapTime = 0L
+                } else {
+                    handler.postDelayed(longPressRunnable, longPressTimeout)
+                }
                 return false
             }
 
@@ -220,6 +278,23 @@ class TouchHandler(
                         isLeftDrag = false
                         leftDragTriggered = false
                     }
+                } else if (pointerCount >= 3) {
+                    // 三指/四指手势:取消双指滚动/缩放,初始化多指中点
+                    isTwoFingerScroll = false
+                    isPinchZoom = false
+                    threeFingerGestureFired = false
+                    fourFingerGestureFired = false
+                    val (midX, midY) = computeMidPoint(event)
+                    multiFingerStartX = midX
+                    multiFingerStartY = midY
+                    multiFingerDownTime = currentTime
+                    multiFingerDownCount = pointerCount
+                    // 多指手势期间释放可能残留的左键拖动
+                    if (isLeftDrag) {
+                        NativeBridge.sendButtonUp(BTN_LEFT)
+                        isLeftDrag = false
+                        leftDragTriggered = false
+                    }
                 }
                 downPointerCount = pointerCount
                 return false
@@ -231,6 +306,11 @@ class TouchHandler(
                     lastY = y
                     hasLast = true
                     return false
+                }
+
+                // ============ 三指/四指手势(优先级高于双指)============
+                if (pointerCount >= 3) {
+                    return handleMultiFingerGesture(event)
                 }
 
                 if (pointerCount >= 2) {
@@ -314,6 +394,11 @@ class TouchHandler(
                 }
 
                 // ============ 单指移动:遍历所有历史采样(关键:不卡顿的秘诀) ============
+                // 双击拖动模式:左键已按下,移动即拖动(框选),标记 isLeftDrag 让后续逻辑一致
+                if (isDoubleTapDrag && !isLeftDrag) {
+                    isLeftDrag = true
+                    leftDragTriggered = true
+                }
                 // THINKPAD 中键滚动模式:中键按下时,单指移动转为滚动(TrackPoint 风格)
                 val middleScrollMode = middleButtonPressed &&
                         touchStyle == TouchStyle.THINKPAD &&
@@ -387,6 +472,10 @@ class TouchHandler(
                     }
                     isTwoFingerScroll = false
                     isPinchZoom = false
+                } else if (pointerCount <= 4) {
+                    // 三指/四指降级:重置多指手势触发标志,允许降级后的指头数重新判定
+                    threeFingerGestureFired = false
+                    fourFingerGestureFired = false
                 }
                 // 双指轻触右键准备
                 if (downPointerCount >= 2 && !isTwoFingerScroll && pointerCount == 2) {
@@ -420,11 +509,42 @@ class TouchHandler(
                 if (touchStyle == TouchStyle.MAC && isTwoFingerScroll && abs(lastScrollDelta) > 1f) {
                     startInertia(lastScrollDelta)
                 }
-                // 长按拖拽抬起
+
+                // 多指手势单击(三指/四指轻触,未触发滑动方向手势)
+                if (downPointerCount >= 3 && !threeFingerGestureFired && !fourFingerGestureFired) {
+                    val elapsedMulti = currentTime - multiFingerDownTime
+                    threeFingerGestureFired = false
+                    fourFingerGestureFired = false
+                    hasLast = false
+                    isTwoFingerScroll = false
+                    isPinchZoom = false
+                    isDoubleTapDrag = false
+                    leftDragTriggered = false
+                    primaryPointerId = MotionEvent.INVALID_POINTER_ID
+                    secondaryPointerId = MotionEvent.INVALID_POINTER_ID
+                    if (elapsedMulti < multiFingerClickTimeout) {
+                        handleMultiFingerClick(downPointerCount)
+                        return true
+                    }
+                    return false
+                }
+
+                // 双击拖动抬起:双击第二下未移动即松手(构成双击的第二次 click)
+                if (isDoubleTapDrag && !leftDragTriggered) {
+                    NativeBridge.sendButtonUp(BTN_LEFT)
+                    isDoubleTapDrag = false
+                    hasLast = false
+                    primaryPointerId = MotionEvent.INVALID_POINTER_ID
+                    secondaryPointerId = MotionEvent.INVALID_POINTER_ID
+                    return true
+                }
+
+                // 长按拖拽抬起(含双击拖动移动后的抬起)
                 if (leftDragTriggered) {
                     NativeBridge.sendButtonUp(BTN_LEFT)
                     isLeftDrag = false
                     leftDragTriggered = false
+                    isDoubleTapDrag = false
                     hasLast = false
                     primaryPointerId = MotionEvent.INVALID_POINTER_ID
                     secondaryPointerId = MotionEvent.INVALID_POINTER_ID
@@ -480,12 +600,103 @@ class TouchHandler(
                 isTwoFingerScroll = false
                 isPinchZoom = false
                 leftDragTriggered = false
+                isDoubleTapDrag = false
                 primaryPointerId = MotionEvent.INVALID_POINTER_ID
                 secondaryPointerId = MotionEvent.INVALID_POINTER_ID
                 return false
             }
         }
         return false
+    }
+
+    /**
+     * 计算所有活动指头的中点(用于三指/四指手势方向判定)
+     */
+    private fun computeMidPoint(event: MotionEvent): Pair<Float, Float> {
+        var sumX = 0f
+        var sumY = 0f
+        val count = event.pointerCount
+        for (i in 0 until count) {
+            sumX += event.getX(i)
+            sumY += event.getY(i)
+        }
+        return (sumX / count) to (sumY / count)
+    }
+
+    /**
+     * 处理三指/四指滑动手势(MOVE 事件,pointerCount >= 3 时调用)
+     *
+     * 一次手势只触发一次(通过 threeFingerGestureFired/fourFingerGestureFired 锁定),
+     * 避免连续滑动重复发送快捷键。手势结束后(指头全部抬起)自动复位。
+     *
+     * 方向判定:以 [multiFingerStartX/Y] 为起点,当前中点位移超过 [multiFingerSwipeThreshold]
+     * 后,取位移主轴(X 或 Y)的较大者作为方向。
+     *
+     * 映射(两种风格都映射到 Windows 快捷键,因为控制的是 PC):
+     * - 三指/四指上滑 = Win+Tab(任务视图)
+     * - 三指/四指下滑 = Win+D(显示桌面)
+     *   (MAC 风格三指下滑映射 Alt+Tab,对应 App Exposé 的应用切换语义)
+     * - 三指/四指左滑 = Win+Ctrl+←(切换到左侧虚拟桌面)
+     * - 三指/四指右滑 = Win+Ctrl+→(切换到右侧虚拟桌面)
+     */
+    private fun handleMultiFingerGesture(event: MotionEvent): Boolean {
+        val (midX, midY) = computeMidPoint(event)
+        val pointerCount = event.pointerCount
+        val fired = if (pointerCount >= 4) fourFingerGestureFired else threeFingerGestureFired
+
+        if (fired) return true // 已触发,忽略后续滑动
+
+        val dx = midX - multiFingerStartX
+        val dy = midY - multiFingerStartY
+        if (abs(dx) < multiFingerSwipeThreshold && abs(dy) < multiFingerSwipeThreshold) {
+            return true // 位移不足,等待继续滑动
+        }
+
+        // 判定主方向
+        if (abs(dx) > abs(dy)) {
+            // 水平滑动:切换虚拟桌面
+            if (dx > 0) {
+                NativeBridge.sendKeyCombo(VK_LWIN, VK_CONTROL, VK_RIGHT)
+            } else {
+                NativeBridge.sendKeyCombo(VK_LWIN, VK_CONTROL, VK_LEFT)
+            }
+        } else {
+            // 垂直滑动
+            if (dy < 0) {
+                // 上滑:任务视图
+                NativeBridge.sendKeyCombo(VK_LWIN, VK_TAB)
+            } else {
+                // 下滑:显示桌面(THINKPAD) / 应用切换 Alt+Tab(MAC,对应 App Exposé)
+                if (touchStyle == TouchStyle.MAC) {
+                    NativeBridge.sendKeyCombo(VK_MENU, VK_TAB)
+                } else {
+                    NativeBridge.sendKeyCombo(VK_LWIN, VK_D)
+                }
+            }
+        }
+
+        // 锁定,本次手势不再触发
+        if (pointerCount >= 4) {
+            fourFingerGestureFired = true
+        } else {
+            threeFingerGestureFired = true
+        }
+        return true
+    }
+
+    /**
+     * 处理三指/四指单击(轻触,未触发滑动)
+     *
+     * 映射:
+     * - 三指单击:THINKPAD = Win+S(搜索);MAC = 无(macOS 三指单击是查词典,PC 无直接对应)
+     * - 四指单击:THINKPAD = Win+A(通知中心);MAC = 无
+     */
+    private fun handleMultiFingerClick(pointerCount: Int) {
+        if (touchStyle != TouchStyle.THINKPAD) return
+        when {
+            pointerCount >= 4 -> NativeBridge.sendKeyCombo(VK_LWIN, VK_A)
+            pointerCount == 3 -> NativeBridge.sendKeyCombo(VK_LWIN, VK_S)
+        }
     }
 
     /**
@@ -662,6 +873,9 @@ class TouchHandler(
         isPinchZoom = false
         isLeftDrag = false
         leftDragTriggered = false
+        isDoubleTapDrag = false
+        threeFingerGestureFired = false
+        fourFingerGestureFired = false
         middleButtonPressed = false
         primaryPointerId = MotionEvent.INVALID_POINTER_ID
         secondaryPointerId = MotionEvent.INVALID_POINTER_ID

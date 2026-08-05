@@ -721,8 +721,8 @@ fun TouchpadScreen(
                     Spacer(Modifier.height(6.dp))
                     Text(
                         when (touchStyle) {
-                            TouchStyle.MAC -> "滑动移动 · 双指滚动 · 捏合缩放 · 自然方向+惯性"
-                            TouchStyle.THINKPAD -> "滑动移动 · 双指滚动 · 中键+移动=滚动 · 反向+非线性"
+                            TouchStyle.MAC -> "滑动移动 · 双指滚动 · 捏合缩放 · 三指切桌面 · 自然方向+惯性"
+                            TouchStyle.THINKPAD -> "双击不松手拖动 · 双指滚动 · 中键+移动=滚动 · 三指切桌面 · 反向+非线性"
                         },
                         fontSize = if (isLandscape) 10.sp else 11.sp,
                         color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
