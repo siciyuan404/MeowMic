@@ -1272,48 +1272,49 @@ class MeowMicViewModel : ViewModel() {
         _appListState.value = AppListState.Loading
         viewModelScope.launch {
             val result = LauncherRepository.fetchAppList(addr, pk)
-            result.onSuccess { list ->
-                _appListState.value = AppListState.Loaded(list)
-                // 拉取成功后预加载已选中应用的图标
-                _quickAppIds.value.forEach { id ->
-                    if (id !in _iconCache) loadIconInternal(addr, pk, id)
-                }
-            }.onFailure { throwable ->
-                // 优先用 AppListFetchException.kind 的结构化分类给出人性化中文提示;
-                // 未命中则回退到 throwable.message。
-                val kind = (throwable as? AppListFetchException)?.kind
-                val hint = when (kind) {
-                    is AppListFetchKind.NotPaired403 -> {
-                        "拉取应用库失败(鉴权 403:未配对)\n" +
-                            "👉 请在 PC 端配对弹窗点「同意」这台 P40 Pro 手机;\n" +
-                            "   或在已配对手机上同意新设备。\n" +
-                            "(HTTP 403 body 含 not-paired;${kind.body})"
-                    }
-                    is AppListFetchKind.Forbidden403 -> {
-                        "拉取应用库失败(鉴权 403)\n" +
-                            "👉 可能是服务端鉴权异常,请确认客户端公钥已配对,或重新配对当前手机。\n" +
-                            "响应: ${kind.body}"
-                    }
-                    is AppListFetchKind.HttpError -> {
-                        "拉取应用库失败(HTTP ${kind.code})\n" +
-                            "👉 请确认 PC 端服务端版本 ≥ v0.23.0;如持续失败可尝试重启服务端。\n" +
-                            "响应: ${kind.body}"
-                    }
-                    is AppListFetchKind.Network -> {
-                        "拉取应用库失败(网络错误)\n" +
-                            "👉 请确认手机与 PC 在同一 WLAN、PC 端服务端已启动、WLAN 没被防火墙拦截。\n" +
-                            "原因: ${kind.message}"
-                    }
-                    is AppListFetchKind.ParseError -> {
-                        "拉取应用库失败(服务端返回数据格式错误)\n" +
-                            "👉 可能是客户端版本与服务端不匹配,建议更新双端到最新版本。\n" +
-                            "原因: ${kind.message};原始:${kind.raw.take(120)}"
-                    }
-                    null -> {
-                        "拉取应用库失败\n原因: ${throwable.message ?: "未知错误"}"
+            when (result) {
+                is AppListResult.Success -> {
+                    val list = result.list
+                    _appListState.value = AppListState.Loaded(list)
+                    // 拉取成功后预加载已选中应用的图标
+                    _quickAppIds.value.forEach { id ->
+                        if (id !in _iconCache) loadIconInternal(addr, pk, id)
                     }
                 }
-                _appListState.value = AppListState.Error(hint)
+                is AppListResult.Failure -> {
+                    val ex = result.exception
+                    // 优先用 AppListFetchException.kind 的结构化分类给出人性化中文提示
+                    val kind = ex.kind
+                    val hint = when (kind) {
+                        is AppListFetchKind.NotPaired403 -> {
+                            "拉取应用库失败(鉴权 403:未配对)\n" +
+                                "👉 请在 PC 端配对弹窗点「同意」这台 P40 Pro 手机;\n" +
+                                "   或在已配对手机上同意新设备。\n" +
+                                "(HTTP 403 body 含 not-paired;${kind.body})"
+                        }
+                        is AppListFetchKind.Forbidden403 -> {
+                            "拉取应用库失败(鉴权 403)\n" +
+                                "👉 可能是服务端鉴权异常,请确认客户端公钥已配对,或重新配对当前手机。\n" +
+                                "响应: ${kind.body}"
+                        }
+                        is AppListFetchKind.HttpError -> {
+                            "拉取应用库失败(HTTP ${kind.code})\n" +
+                                "👉 请确认 PC 端服务端版本 ≥ v0.23.0;如持续失败可尝试重启服务端。\n" +
+                                "响应: ${kind.body}"
+                        }
+                        is AppListFetchKind.Network -> {
+                            "拉取应用库失败(网络错误)\n" +
+                                "👉 请确认手机与 PC 在同一 WLAN、PC 端服务端已启动、WLAN 没被防火墙拦截。\n" +
+                                "原因: ${kind.message}"
+                        }
+                        is AppListFetchKind.ParseError -> {
+                            "拉取应用库失败(服务端返回数据格式错误)\n" +
+                                "👉 可能是客户端版本与服务端不匹配,建议更新双端到最新版本。\n" +
+                                "原因: ${kind.message};原始:${kind.raw.take(120)}"
+                        }
+                    }
+                    _appListState.value = AppListState.Error(hint)
+                }
             }
         }
     }

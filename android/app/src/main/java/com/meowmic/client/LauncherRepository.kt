@@ -100,6 +100,20 @@ class AppListFetchException(
     cause: Throwable? = null,
 ) : Exception(message, cause)
 
+/**
+ * 快捷启动应用库拉取结果(自定义 sealed class)。
+ *
+ * 不用 Kotlin 内置的 `kotlin.Result<T>` 作为 suspend 函数返回值:
+ * 它在 Kotlin 1.9 中仍是 value class,作为公开函数返回类型时可能触发编译错误
+ * ("Result is not allowed as return type"). 因此自定义显式 sealed class,更清晰也更兼容。
+ */
+sealed class AppListResult {
+    /** 成功:返回已解析的应用列表 */
+    data class Success(val list: List<AppEntry>) : AppListResult()
+    /** 失败:包装结构化异常,其 [AppListFetchException.kind] 给出错误分类 */
+    data class Failure(val exception: AppListFetchException) : AppListResult()
+}
+
 /** 读取 HTTP 响应 body(错误优先, 兼容重定向/非 2xx 路径);读取失败返回空字符串。 */
 private fun java.net.HttpURLConnection.readBodySafe(): String {
     val stream = try { this.errorStream ?: this.inputStream } catch (_: Exception) { null }
@@ -146,19 +160,13 @@ object LauncherRepository {
      * 拉取 PC 端应用库。
      * @param serverAddr "host:port"(control 端口)
      * @param pubkey 客户端公钥 base64(用于配对鉴权)
-     * @return 应用列表;失败返回 null
-     */
-    /**
-     * 拉取 PC 端应用库。
-     * @param serverAddr "host:port"(control 端口)
-     * @param pubkey 客户端公钥 base64(用于配对鉴权)
      * @return 成功: Result.success(应用列表);
      *         失败: Result.failure([AppListFetchException]),其 [AppListFetchException.kind] 给出结构化分类。
      */
     suspend fun fetchAppList(
         serverAddr: String,
         pubkey: String,
-    ): Result<List<AppEntry>> =
+    ): AppListResult =
         withContext(Dispatchers.IO) {
             val url = "${httpBaseUrl(serverAddr)}/applist?pubkey=${encodeParam(pubkey)}"
             try {
@@ -175,9 +183,9 @@ object LauncherRepository {
                         val body = conn.inputStream.bufferedReader().use { it.readText() }
                         val parsed = parseAppList(body)
                         if (parsed != null) {
-                            Result.success(parsed)
+                            AppListResult.Success(parsed)
                         } else {
-                            Result.failure(
+                            AppListResult.Failure(
                                 AppListFetchException(
                                     AppListFetchKind.ParseError("parseAppList returned null", body),
                                 ),
@@ -188,8 +196,8 @@ object LauncherRepository {
                         Log.w(TAG, "fetchAppList HTTP $code body=$body")
                         val kind = when (code) {
                             403 -> {
-                                val hasNotPaired = body.contains(""not paired"")
-                                    || body.contains("not paired")
+                                val hasNotPaired = body.contains("not paired")
+                                    || body.contains(""not paired"")
                                 if (hasNotPaired)
                                     AppListFetchKind.NotPaired403(body)
                                 else
@@ -197,14 +205,14 @@ object LauncherRepository {
                             }
                             else -> AppListFetchKind.HttpError(code, body)
                         }
-                        Result.failure(AppListFetchException(kind))
+                        AppListResult.Failure(AppListFetchException(kind))
                     }
                 } finally {
                     conn.disconnect()
                 }
             } catch (e: java.net.ConnectException) {
                 Log.w(TAG, "fetchAppList connect: ${e.message}")
-                Result.failure(
+                AppListResult.Failure(
                     AppListFetchException(
                         AppListFetchKind.Network("连接失败:${e.message ?: ""}"),
                         cause = e,
@@ -212,7 +220,7 @@ object LauncherRepository {
                 )
             } catch (e: java.net.SocketTimeoutException) {
                 Log.w(TAG, "fetchAppList timeout: ${e.message}")
-                Result.failure(
+                AppListResult.Failure(
                     AppListFetchException(
                         AppListFetchKind.Network("连接超时:${e.message ?: ""}"),
                         cause = e,
@@ -220,7 +228,7 @@ object LauncherRepository {
                 )
             } catch (e: java.io.IOException) {
                 Log.w(TAG, "fetchAppList IO: ${e.message}")
-                Result.failure(
+                AppListResult.Failure(
                     AppListFetchException(
                         AppListFetchKind.Network("网络错误:${e.message ?: ""}"),
                         cause = e,
@@ -228,7 +236,7 @@ object LauncherRepository {
                 )
             } catch (e: Exception) {
                 Log.w(TAG, "fetchAppList 失败: ${e.message}")
-                Result.failure(
+                AppListResult.Failure(
                     AppListFetchException(
                         AppListFetchKind.Network("未知错误:${e.message ?: ""}"),
                         cause = e,
