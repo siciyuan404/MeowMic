@@ -433,6 +433,7 @@ pub fn extract_icon_png(exe_path: &str) -> Option<Vec<u8>> {
             PCWSTR(wide.as_ptr()),
             windows::Win32::Storage::FileSystem::FILE_ATTRIBUTE_NORMAL,
             Some(&mut info),
+            std::mem::size_of::<SHFILEINFOW>() as u32,
             flags,
         )
     };
