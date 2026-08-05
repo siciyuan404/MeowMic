@@ -110,6 +110,7 @@ class TouchHandler(
     private val VK_TAB = 0x09
     private val VK_D = 0x44
     private val VK_A = 0x41
+    private val VK_S = 0x53
     private val VK_LEFT = 0x25
     private val VK_RIGHT = 0x27
 
