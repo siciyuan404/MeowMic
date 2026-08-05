@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<network-security-config>
+    <!--
+      MeowMic 服务端使用明文 HTTP(非 HTTPS),运行在局域网内 PC 上。
+      允许明文 HTTP 流量以兼容 Android 9+ 的默认 cleartext 禁令。
+      (本应用仅连接用户自己的 PC,不涉及公网 HTTPS 站点)
+    -->
+    <base-config cleartextTrafficPermitted="true">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+</network-security-config>
