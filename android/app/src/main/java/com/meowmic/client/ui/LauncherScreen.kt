@@ -105,7 +105,7 @@ fun LauncherScreen(
     // 横竖屏切换时 pageSize 变化,pageCount 随之重组
     val currentPageSize = pageSize(landscape)
     val pageCount = if (quickAppIds.isEmpty()) 1 else
-        (quickAppIds.size + currentPagePageSize - 1) / currentPagePageSize
+        (quickAppIds.size + currentPageSize - 1) / currentPageSize
     val pagerState = rememberPagerState(pageCount = { pageCount })
 
     Box(modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
