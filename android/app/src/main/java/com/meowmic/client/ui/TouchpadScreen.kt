@@ -12,7 +12,6 @@ import androidx.compose.animation.*
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.StartOffset
 import androidx.compose.animation.core.animateFloat
-import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
@@ -49,7 +48,6 @@ import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
-import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Outline
@@ -499,7 +497,9 @@ fun TouchpadScreen(
     var touchMode by remember { mutableStateOf("移动") }
     var pointerCount by remember { mutableStateOf(0) }
     var showTooltips by remember { mutableStateOf(false) }  // 泡泡提示开关,默认关闭
-    var drawerExpanded by remember { mutableStateOf(false) }  // 底部抽屉展开状态,默认收起
+    // 主视图切换:touch=触控面板 / voice=语音面板 / keyboard=键盘面板
+    // 原"上划显示控制"抽屉中的语音/键盘 Tab 拆为顶栏图标入口,与触控面板平级
+    var currentView by remember { mutableStateOf("touch") }
     val currentAudioMode by vm.currentAudioMode.collectAsState()
     val audioHistory by vm.audioHistory.collectAsState()
     val quickSlots by vm.quickSlots.collectAsState()
@@ -610,6 +610,14 @@ fun TouchpadScreen(
                 )
             }
 
+            // 触控面板入口(快捷启动左侧):切换到触控视图
+            ToggleButtonSmall(
+                icon = Icons.Default.Mouse,
+                contentDescription = "触控面板",
+                isOn = currentView == "touch",
+                onClick = { currentView = "touch" },
+            )
+
             Spacer(Modifier.weight(1f))
 
             // 快捷启动按钮(居中,进入应用库页面)
@@ -620,6 +628,21 @@ fun TouchpadScreen(
             )
 
             Spacer(Modifier.weight(1f))
+
+            // 语音入口(快捷启动右侧):切换到语音面板
+            ToggleButtonSmall(
+                icon = Icons.Default.GraphicEq,
+                contentDescription = "语音",
+                isOn = currentView == "voice",
+                onClick = { currentView = "voice" },
+            )
+            // 键盘入口(快捷启动右侧):切换到键盘面板
+            ToggleButtonSmall(
+                icon = Icons.Default.Keyboard,
+                contentDescription = "键盘",
+                isOn = currentView == "keyboard",
+                onClick = { currentView = "keyboard" },
+            )
 
             // 横屏切换(横屏外层已渲染独立按钮时,此处跳过避免重复)
             if (showRotate) {
@@ -751,55 +774,6 @@ fun TouchpadScreen(
                 MouseBtn("左键", Icons.Default.Mouse, BTN_LEFT, Modifier.weight(1f).height(44.dp), "鼠标左键:单击/按住拖拽", { showToast(it) }, { vm.playFeedbackSound() })
                 MouseBtn("中键", Icons.Default.Mouse, BTN_MIDDLE, Modifier.weight(1f).height(44.dp), "鼠标中键:滚轮按键(THINKPAD 模式下按住可滚动)", { showToast(it) }, { vm.playFeedbackSound() }, onStateChange = { pressed -> vm.setMiddleButtonPressed(pressed) })
                 MouseBtn("右键", Icons.Default.Menu, BTN_RIGHT, Modifier.weight(1f).height(44.dp), "鼠标右键:上下文菜单", { showToast(it) }, { vm.playFeedbackSound() })
-            }
-        }
-    }
-
-    // ── 底部抽屉手柄(点击展开/收起) ──
-    @Composable
-    fun DrawerHandle() {
-        val chevronRotation by animateFloatAsState(
-            targetValue = if (drawerExpanded) 180f else 0f,
-            animationSpec = tween(300),
-            label = "chevron",
-        )
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .clickable { drawerExpanded = !drawerExpanded }
-                .padding(horizontal = 12.dp, vertical = 8.dp),
-            horizontalArrangement = Arrangement.Center,
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Column(
-                horizontalAlignment = Alignment.CenterHorizontally,
-                modifier = Modifier.fillMaxWidth(),
-            ) {
-                // 抓取条
-                Box(
-                    modifier = Modifier
-                        .width(36.dp)
-                        .height(4.dp)
-                        .background(
-                            MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.3f),
-                            RoundedCornerShape(50),
-                        ),
-                )
-                Spacer(Modifier.height(4.dp))
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(
-                        Icons.Default.KeyboardArrowUp,
-                        null,
-                        Modifier.size(14.dp).rotate(chevronRotation),
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
-                    )
-                    Spacer(Modifier.width(4.dp))
-                    Text(
-                        if (drawerExpanded) "点击收起" else "上滑显示控制",
-                        fontSize = 11.sp,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
-                    )
-                }
             }
         }
     }
@@ -1771,145 +1745,53 @@ fun TouchpadScreen(
     }
 
 
-    // 语音/键盘控制面板:Tab 切换(必须在 KeyboardPanel 之后定义,局部函数不能前向引用)
+    // 语音面板内容(原 VoicePanel 的语音 Tab 分支,现由顶栏"语音"图标切入)
+    // 必须在 KeyboardPanel 之后定义(局部函数不能前向引用)
     @Composable
-    fun VoicePanel() {
-        var selectedTab by remember { mutableStateOf(0) }  // 0=语音, 1=键盘
+    fun VoiceContent() {
         val micEnabled by vm.micEnabled.collectAsState()
         val isRecording by vm.isRecording.collectAsState()
-        // 提前在 @Composable 上下文取色,供 drawWithContent 的 DrawScope 使用
-        val onSurfaceColor = MaterialTheme.colorScheme.onSurface
 
         Column(modifier = Modifier.padding(horizontal = 12.dp)) {
-            // Tab 行(自定义下划线风格,对齐设计稿 ds-tabs:gap 16px、底部 2px 横线)
-            Row(
+            // 顶部:状态指示器 + 状态文字(对齐设计稿 mm-mic-status)
+            Column(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(16.dp),
-                verticalAlignment = Alignment.CenterVertically,
+                horizontalAlignment = Alignment.CenterHorizontally,
             ) {
-                // 语音 Tab
-                Box(
-                    modifier = Modifier
-                        .clickable { selectedTab = 0 }
-                        .padding(vertical = 8.dp)
-                        .drawWithContent {
-                            drawContent()
-                            if (selectedTab == 0) {
-                                // 激活态:底部 2px 下划线,颜色 = onSurface
-                                drawRect(
-                                    color = onSurfaceColor,
-                                    topLeft = androidx.compose.ui.geometry.Offset(0f, size.height - 2.dp.toPx()),
-                                    size = androidx.compose.ui.geometry.Size(size.width, 2.dp.toPx()),
-                                )
-                            }
-                        },
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(
-                            Icons.Default.GraphicEq,
-                            null,
-                            Modifier.size(14.dp),
-                            tint = if (selectedTab == 0) MaterialTheme.colorScheme.onSurface
-                            else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
-                        )
-                        Spacer(Modifier.width(4.dp))
-                        Text(
-                            "语音",
-                            fontSize = 12.sp,
-                            color = if (selectedTab == 0) MaterialTheme.colorScheme.onSurface
-                            else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
-                            fontWeight = FontWeight.Medium,
-                        )
-                    }
+                MicOrb()
+                Spacer(Modifier.height(6.dp))
+                val statusText = when {
+                    isRecording -> "录音中"
+                    micEnabled -> "麦克风已开启"
+                    else -> "麦克风已关闭"
                 }
-                // 键盘 Tab
-                Box(
-                    modifier = Modifier
-                        .clickable { selectedTab = 1 }
-                        .padding(vertical = 8.dp)
-                        .drawWithContent {
-                            drawContent()
-                            if (selectedTab == 1) {
-                                drawRect(
-                                    color = onSurfaceColor,
-                                    topLeft = androidx.compose.ui.geometry.Offset(0f, size.height - 2.dp.toPx()),
-                                    size = androidx.compose.ui.geometry.Size(size.width, 2.dp.toPx()),
-                                )
-                            }
-                        },
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(
-                            Icons.Default.Keyboard,
-                            null,
-                            Modifier.size(14.dp),
-                            tint = if (selectedTab == 1) MaterialTheme.colorScheme.onSurface
-                            else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
-                        )
-                        Spacer(Modifier.width(4.dp))
-                        Text(
-                            "键盘",
-                            fontSize = 12.sp,
-                            color = if (selectedTab == 1) MaterialTheme.colorScheme.onSurface
-                            else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
-                            fontWeight = FontWeight.Medium,
-                        )
-                    }
+                val statusColor = when {
+                    isRecording -> MaterialTheme.colorScheme.error
+                    micEnabled -> MaterialTheme.colorScheme.primary
+                    else -> MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
                 }
+                Text(statusText, fontSize = 11.sp, color = statusColor, fontWeight = FontWeight.Medium)
             }
-
+            // 分割线(对齐设计稿 panelVoice 内 1px 分隔)
+            Spacer(Modifier.height(4.dp))
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(1.dp)
+                    .background(MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f)),
+            )
             Spacer(Modifier.height(10.dp))
-
-            when (selectedTab) {
-                0 -> {
-                    // 语音 Tab:麦克风状态 orb + 分割线 + PTT 录音 + 历史播放 + 快捷槽位
-                    // 顶部:状态指示器 + 状态文字(对齐设计稿 mm-mic-status)
-                    Column(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                    ) {
-                        MicOrb()
-                        Spacer(Modifier.height(6.dp))
-                        val statusText = when {
-                            isRecording -> "录音中"
-                            micEnabled -> "麦克风已开启"
-                            else -> "麦克风已关闭"
-                        }
-                        val statusColor = when {
-                            isRecording -> MaterialTheme.colorScheme.error
-                            micEnabled -> MaterialTheme.colorScheme.primary
-                            else -> MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
-                        }
-                        Text(statusText, fontSize = 11.sp, color = statusColor, fontWeight = FontWeight.Medium)
-                    }
-                    // 分割线(对齐设计稿 panelVoice 内 1px 分隔)
-                    Spacer(Modifier.height(4.dp))
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(1.dp)
-                            .background(MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f)),
-                    )
-                    Spacer(Modifier.height(10.dp))
-                    PttButton(modifier = Modifier.fillMaxWidth())
-                    if (micEnabled) {
-                        Spacer(Modifier.height(4.dp))
-                        Text(
-                            "麦克风常开中,PTT 录音已禁用",
-                            fontSize = 10.sp,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
-                        )
-                    }
-                    Spacer(Modifier.height(10.dp))
-                    AudioPanel()
-                }
-                1 -> {
-                    // 键盘 Tab:虚拟键盘 + 快捷键
-                    KeyboardPanel()
-                }
+            PttButton(modifier = Modifier.fillMaxWidth())
+            if (micEnabled) {
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    "麦克风常开中,PTT 录音已禁用",
+                    fontSize = 10.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
+                )
             }
+            Spacer(Modifier.height(10.dp))
+            AudioPanel()
         }
     }
 
@@ -1943,46 +1825,35 @@ fun TouchpadScreen(
                 TouchArea(modifier = Modifier.weight(1f).fillMaxWidth())
             }
             Spacer(Modifier.width(8.dp))
-            Column(
-                modifier = Modifier.width(240.dp).fillMaxHeight().verticalScroll(rememberScrollState()),
-                verticalArrangement = Arrangement.spacedBy(6.dp),
-            ) {
-                VoicePanel()
+            // 右侧面板:仅 voice/keyboard 时显示(touch 时触控区域占满)
+            if (currentView != "touch") {
+                Column(
+                    modifier = Modifier.width(240.dp).fillMaxHeight().verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    if (currentView == "voice") VoiceContent() else KeyboardPanel()
+                }
             }
         }
     } else {
-        // 竖屏:自上而下 — 状态栏 → 操作栏 → 触控区域 → 底部抽屉
+        // 竖屏:自上而下 — 状态栏 → 操作栏 → 主区域(触控/语音/键盘 按 currentView 切换)
         Column(modifier = Modifier.fillMaxSize().padding(12.dp)) {
             StatusBar()
             Spacer(Modifier.height(6.dp))
             ActionBar()
             Spacer(Modifier.height(8.dp))
-            // 触控区域占满剩余空间
-            TouchArea(modifier = Modifier.weight(1f).fillMaxWidth())
-            Spacer(Modifier.height(8.dp))
-            // 底部抽屉(可展开/收起)
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(12.dp),
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-                elevation = CardDefaults.cardElevation(
-                    defaultElevation = if (drawerExpanded) 4.dp else 0.dp,
-                ),
-            ) {
-                Column {
-                    DrawerHandle()
-                    AnimatedVisibility(
-                        visible = drawerExpanded,
-                        enter = expandVertically(animationSpec = tween(350)),
-                        exit = shrinkVertically(animationSpec = tween(350)),
-                    ) {
-                        Column(
-                            modifier = Modifier.padding(bottom = 12.dp),
-                            verticalArrangement = Arrangement.spacedBy(10.dp),
-                        ) {
-                            VoicePanel()
-                        }
-                    }
+            // 主区域:根据顶栏图标切换触控面板 / 语音面板 / 键盘面板
+            when (currentView) {
+                "touch" -> TouchArea(modifier = Modifier.weight(1f).fillMaxWidth())
+                "voice" -> Column(
+                    modifier = Modifier.weight(1f).fillMaxWidth().verticalScroll(rememberScrollState()),
+                ) {
+                    VoiceContent()
+                }
+                "keyboard" -> Column(
+                    modifier = Modifier.weight(1f).fillMaxWidth().verticalScroll(rememberScrollState()),
+                ) {
+                    KeyboardPanel()
                 }
             }
         }
