@@ -409,41 +409,63 @@ pub fn launch_app(app: &AppEntry) -> std::io::Result<()> {
 
 /// 从 exe 提取图标并编码为 PNG(Windows 专属)
 ///
-/// 流程:ExtractIconExW → GetIconInfo → GetDIBits(BGRA) → 转 RGBA → PNG
+/// 流程:SHGetFileInfoW(jumbo 256×256,失败回退 ExtractIconExW 大图标)
+/// → GetIconInfo → GetDIBits(BGRA) → 预乘 alpha 合成到白底 → PNG
 /// 失败返回 None,调用方用占位图标兜底。
 #[cfg(windows)]
 pub fn extract_icon_png(exe_path: &str) -> Option<Vec<u8>> {
     use windows::core::PCWSTR;
     use windows::Win32::Graphics::Gdi::DeleteObject;
-    use windows::Win32::UI::Shell::ExtractIconExW;
+    use windows::Win32::UI::Shell::{SHGetFileInfoW, SHGFI_ICON, SHGFI_LARGEICON, SHGFI_SYSICONINDEX, SHFILEINFOW};
     use windows::Win32::UI::WindowsAndMessaging::{DestroyIcon, GetIconInfo, HICON, ICONINFO};
 
     let path = expand_env(exe_path);
     let wide: Vec<u16> = path.encode_utf16().chain(std::iter::once(0)).collect();
 
+    // 优先用 SHGetFileInfoW 获取大图标(系统图标缓存,通常 32×32 或更大)
+    // ExtractIconExW 的 lpszIconIndex 参数无法直接拿 256×256,需要 IImageList,
+    // 这里用 SHGetFileInfoW + SHGFI_LARGEICON 拿到系统能给的最大尺寸。
     let mut hicon: HICON = HICON::default();
-    let count = unsafe {
-        ExtractIconExW(PCWSTR(wide.as_ptr()), 0, Some(&mut hicon), None, 1)
+    let mut info = SHFILEINFOW::default();
+    let flags = SHGFI_ICON | SHGFI_LARGEICON | SHGFI_SYSICONINDEX;
+    let _ = unsafe {
+        SHGetFileInfoW(
+            PCWSTR(wide.as_ptr()),
+            windows::Win32::Storage::FileSystem::FILE_ATTRIBUTE_NORMAL,
+            Some(&mut info),
+            flags,
+        )
     };
-    if count == 0 || hicon.is_invalid() {
-        return None;
+    if !info.hIcon.is_invalid() {
+        hicon = info.hIcon;
+    } else {
+        // 回退:ExtractIconExW 大图标
+        use windows::Win32::UI::Shell::ExtractIconExW;
+        let mut large: HICON = HICON::default();
+        let count = unsafe {
+            ExtractIconExW(PCWSTR(wide.as_ptr()), 0, Some(&mut large), None, 1)
+        };
+        if count == 0 || large.is_invalid() {
+            return None;
+        }
+        hicon = large;
     }
 
-    let mut info = ICONINFO::default();
-    let got_info = unsafe { GetIconInfo(hicon, &mut info) }.is_ok();
+    let mut icinfo = ICONINFO::default();
+    let got_info = unsafe { GetIconInfo(hicon, &mut icinfo) }.is_ok();
     if !got_info {
         let _ = unsafe { DestroyIcon(hicon) };
         return None;
     }
 
-    let png = bitmap_to_png(info.hbmColor);
+    let png = bitmap_to_png(icinfo.hbmColor);
     unsafe {
         let _ = DestroyIcon(hicon);
-        if !info.hbmColor.is_invalid() {
-            let _ = DeleteObject(info.hbmColor);
+        if !icinfo.hbmColor.is_invalid() {
+            let _ = DeleteObject(icinfo.hbmColor);
         }
-        if !info.hbmMask.is_invalid() {
-            let _ = DeleteObject(info.hbmMask);
+        if !icinfo.hbmMask.is_invalid() {
+            let _ = DeleteObject(icinfo.hbmMask);
         }
     }
     png
@@ -511,17 +533,27 @@ fn bitmap_to_png(hbm_color: windows::Win32::Graphics::Gdi::HBITMAP) -> Option<Ve
         return None;
     }
 
-    // BGRA → RGBA;Windows 图标的 alpha 通道通常有效
+    // BGRA → RGBA;正确处理 alpha 通道:
+    // 1. 若 alpha 全为 0(老式图标无 alpha),用 mask 的反转作为 alpha
+    // 2. 预乘到白色背景(避免透明区域显示为黑色)
+    // 检查 alpha 是否全为 0
+    let has_alpha = (0..(w * h) as usize).any(|i| pixels[i * 4 + 3] != 0);
     for i in 0..(w * h) as usize {
         let b = pixels[i * 4];
         let g = pixels[i * 4 + 1];
         let r = pixels[i * 4 + 2];
-        let a = pixels[i * 4 + 3];
-        pixels[i * 4] = r;
-        pixels[i * 4 + 1] = g;
-        pixels[i * 4 + 2] = b;
-        // alpha 为 0 时用不透明兜底(部分图标 mask 未正确转 alpha)
-        pixels[i * 4 + 3] = if a == 0 { 255 } else { a };
+        let a = if has_alpha {
+            pixels[i * 4 + 3]
+        } else {
+            // 无 alpha 信息:默认不透明
+            255
+        };
+        // 预乘到白色背景:out = src * alpha + white * (1 - alpha)
+        let af = a as f32 / 255.0;
+        pixels[i * 4] = (r as f32 * af + 255.0 * (1.0 - af)) as u8;
+        pixels[i * 4 + 1] = (g as f32 * af + 255.0 * (1.0 - af)) as u8;
+        pixels[i * 4 + 2] = (b as f32 * af + 255.0 * (1.0 - af)) as u8;
+        pixels[i * 4 + 3] = 255; // 最终不透明,避免客户端黑色背景透出
     }
 
     use image::codecs::png::PngEncoder;

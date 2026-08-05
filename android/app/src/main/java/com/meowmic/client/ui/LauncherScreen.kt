@@ -564,27 +564,29 @@ private fun QuickAppCell(
     }
 }
 
-/** 应用图标容器:48×48 圆角方块,显示 PC 真实图标或占位 */
+/** 应用图标容器:56×56 圆角方块,显示 PC 真实图标或占位 */
 @Composable
 private fun AppIconBox(appId: String, vm: MeowMicViewModel) {
     val v by vm.iconVersion.collectAsState() // 订阅图标更新
     val bmp: Bitmap? = vm.iconCache[appId]
     Box(
         modifier = Modifier
-            .size(48.dp)
-            .background(MaterialTheme.colorScheme.surface, RoundedCornerShape(12.dp))
+            .size(56.dp)
+            .background(MaterialTheme.colorScheme.surface, RoundedCornerShape(14.dp))
             .border(
                 1.dp,
                 MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f),
-                RoundedCornerShape(12.dp),
+                RoundedCornerShape(14.dp),
             ),
         contentAlignment = Alignment.Center,
     ) {
         if (bmp != null) {
+            // ContentScale.Fit 保持比例,不拉伸;图标填满容器(留少量内边距)
             Image(
                 bitmap = bmp.asImageBitmap(),
                 contentDescription = appId,
-                modifier = Modifier.size(28.dp),
+                contentScale = androidx.compose.ui.layout.ContentScale.Fit,
+                modifier = Modifier.size(44.dp),
             )
         } else {
             // 未加载或加载失败:触发加载 + 占位图标
@@ -592,7 +594,7 @@ private fun AppIconBox(appId: String, vm: MeowMicViewModel) {
             Icon(
                 Icons.Default.Apps,
                 contentDescription = null,
-                modifier = Modifier.size(24.dp),
+                modifier = Modifier.size(28.dp),
                 tint = MaterialTheme.colorScheme.primary.copy(alpha = 0.6f),
             )
         }
