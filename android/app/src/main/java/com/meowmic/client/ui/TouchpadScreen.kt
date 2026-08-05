@@ -1315,6 +1315,30 @@ fun TouchpadScreen(
         for (k in toRemove) stickyMods.remove(k)
     }
 
+    // ============ 长按锁定(对标实体键盘长按) ============
+    // lockedKeys: 当前处于"长按锁定"状态的 VK code → true
+    // 手势: 长按 + 向上滑动 → 锁定(发送 keydown 并保持,对标实体键盘按住不放)
+    //       再次单击 → 取消锁定(发送 keyup)
+    // 支持多个键同时锁定(如 W+Shift 跑动、Ctrl+Alt+Del 三键长按)
+    val lockedKeys = remember { mutableStateMapOf<Int, Boolean>() }
+
+    // 连接断开时清除所有锁定状态(服务端会自行清理,这里只重置 UI)
+    LaunchedEffect(connectionState) {
+        if (connectionState !is ConnectionState.Connected) {
+            lockedKeys.clear()
+        }
+    }
+
+    // 锁定指定键(发送 keydown 并标记锁定)
+    fun lockKey(keyCode: Int) {
+        if (lockedKeys[keyCode] != true) {
+            if (NativeBridge.sendKeyDown(keyCode)) {
+                lockedKeys[keyCode] = true
+                vm.playFeedbackSound()
+            }
+        }
+    }
+
     fun fireKey(keyCode: Int) {
         // 已处于长按锁定态的键:单击=解除锁定(仅发 keyup),不走 fireKey 流程
         if (lockedKeys[keyCode] == true) {
@@ -1348,39 +1372,6 @@ fun TouchpadScreen(
         if (allSuccess) {
             clearStickyOnly()
             vm.playFeedbackSound()
-        }
-    }
-
-    // ============ 长按锁定(对标实体键盘长按) ============
-    // lockedKeys: 当前处于"长按锁定"状态的 VK code → true
-    // 手势: 长按 + 向上滑动 → 锁定(发送 keydown 并保持,对标实体键盘按住不放)
-    //       再次单击 → 取消锁定(发送 keyup)
-    // 支持多个键同时锁定(如 W+Shift 跑动、Ctrl+Alt+Del 三键长按)
-    val lockedKeys = remember { mutableStateMapOf<Int, Boolean>() }
-
-    // 连接断开时清除所有锁定状态(服务端会自行清理,这里只重置 UI)
-    LaunchedEffect(connectionState) {
-        if (connectionState !is ConnectionState.Connected) {
-            lockedKeys.clear()
-        }
-    }
-
-    // 锁定指定键(发送 keydown 并标记锁定)
-    fun lockKey(keyCode: Int) {
-        if (lockedKeys[keyCode] != true) {
-            if (NativeBridge.sendKeyDown(keyCode)) {
-                lockedKeys[keyCode] = true
-                vm.playFeedbackSound()
-            }
-        }
-    }
-
-    // 解除锁定(发送 keyup 并清除标记)
-    fun unlockKey(keyCode: Int) {
-        if (lockedKeys[keyCode] == true) {
-            if (NativeBridge.sendKeyUp(keyCode)) {
-                lockedKeys.remove(keyCode)
-            }
         }
     }
 

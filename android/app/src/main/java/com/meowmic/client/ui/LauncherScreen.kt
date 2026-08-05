@@ -817,6 +817,7 @@ private fun Taskbar(vm: MeowMicViewModel) {
  * - 单窗口:点击直接 focusWindow;前台窗口右下角显示小圆点
  * - 多窗口:点击弹出窗口列表;右上角显示窗口数徽标
  */
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun TaskAppItem(
     app: RunningApp,
