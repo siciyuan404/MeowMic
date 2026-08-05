@@ -138,29 +138,34 @@ private object VK {
     const val MENU_KEY = 0x5D // AppsKey
 }
 
-/** 小尺寸图标按钮(对齐设计稿顶栏 28dp 圆角方块) */
+/** 小尺寸图标按钮(对齐设计稿顶栏圆角方块,尺寸按方向自适应) */
 @Composable
 private fun IconButtonSmall(
     icon: androidx.compose.ui.graphics.vector.ImageVector,
     contentDescription: String,
     onClick: () -> Unit,
+    isDanger: Boolean = false,
+    buttonSize: androidx.compose.ui.unit.Dp = 28.dp,
+    iconSize: androidx.compose.ui.unit.Dp = 16.dp,
 ) {
+    val tint = if (isDanger) MaterialTheme.colorScheme.error
+    else MaterialTheme.colorScheme.onSurfaceVariant
     Box(
         modifier = Modifier
-            .size(28.dp)
+            .size(buttonSize)
             .background(
                 MaterialTheme.colorScheme.surfaceVariant,
-                RoundedCornerShape(8.dp),
+                RoundedCornerShape(6.dp),
             )
             .border(
                 1.dp,
                 MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f),
-                RoundedCornerShape(8.dp),
+                RoundedCornerShape(6.dp),
             )
             .clickable(onClick = onClick),
         contentAlignment = Alignment.Center,
     ) {
-        Icon(icon, contentDescription, Modifier.size(16.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
+        Icon(icon, contentDescription, Modifier.size(iconSize), tint = tint)
     }
 }
 
@@ -178,24 +183,26 @@ private fun ToggleButtonSmall(
     onClick: () -> Unit,
     tintOff: Color = MaterialTheme.colorScheme.onSurfaceVariant,
     tintOn: Color = MaterialTheme.colorScheme.primary,
+    buttonSize: androidx.compose.ui.unit.Dp = 28.dp,
+    iconSize: androidx.compose.ui.unit.Dp = 16.dp,
 ) {
     Box(
         modifier = Modifier
-            .size(28.dp)
+            .size(buttonSize)
             .background(
                 if (isOn) MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)
                 else MaterialTheme.colorScheme.surfaceVariant,
-                RoundedCornerShape(8.dp),
+                RoundedCornerShape(6.dp),
             )
             .border(
                 1.dp,
                 MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f),
-                RoundedCornerShape(8.dp),
+                RoundedCornerShape(6.dp),
             )
             .clickable(onClick = onClick),
         contentAlignment = Alignment.Center,
     ) {
-        Icon(icon, contentDescription, Modifier.size(16.dp), tint = if (isOn) tintOn else tintOff)
+        Icon(icon, contentDescription, Modifier.size(iconSize), tint = if (isOn) tintOn else tintOff)
     }
 }
 
@@ -214,26 +221,30 @@ private fun ToggleButtonSmall(
 private fun TouchStyleToggle(
     currentStyle: TouchStyle,
     onChange: (TouchStyle) -> Unit,
+    toggleHeight: androidx.compose.ui.unit.Dp = 28.dp,
+    halfWidth: androidx.compose.ui.unit.Dp = 26.dp,
+    dividerHeight: androidx.compose.ui.unit.Dp = 18.dp,
+    iconSize: androidx.compose.ui.unit.Dp = 15.dp,
 ) {
     val borderColor = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)
     Row(
         modifier = Modifier
-            .height(28.dp)
+            .height(toggleHeight)
             .background(
                 MaterialTheme.colorScheme.surfaceVariant,
-                RoundedCornerShape(8.dp),
+                RoundedCornerShape(6.dp),
             )
-            .border(1.dp, borderColor, RoundedCornerShape(8.dp)),
+            .border(1.dp, borderColor, RoundedCornerShape(6.dp)),
         horizontalArrangement = Arrangement.spacedBy(0.dp),
     ) {
         // Mac 触控板风格
         Box(
             modifier = Modifier
-                .size(26.dp)
+                .size(halfWidth, toggleHeight)
                 .background(
                     if (currentStyle == TouchStyle.MAC) MaterialTheme.colorScheme.primary
                     else Color.Transparent,
-                    RoundedCornerShape(topStart = 8.dp, bottomStart = 8.dp),
+                    RoundedCornerShape(topStart = 6.dp, bottomStart = 6.dp),
                 )
                 .clickable { onChange(TouchStyle.MAC) },
             contentAlignment = Alignment.Center,
@@ -241,7 +252,7 @@ private fun TouchStyleToggle(
             Icon(
                 Icons.Default.Mouse,
                 "Mac 触控板风格",
-                Modifier.size(15.dp),
+                Modifier.size(iconSize),
                 tint = if (currentStyle == TouchStyle.MAC) Color.White
                 else MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -250,17 +261,17 @@ private fun TouchStyleToggle(
         Box(
             modifier = Modifier
                 .width(1.dp)
-                .height(18.dp)
+                .height(dividerHeight)
                 .background(borderColor),
         )
         // ThinkPad 小红点风格
         Box(
             modifier = Modifier
-                .size(26.dp)
+                .size(halfWidth, toggleHeight)
                 .background(
                     if (currentStyle == TouchStyle.THINKPAD) MaterialTheme.colorScheme.primary
                     else Color.Transparent,
-                    RoundedCornerShape(topEnd = 8.dp, bottomEnd = 8.dp),
+                    RoundedCornerShape(topEnd = 6.dp, bottomEnd = 6.dp),
                 )
                 .clickable { onChange(TouchStyle.THINKPAD) },
             contentAlignment = Alignment.Center,
@@ -268,7 +279,7 @@ private fun TouchStyleToggle(
             Icon(
                 Icons.Default.Adjust,
                 "ThinkPad 小红点风格",
-                Modifier.size(15.dp),
+                Modifier.size(iconSize),
                 tint = if (currentStyle == TouchStyle.THINKPAD) Color.White
                 else MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -531,8 +542,17 @@ fun TouchpadScreen(
         }
     }
 
+    // 断开连接防重入:避免按钮点击(直接调 onDisconnect)与状态变化 LaunchedEffect
+    // 双重触发导致多次 popBackStack,用户需按多次才返回连接页。
+    // disconnectHandled 在首次触发后置位,离开页面时复位。
+    var disconnectHandled by remember { mutableStateOf(false) }
+
     LaunchedEffect(connectionState) {
-        if (connectionState is ConnectionState.Disconnected || connectionState is ConnectionState.Error) {
+        if (!disconnectHandled && (
+            connectionState is ConnectionState.Disconnected ||
+            connectionState is ConnectionState.Error
+        )) {
+            disconnectHandled = true
             onDisconnect()
         }
     }
@@ -552,147 +572,259 @@ fun TouchpadScreen(
         activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
     }
 
-    // ── 顶部状态栏(紧凑,带品牌标签) ──
+    // ── 可折叠连接栏(默认收起,点击展开详情) ──
+    var connExpanded by remember { mutableStateOf(false) }
     @Composable
-    fun StatusBar() {
-        Card(
-            modifier = Modifier.fillMaxWidth(),
-            shape = RoundedCornerShape(10.dp),
-            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+    fun ConnBar() {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(8.dp))
+                .background(MaterialTheme.colorScheme.surface)
+                .border(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f), RoundedCornerShape(8.dp)),
         ) {
+            // 紧凑行:绿点 + 已连接 + 箭头
             Row(
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 6.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable { connExpanded = !connExpanded }
+                    .padding(horizontal = 10.dp, vertical = 4.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Icon(Icons.Default.Mouse, null, Modifier.size(16.dp), tint = MaterialTheme.colorScheme.primary)
-                Spacer(Modifier.width(6.dp))
-                Column(modifier = Modifier.weight(1f)) {
-                    Text("已连接 · $serverAddr", fontSize = 11.sp, fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                    Text("T:$touchSent  A:$audioSent  $touchMode·${pointerCount}指", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                }
-                // 品牌标签:竖屏/横屏
                 Box(
                     modifier = Modifier
-                        .background(
-                            MaterialTheme.colorScheme.primaryContainer,
-                            RoundedCornerShape(6.dp),
+                        .size(8.dp)
+                        .background(MaterialTheme.colorScheme.primary, CircleShape),
+                )
+                Spacer(Modifier.width(6.dp))
+                Text("已连接", fontSize = 11.sp, fontWeight = FontWeight.Medium, color = MaterialTheme.colorScheme.onSurface)
+                Spacer(Modifier.weight(1f))
+                Icon(
+                    Icons.Default.KeyboardArrowDown,
+                    null,
+                    Modifier.size(14.dp).then(if (connExpanded) Modifier.scale(1f, -1f) else Modifier),
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
+                )
+            }
+            // 展开详情
+            if (connExpanded) {
+                Column(modifier = Modifier.padding(start = 10.dp, end = 10.dp, bottom = 6.dp)) {
+                    Text(serverAddr, fontSize = 11.sp, fontWeight = FontWeight.Medium, color = MaterialTheme.colorScheme.onSurface)
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            "T:$touchSent  A:$audioSent  $touchMode·${pointerCount}指",
+                            fontSize = 10.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
-                        .padding(horizontal = 6.dp, vertical = 2.dp),
-                ) {
-                    Text(
-                        if (isLandscape) "横屏" else "竖屏",
-                        fontSize = 10.sp,
-                        color = MaterialTheme.colorScheme.primary,
-                        fontWeight = FontWeight.Medium,
-                    )
+                        Spacer(Modifier.width(6.dp))
+                        Box(
+                            modifier = Modifier
+                                .background(MaterialTheme.colorScheme.primaryContainer, RoundedCornerShape(4.dp))
+                                .padding(horizontal = 4.dp),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Text(
+                                "竖屏",
+                                fontSize = 9.sp,
+                                color = MaterialTheme.colorScheme.primary,
+                                fontWeight = FontWeight.Medium,
+                            )
+                        }
+                    }
                 }
             }
         }
     }
 
-    // ── 顶部操作栏:返回 / 快捷启动 / 旋转 / 开关组 / 断开连接 ──
-    // 原"更多"下拉菜单已拆解为顶栏平铺小图标按钮,所有开关直显激活态
+    // ── 操作栏分隔线(1dp 宽 20dp 高,左右 2dp 间距) ──
+    @Composable
+    fun ActionBarDivider() {
+        Box(
+            modifier = Modifier
+                .padding(horizontal = 2.dp)
+                .width(1.dp)
+                .height(20.dp)
+                .background(MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)),
+        )
+    }
+
+    // ── 顶部操作栏:左 = 页面切换组,右 = 页面特有开关组 ──
+    // 每个页面右侧显示不同的开关组合;按钮尺寸按方向自适应(竖屏 24dp / 横屏 22dp)
     @Composable
     fun ActionBar(showBack: Boolean = true, showRotate: Boolean = true) {
         val micEnabled by vm.micEnabled.collectAsState()
         val muteSpk by vm.muteSpeaker.collectAsState()
+        // 方向自适应尺寸:横屏更紧凑
+        val btnSize = if (isLandscape) 22.dp else 24.dp
+        val icSize = if (isLandscape) 12.dp else 14.dp
+        val toggleH = if (isLandscape) 22.dp else 24.dp
+        val halfW = if (isLandscape) 20.dp else 22.dp
+        val divH = if (isLandscape) 14.dp else 16.dp
+        val styleIconSize = if (isLandscape) 12.dp else 14.dp
+
         Row(
             modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            horizontalArrangement = Arrangement.spacedBy(3.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            // 返回按钮
+            // ── 左侧:页面切换组(返回 + 分隔线 + 触控/快捷启动/语音/键盘) ──
             if (showBack) {
                 IconButtonSmall(
                     icon = Icons.Default.ArrowBack,
                     contentDescription = "返回",
-                    onClick = onDisconnect,
+                    onClick = {
+                        if (!disconnectHandled) {
+                            disconnectHandled = true
+                            onDisconnect()
+                        }
+                    },
+                    buttonSize = btnSize,
+                    iconSize = icSize,
                 )
+                ActionBarDivider()
             }
-
-            // 触控面板入口(快捷启动左侧):切换到触控视图
             ToggleButtonSmall(
                 icon = Icons.Default.Mouse,
                 contentDescription = "触控面板",
                 isOn = currentView == "touch",
                 onClick = { currentView = "touch" },
+                buttonSize = btnSize,
+                iconSize = icSize,
             )
-
-            Spacer(Modifier.weight(1f))
-
-            // 快捷启动按钮(居中,进入应用库页面)
             IconButtonSmall(
                 icon = Icons.Default.GridView,
                 contentDescription = "快捷启动",
                 onClick = onOpenLauncher,
+                buttonSize = btnSize,
+                iconSize = icSize,
             )
-
-            Spacer(Modifier.weight(1f))
-
-            // 语音入口(快捷启动右侧):切换到语音面板
             ToggleButtonSmall(
                 icon = Icons.Default.GraphicEq,
                 contentDescription = "语音",
                 isOn = currentView == "voice",
                 onClick = { currentView = "voice" },
+                buttonSize = btnSize,
+                iconSize = icSize,
             )
-            // 键盘入口(快捷启动右侧):切换到键盘面板
             ToggleButtonSmall(
                 icon = Icons.Default.Keyboard,
                 contentDescription = "键盘",
                 isOn = currentView == "keyboard",
                 onClick = { currentView = "keyboard" },
+                buttonSize = btnSize,
+                iconSize = icSize,
             )
 
-            // 横屏切换(横屏外层已渲染独立按钮时,此处跳过避免重复)
-            if (showRotate) {
-                IconButtonSmall(
-                    icon = Icons.Default.RotateRight,
-                    contentDescription = if (isLandscape) "竖屏" else "横屏",
-                    onClick = { if (isLandscape) requestPortrait() else requestLandscape() },
-                )
-            }
-            // 麦克风开关(常开推流)
-            ToggleButtonSmall(
-                icon = if (micEnabled) Icons.Default.Mic else Icons.Default.MicOff,
-                contentDescription = if (micEnabled) "关闭麦克风" else "开启麦克风",
-                isOn = micEnabled,
-                onClick = { vm.setMicEnabled(!micEnabled) },
-            )
-            // 扬声器开关(静音 PC 扬声器;未静音=开启=显示 VolumeUp)
-            ToggleButtonSmall(
-                icon = if (muteSpk) Icons.Default.VolumeOff else Icons.Default.VolumeUp,
-                contentDescription = if (muteSpk) "取消静音" else "静音外放",
-                isOn = !muteSpk,
-                onClick = { vm.setMuteSpeaker(!muteSpk) },
-            )
-            // 提示音开关(操作反馈音效)
-            ToggleButtonSmall(
-                icon = Icons.Default.Notifications,
-                contentDescription = if (soundFeedback) "关闭提示音" else "开启提示音",
-                isOn = soundFeedback,
-                onClick = { vm.setSoundFeedback(!soundFeedback) },
-            )
-            // 触控风格切换:双按钮组(MAC / THINKPAD),激活态主色高亮
-            // MAC = 自然滚动+惯性+捏合缩放,THINKPAD = 反向滚动+无惯性+中键滚动模式
-            TouchStyleToggle(
-                currentStyle = touchStyle,
-                onChange = { newStyle ->
-                    if (newStyle != touchStyle) {
-                        vm.setTouchStyle(newStyle)
-                        val name = when (newStyle) {
-                            TouchStyle.MAC -> "Mac 触控板:自然滚动 + 惯性 + 双指缩放"
-                            TouchStyle.THINKPAD -> "ThinkPad:反向滚动 + 中键滚动 + 非线性加速"
-                        }
-                        Toast.makeText(context, name, Toast.LENGTH_SHORT).show()
+            Spacer(Modifier.weight(1f))
+
+            // ── 右侧:页面特有开关组(每个页面不同) ──
+            when (currentView) {
+                "touch" -> {
+                    // 触控页:旋转 + 触控风格(MAC/THINKPAD)+ 麦克风 + 扬声器
+                    if (showRotate) {
+                        IconButtonSmall(
+                            icon = Icons.Default.RotateRight,
+                            contentDescription = if (isLandscape) "竖屏" else "横屏",
+                            onClick = { if (isLandscape) requestPortrait() else requestLandscape() },
+                            buttonSize = btnSize,
+                            iconSize = icSize,
+                        )
                     }
-                },
-            )
-            // 断开连接(红色,无激活态)
+                    TouchStyleToggle(
+                        currentStyle = touchStyle,
+                        onChange = { newStyle ->
+                            if (newStyle != touchStyle) {
+                                vm.setTouchStyle(newStyle)
+                                val name = when (newStyle) {
+                                    TouchStyle.MAC -> "Mac 触控板:自然滚动 + 惯性 + 双指缩放"
+                                    TouchStyle.THINKPAD -> "ThinkPad:反向滚动 + 中键滚动 + 非线性加速"
+                                }
+                                Toast.makeText(context, name, Toast.LENGTH_SHORT).show()
+                            }
+                        },
+                        toggleHeight = toggleH,
+                        halfWidth = halfW,
+                        dividerHeight = divH,
+                        iconSize = styleIconSize,
+                    )
+                    ToggleButtonSmall(
+                        icon = if (micEnabled) Icons.Default.Mic else Icons.Default.MicOff,
+                        contentDescription = if (micEnabled) "关闭麦克风" else "开启麦克风",
+                        isOn = micEnabled,
+                        onClick = { vm.setMicEnabled(!micEnabled) },
+                        buttonSize = btnSize,
+                        iconSize = icSize,
+                    )
+                    ToggleButtonSmall(
+                        icon = if (muteSpk) Icons.Default.VolumeOff else Icons.Default.VolumeUp,
+                        contentDescription = if (muteSpk) "取消静音" else "静音外放",
+                        isOn = !muteSpk,
+                        onClick = { vm.setMuteSpeaker(!muteSpk) },
+                        buttonSize = btnSize,
+                        iconSize = icSize,
+                    )
+                }
+                "voice" -> {
+                    // 语音页:麦克风 + 扬声器 + 提示音
+                    ToggleButtonSmall(
+                        icon = if (micEnabled) Icons.Default.Mic else Icons.Default.MicOff,
+                        contentDescription = if (micEnabled) "关闭麦克风" else "开启麦克风",
+                        isOn = micEnabled,
+                        onClick = { vm.setMicEnabled(!micEnabled) },
+                        buttonSize = btnSize,
+                        iconSize = icSize,
+                    )
+                    ToggleButtonSmall(
+                        icon = if (muteSpk) Icons.Default.VolumeOff else Icons.Default.VolumeUp,
+                        contentDescription = if (muteSpk) "取消静音" else "静音外放",
+                        isOn = !muteSpk,
+                        onClick = { vm.setMuteSpeaker(!muteSpk) },
+                        buttonSize = btnSize,
+                        iconSize = icSize,
+                    )
+                    ToggleButtonSmall(
+                        icon = Icons.Default.Notifications,
+                        contentDescription = if (soundFeedback) "关闭提示音" else "开启提示音",
+                        isOn = soundFeedback,
+                        onClick = { vm.setSoundFeedback(!soundFeedback) },
+                        buttonSize = btnSize,
+                        iconSize = icSize,
+                    )
+                }
+                "keyboard" -> {
+                    // 键盘页:麦克风 + 扬声器
+                    ToggleButtonSmall(
+                        icon = if (micEnabled) Icons.Default.Mic else Icons.Default.MicOff,
+                        contentDescription = if (micEnabled) "关闭麦克风" else "开启麦克风",
+                        isOn = micEnabled,
+                        onClick = { vm.setMicEnabled(!micEnabled) },
+                        buttonSize = btnSize,
+                        iconSize = icSize,
+                    )
+                    ToggleButtonSmall(
+                        icon = if (muteSpk) Icons.Default.VolumeOff else Icons.Default.VolumeUp,
+                        contentDescription = if (muteSpk) "取消静音" else "静音外放",
+                        isOn = !muteSpk,
+                        onClick = { vm.setMuteSpeaker(!muteSpk) },
+                        buttonSize = btnSize,
+                        iconSize = icSize,
+                    )
+                }
+            }
+            ActionBarDivider()
+            // 断开连接(始终显示,红色)
             IconButtonSmall(
                 icon = Icons.Default.Logout,
                 contentDescription = "断开连接",
-                onClick = onDisconnect,
+                onClick = {
+                    if (!disconnectHandled) {
+                        disconnectHandled = true
+                        onDisconnect()
+                    }
+                },
+                isDanger = true,
+                buttonSize = btnSize,
+                iconSize = icSize,
             )
         }
     }
@@ -700,14 +832,18 @@ fun TouchpadScreen(
     // ── 触控区域(虚线边框占位风格,底部含鼠标按键栏) ──
     @Composable
     fun TouchArea(modifier: Modifier) {
+        val areaRadius = if (isLandscape) 12.dp else 16.dp
+        val btnHeight = if (isLandscape) 40.dp else 44.dp
+        val btnIconSize = if (isLandscape) 16.dp else 18.dp
+        val btnLabelSize = if (isLandscape) 9.sp else 10.sp
         Column(
             modifier = modifier
-                .clip(RoundedCornerShape(16.dp))
+                .clip(RoundedCornerShape(areaRadius))
                 .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f))
                 .dashedBorder(
                     color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f),
                     width = 1.dp,
-                    shape = RoundedCornerShape(16.dp),
+                    shape = RoundedCornerShape(areaRadius),
                 ),
         ) {
             // 手势区(占满剩余空间)
@@ -767,13 +903,13 @@ fun TouchpadScreen(
                         )
                     }
                     .background(MaterialTheme.colorScheme.surface)
-                    .padding(horizontal = 8.dp, vertical = 8.dp),
+                    .padding(horizontal = 8.dp, vertical = if (isLandscape) 6.dp else 8.dp),
                 horizontalArrangement = Arrangement.spacedBy(1.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                MouseBtn("左键", Icons.Default.Mouse, BTN_LEFT, Modifier.weight(1f).height(44.dp), "鼠标左键:单击/按住拖拽", { showToast(it) }, { vm.playFeedbackSound() })
-                MouseBtn("中键", Icons.Default.Mouse, BTN_MIDDLE, Modifier.weight(1f).height(44.dp), "鼠标中键:滚轮按键(THINKPAD 模式下按住可滚动)", { showToast(it) }, { vm.playFeedbackSound() }, onStateChange = { pressed -> vm.setMiddleButtonPressed(pressed) })
-                MouseBtn("右键", Icons.Default.Menu, BTN_RIGHT, Modifier.weight(1f).height(44.dp), "鼠标右键:上下文菜单", { showToast(it) }, { vm.playFeedbackSound() })
+                MouseBtn("左键", Icons.Default.Mouse, BTN_LEFT, Modifier.weight(1f).height(btnHeight), "鼠标左键:单击/按住拖拽", { showToast(it) }, { vm.playFeedbackSound() }, iconSize = btnIconSize, labelSize = btnLabelSize)
+                MouseBtn("中键", Icons.Default.Mouse, BTN_MIDDLE, Modifier.weight(1f).height(btnHeight), "鼠标中键:滚轮按键(THINKPAD 模式下按住可滚动)", { showToast(it) }, { vm.playFeedbackSound() }, onStateChange = { pressed -> vm.setMiddleButtonPressed(pressed) }, iconSize = btnIconSize, labelSize = btnLabelSize)
+                MouseBtn("右键", Icons.Default.Menu, BTN_RIGHT, Modifier.weight(1f).height(btnHeight), "鼠标右键:上下文菜单", { showToast(it) }, { vm.playFeedbackSound() }, iconSize = btnIconSize, labelSize = btnLabelSize)
             }
         }
     }
@@ -1796,35 +1932,14 @@ fun TouchpadScreen(
     }
 
     if (isLandscape) {
-        // 横屏:触控区域占主导,右侧固定宽度控制面板
-        Row(modifier = Modifier.fillMaxSize().padding(8.dp)) {
+        // 横屏:操作栏 + 触控区域(对齐设计稿横屏 v2,移除状态栏,紧凑布局)
+        // voice/keyboard 时右侧显示面板;touch 时触控区域占满
+        Row(modifier = Modifier.fillMaxSize().padding(8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             Column(modifier = Modifier.weight(1f)) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(6.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    // 返回按钮
-                    IconButtonSmall(
-                        icon = Icons.Default.ArrowBack,
-                        contentDescription = "返回",
-                        onClick = onDisconnect,
-                    )
-                    StatusBar()
-                    Spacer(Modifier.weight(1f))
-                    // 独立旋转按钮(对齐设计稿横屏操作栏)
-                    IconButtonSmall(
-                        icon = Icons.Default.RotateRight,
-                        contentDescription = "切换竖屏",
-                        onClick = { requestPortrait() },
-                    )
-                    // 横屏:外层已渲染返回/旋转按钮,ActionBar 只显示开关组 + 断开连接
-                    ActionBar(showBack = false, showRotate = false)
-                }
+                ActionBar()
                 Spacer(Modifier.height(6.dp))
                 TouchArea(modifier = Modifier.weight(1f).fillMaxWidth())
             }
-            Spacer(Modifier.width(8.dp))
             // 右侧面板:仅 voice/keyboard 时显示(touch 时触控区域占满)
             if (currentView != "touch") {
                 Column(
@@ -1836,12 +1951,10 @@ fun TouchpadScreen(
             }
         }
     } else {
-        // 竖屏:自上而下 — 状态栏 → 操作栏 → 主区域(触控/语音/键盘 按 currentView 切换)
-        Column(modifier = Modifier.fillMaxSize().padding(12.dp)) {
-            StatusBar()
-            Spacer(Modifier.height(6.dp))
+        // 竖屏:自上而下 — 连接栏 → 操作栏 → 主区域(触控/语音/键盘 按 currentView 切换)
+        Column(modifier = Modifier.fillMaxSize().padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            ConnBar()
             ActionBar()
-            Spacer(Modifier.height(8.dp))
             // 主区域:根据顶栏图标切换触控面板 / 语音面板 / 键盘面板
             when (currentView) {
                 "touch" -> TouchArea(modifier = Modifier.weight(1f).fillMaxWidth())
@@ -1877,6 +1990,8 @@ private fun MouseBtn(
     onTooltip: (String) -> Unit,
     onPressed: () -> Unit = {},
     onStateChange: ((Boolean) -> Unit)? = null,
+    iconSize: androidx.compose.ui.unit.Dp = 18.dp,
+    labelSize: androidx.compose.ui.unit.TextUnit = 10.sp,
 ) {
     var pressed by remember { mutableStateOf(false) }
 
@@ -1912,8 +2027,8 @@ private fun MouseBtn(
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.spacedBy(2.dp),
         ) {
-            Icon(icon, null, Modifier.size(18.dp), tint = fgColor)
-            Text(label, fontSize = 10.sp, color = fgColor)
+            Icon(icon, null, Modifier.size(iconSize), tint = fgColor)
+            Text(label, fontSize = labelSize, color = fgColor)
         }
     }
 }

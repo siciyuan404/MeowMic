@@ -291,7 +291,16 @@ class MeowMicViewModel : ViewModel() {
     private var updateChecker: UpdateChecker? = null
     private var pendingApkPath: String? = null
 
+    /** init 是否已执行过(防重复初始化,避免断开返回 connect 页后自动重连) */
+    @Volatile
+    private var initialized: Boolean = false
+
     fun init(context: Context) {
+        // 防重复初始化:ViewModel 单例存活于整个 Activity 生命周期,
+        // ConnectScreen 每次重组都会触发 LaunchedEffect(Unit){ vm.init(context) },
+        // 若不加保护会重复启动 mDNS 发现、手动 PC 轮询、自动重连,导致断开后闪连。
+        if (initialized) return
+        initialized = true
         this.context = context.applicationContext
         audioInputManager.init(context.applicationContext)
         voiceRecorder.init(context.applicationContext)
@@ -1229,6 +1238,10 @@ class MeowMicViewModel : ViewModel() {
             Log.w(TAG, "nativeDisconnect 失败: ${e.message}")
         }
         _connectionState.value = ConnectionState.Disconnected
+        // 用户主动断开:清空 last_addr,避免返回连接页后 autoReconnectLastPc 自动重连
+        _lastAddr.value = ""
+        context?.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            ?.edit()?.putString(KEY_LAST_ADDR, "")?.apply()
         // 清空快捷启动状态(应用库和图标与 PC 绑定,断开后失效)
         _appListState.value = AppListState.Idle
         _iconCache.clear()
