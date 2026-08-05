@@ -25,6 +25,7 @@ mod touch_inject;
 mod audio_play;
 mod stats;
 mod apps;
+mod windows;
 
 #[derive(Parser, Debug)]
 #[command(name = "meowmic-server", version, about = "MeowMic 服务端 - 极低延迟手机外设")]
@@ -194,6 +195,7 @@ async fn run_server(bind: &str, port: u16, output_device: Option<&str>) -> Resul
     });
     info!("serverinfo HTTP 监听: http://{}/serverinfo", serverinfo_addr);
     info!("快捷启动端点: /applist /app_icon /launch /add_app /remove_app /list_dir");
+    info!("任务栏端点: /running_apps /exe_icon /focus_window /close_window");
 
     // 启动 HTTP /pairing 服务(监听 127.0.0.1:{base_port + 5})
     // 供 PC 控制台查询当前 PIN / 已配对客户端列表 / 重置配对
@@ -702,6 +704,66 @@ async fn run_serverinfo_server(
                             let body = format!(r#"{{"error":"{}"}}"#, e);
                             ("400 Bad Request", "application/json", body.into_bytes())
                         }
+                    }
+                }
+            } else if method == "GET" && path == "/running_apps" {
+                // 任务栏:返回运行中应用窗口列表(JSON 数组,按 exe 路径分组)
+                if !check_paired(&pairing, query).await {
+                    ("403 Forbidden", "application/json", br#"{"error":"not paired"}"#.to_vec())
+                } else {
+                    let apps_list = windows::enumerate_running_apps();
+                    match serde_json::to_string(&apps_list) {
+                        Ok(json) => ("200 OK", "application/json", json.into_bytes()),
+                        Err(e) => {
+                            let body = format!(r#"{{"error":"{}"}}"#, e);
+                            ("500 Internal Server Error", "application/json", body.into_bytes())
+                        }
+                    }
+                }
+            } else if method == "GET" && path == "/exe_icon" {
+                // 任务栏:返回 exe 图标 PNG(按 exe 路径直接提取,不依赖应用库)
+                if !check_paired(&pairing, query).await {
+                    ("403 Forbidden", "application/json", br#"{"error":"not paired"}"#.to_vec())
+                } else {
+                    let exe_raw = extract_query_param(query, "path").unwrap_or_default();
+                    let exe_path = url_decode(&exe_raw);
+                    if exe_path.is_empty() {
+                        ("400 Bad Request", "application/json", br#"{"error":"path required"}"#.to_vec())
+                    } else {
+                        match apps::extract_icon_png(&exe_path) {
+                            Some(png) => ("200 OK", "image/png", png),
+                            None => ("404 Not Found", "application/json", br#"{"error":"no icon"}"#.to_vec()),
+                        }
+                    }
+                }
+            } else if method == "POST" && path == "/focus_window" {
+                // 任务栏:前台激活指定窗口(模拟任务栏点击)
+                if !check_paired(&pairing, query).await {
+                    ("403 Forbidden", "application/json", br#"{"error":"not paired"}"#.to_vec())
+                } else {
+                    let hwnd_str = extract_query_param(query, "hwnd").unwrap_or_default();
+                    match hwnd_str.parse::<u64>() {
+                        Ok(hwnd) => {
+                            let ok = windows::focus_window(hwnd);
+                            let body = format!(r#"{{"ok":{}}}"#, ok);
+                            ("200 OK", "application/json", body.into_bytes())
+                        }
+                        Err(_) => ("400 Bad Request", "application/json", br#"{"error":"invalid hwnd"}"#.to_vec()),
+                    }
+                }
+            } else if method == "POST" && path == "/close_window" {
+                // 任务栏:优雅关闭指定窗口(发送 WM_CLOSE)
+                if !check_paired(&pairing, query).await {
+                    ("403 Forbidden", "application/json", br#"{"error":"not paired"}"#.to_vec())
+                } else {
+                    let hwnd_str = extract_query_param(query, "hwnd").unwrap_or_default();
+                    match hwnd_str.parse::<u64>() {
+                        Ok(hwnd) => {
+                            let ok = windows::close_window(hwnd);
+                            let body = format!(r#"{{"ok":{}}}"#, ok);
+                            ("200 OK", "application/json", body.into_bytes())
+                        }
+                        Err(_) => ("400 Bad Request", "application/json", br#"{"error":"invalid hwnd"}"#.to_vec()),
                     }
                 }
             } else {

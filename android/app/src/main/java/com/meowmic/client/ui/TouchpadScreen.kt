@@ -18,13 +18,15 @@ import androidx.compose.animation.core.tween
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
-import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.*
+import androidx.compose.ui.graphics.PathEffect
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
@@ -50,6 +52,7 @@ import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.awaitPointerEvent
 import androidx.compose.ui.input.pointer.changedToUp
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.pointerInteropFilter
@@ -65,10 +68,10 @@ import com.meowmic.client.ConnectionState
 import com.meowmic.client.MeowMicViewModel
 import com.meowmic.client.NativeBridge
 import com.meowmic.client.QuickAudioSlot
+import com.meowmic.client.TouchStyle
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import org.json.JSONObject
-import kotlin.math.abs
 
 // 按钮掩码常量(与 server/protocol 对应)
 private const val BTN_LEFT = 0x01
@@ -285,8 +288,6 @@ private fun QuickKeySlotCell(
     val isSet = value.isNotBlank()
     val borderColor = if (editMode) MaterialTheme.colorScheme.primary
     else MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f)
-    val borderStyle = if (isSet || editMode) BorderStroke(1.dp, borderColor)
-    else BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
     // 按下反馈色
     val bgColor = when {
         pressed -> MaterialTheme.colorScheme.primary
@@ -303,7 +304,16 @@ private fun QuickKeySlotCell(
         modifier = modifier
             .height(if (isLandscape) 24.dp else 30.dp)
             .background(bgColor, RoundedCornerShape(6.dp))
-            .border(borderStyle, RoundedCornerShape(6.dp))
+            .then(
+                if (isSet || editMode) Modifier.border(1.dp, borderColor, RoundedCornerShape(6.dp))
+                else Modifier.dashedBorder(
+                    color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f),
+                    width = 1.dp,
+                    shape = RoundedCornerShape(6.dp),
+                    dash = 6f,
+                    gap = 3f,
+                )
+            )
             .then(
                 if (editMode) Modifier
                 else Modifier.clickable {
@@ -378,6 +388,7 @@ fun TouchpadScreen(
     val audioHistory by vm.audioHistory.collectAsState()
     val quickSlots by vm.quickSlots.collectAsState()
     val soundFeedback by vm.soundFeedback.collectAsState()
+    val touchStyle by vm.touchStyle.collectAsState()
 
     // 统计数据
     var touchSent = 0L
@@ -488,7 +499,7 @@ fun TouchpadScreen(
 
             // 快捷启动按钮(居中,进入应用库页面)
             IconButtonSmall(
-                icon = Icons.Default.Apps,
+                icon = Icons.Default.GridView,
                 contentDescription = "快捷启动",
                 onClick = onOpenLauncher,
             )
@@ -516,7 +527,7 @@ fun TouchpadScreen(
                             if (isLandscape) requestPortrait() else requestLandscape()
                             menuExpanded = false
                         },
-                        leadingIcon = { Icon(Icons.Default.ScreenRotation, null, Modifier.size(16.dp)) },
+                        leadingIcon = { Icon(Icons.Default.RotateRight, null, Modifier.size(16.dp)) },
                     )
                     HorizontalDivider()
                     // 麦克风开关(常开推流)
@@ -563,15 +574,19 @@ fun TouchpadScreen(
                             )
                         },
                     )
-                    // 操作提示 Toast 开关(独立于提示音)
+                    // 触控风格切换(MAC 自然滚动 + 惯性 / THINKPAD 反向滚动 + 无惯性)
                     DropdownMenuItem(
-                        text = { Text("操作提示", fontSize = 12.sp) },
-                        onClick = { showTooltips = !showTooltips },
-                        leadingIcon = { Icon(Icons.Default.ChatBubbleOutline, null, Modifier.size(16.dp)) },
+                        text = { Text("自然滚动", fontSize = 12.sp) },
+                        onClick = {
+                            vm.setTouchStyle(if (touchStyle == TouchStyle.MAC) TouchStyle.THINKPAD else TouchStyle.MAC)
+                        },
+                        leadingIcon = { Icon(Icons.Default.SwapVert, null, Modifier.size(16.dp)) },
                         trailingIcon = {
                             Switch(
-                                checked = showTooltips,
-                                onCheckedChange = { showTooltips = it },
+                                checked = touchStyle == TouchStyle.MAC,
+                                onCheckedChange = {
+                                    vm.setTouchStyle(if (it) TouchStyle.MAC else TouchStyle.THINKPAD)
+                                },
                                 modifier = Modifier.scale(0.7f),
                             )
                         },
@@ -598,16 +613,17 @@ fun TouchpadScreen(
             modifier = modifier
                 .clip(RoundedCornerShape(16.dp))
                 .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f))
-                .border(
-                    1.dp,
-                    MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f),
-                    RoundedCornerShape(16.dp),
+                .dashedBorder(
+                    color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f),
+                    width = 1.dp,
+                    shape = RoundedCornerShape(16.dp),
                 ),
         ) {
             // 手势区(占满剩余空间)
             Box(
                 modifier = Modifier
                     .weight(1f)
+                    .fillMaxWidth()
                     .pointerInteropFilter { event ->
                         // 仅在值变化时更新 state,避免每个 ACTION_MOVE 触发重组
                         val newCount = event.pointerCount
@@ -636,7 +652,10 @@ fun TouchpadScreen(
                     )
                     Spacer(Modifier.height(6.dp))
                     Text(
-                        "滑动移动 · 双指右键 · 双指滚动",
+                        if (touchStyle == TouchStyle.MAC)
+                            "滑动移动 · 双指右键 · 自然滚动"
+                        else
+                            "滑动移动 · 双指右键 · 反向滚动",
                         fontSize = if (isLandscape) 10.sp else 11.sp,
                         color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
                     )
@@ -660,7 +679,7 @@ fun TouchpadScreen(
                 horizontalArrangement = Arrangement.spacedBy(1.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                MouseBtn("左键", Icons.Default.Mouse, BTN_LEFT, Modifier.weight(1f).height(44.dp), "鼠标左键:单击/按住拖拽", { showToast(it) }, { vm.playFeedbackSound() })
+                MouseBtn("左键", Icons.Default.MousePointer, BTN_LEFT, Modifier.weight(1f).height(44.dp), "鼠标左键:单击/按住拖拽", { showToast(it) }, { vm.playFeedbackSound() })
                 MouseBtn("中键", Icons.Default.Mouse, BTN_MIDDLE, Modifier.weight(1f).height(44.dp), "鼠标中键:滚轮按键", { showToast(it) }, { vm.playFeedbackSound() })
                 MouseBtn("右键", Icons.Default.Menu, BTN_RIGHT, Modifier.weight(1f).height(44.dp), "鼠标右键:上下文菜单", { showToast(it) }, { vm.playFeedbackSound() })
             }
@@ -700,7 +719,7 @@ fun TouchpadScreen(
                 Spacer(Modifier.height(4.dp))
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Icon(
-                        Icons.Default.ExpandLess,
+                        Icons.Default.KeyboardArrowUp,
                         null,
                         Modifier.size(14.dp).rotate(chevronRotation),
                         tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
@@ -862,25 +881,16 @@ fun TouchpadScreen(
     }
 
     // ─────────── PTT 长按说话按钮(对齐设计稿 mm-rec-btn 圆形 56dp) ───────────
-    // state: idle / recording / locked
-    // idle → 按下 → recording → 抬起 → idle
-    // idle → 按下 → recording → 滑动超过阈值 → locked
-    // locked → 点击 → idle
+    // 按住说话 → 松开停止(对齐设计稿,无锁定态)
     @OptIn(ExperimentalComposeUiApi::class)
     @Composable
     fun PttButton(modifier: Modifier) {
-        // 状态: idle(空闲) / recording(录音中) / locked(锁定录音)
-        var btnState by remember { mutableStateOf("idle") }
-        val density = LocalDensity.current
-        val lockThresholdPx = with(density) { 60.dp.toPx() }
+        var isRecording by remember { mutableStateOf(false) }
         val micEnabled by vm.micEnabled.collectAsState()
         // 麦克风常开时禁用 PTT(避免 MediaRecorder 和 AudioCapture 同时占用麦克风)
         val disabled = micEnabled
 
-        // 用 mutableStateOf 包装当前状态供 pointerInput 读取,避免 key 变化重启
-        val stateRef = remember { mutableStateOf("idle") }
-
-        // 实时计时器:基于 vm.isRecording 信号,录音/锁定期间持续累计
+        // 实时计时器:基于 vm.isRecording 信号,录音期间持续累计
         var recSeconds by remember { mutableStateOf(0) }
         val isVmRecording by vm.isRecording.collectAsState()
         LaunchedEffect(isVmRecording) {
@@ -893,14 +903,10 @@ fun TouchpadScreen(
             }
         }
 
-        // 设计稿:按钮始终红色(status-error),锁定态用 tertiary 区分
-        val btnColor = when {
-            disabled -> MaterialTheme.colorScheme.surfaceVariant
-            btnState == "locked" -> MaterialTheme.colorScheme.tertiary
-            else -> MaterialTheme.colorScheme.error
-        }
+        // 设计稿:按钮始终红色(status-error)
+        val btnColor = if (disabled) MaterialTheme.colorScheme.surfaceVariant
+        else MaterialTheme.colorScheme.error
         val iconColor = if (disabled) MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f) else Color.White
-        val isActive = btnState == "recording" || btnState == "locked"
 
         // 计时器格式化
         fun formatTime(s: Int): String {
@@ -910,13 +916,12 @@ fun TouchpadScreen(
         }
         val text = when {
             disabled -> "麦克风常开中"
-            btnState == "recording" -> "录音中 ${formatTime(recSeconds)}  松开停止"
-            btnState == "locked" -> "已锁定 ${formatTime(recSeconds)}  点取消"
+            isRecording -> "录音中 ${formatTime(recSeconds)}  松开停止"
             else -> "按住说话"
         }
         val textColor = when {
             disabled -> MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
-            isActive -> MaterialTheme.colorScheme.error
+            isRecording -> MaterialTheme.colorScheme.error
             else -> MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
         }
 
@@ -930,7 +935,7 @@ fun TouchpadScreen(
                 modifier = Modifier.size(56.dp),
                 contentAlignment = Alignment.Center,
             ) {
-                if (isActive) {
+                if (isRecording) {
                     PulseRing(color = btnColor, size = 56.dp)
                 }
                 Box(
@@ -941,67 +946,19 @@ fun TouchpadScreen(
                             if (disabled) return@pointerInput
                             awaitEachGesture {
                                 val down = awaitFirstDown(requireUnconsumed = false)
-                                val pressX = down.position.x
-                                val pressY = down.position.y
-                                val currentState = stateRef.value
-
-                                when (currentState) {
-                                    "idle" -> {
-                                        btnState = "recording"
-                                        stateRef.value = "recording"
-                                        vm.startRecording()
-                                        vm.playFeedbackSound()
-                                        showToast("开始录音(松开结束,上滑锁定)")
-                                        var locked = false
-                                        while (true) {
-                                            val event = awaitPointerEvent(PointerEventPass.Main)
-                                            val change = event.changes.firstOrNull() ?: break
-                                            if (!locked) {
-                                                val dx: Float = change.position.x - pressX
-                                                val dy: Float = change.position.y - pressY
-                                                if (abs(dx) > lockThresholdPx || abs(dy) > lockThresholdPx) {
-                                                    locked = true
-                                                    btnState = "locked"
-                                                    stateRef.value = "locked"
-                                                    showToast("已锁定录音(点击取消)")
-                                                }
-                                            }
-                                            if (change.changedToUp()) {
-                                                if (!locked) {
-                                                    btnState = "idle"
-                                                    stateRef.value = "idle"
-                                                    vm.stopRecording()
-                                                }
-                                                break
-                                            }
-                                        }
-                                    }
-                                    "locked" -> {
-                                        // 点击取消锁定 - 等待抬起后再切换状态
-                                        while (true) {
-                                            val event = awaitPointerEvent(PointerEventPass.Main)
-                                            val change = event.changes.firstOrNull() ?: break
-                                            if (change.changedToUp()) {
-                                                btnState = "idle"
-                                                stateRef.value = "idle"
-                                                vm.cancelRecording()
-                                                showToast("已取消录音")
-                                                break
-                                            }
-                                        }
-                                    }
-                                    else -> {
-                                        // recording 状态防御:等待抬起
-                                        while (true) {
-                                            val event = awaitPointerEvent(PointerEventPass.Main)
-                                            val change = event.changes.firstOrNull() ?: break
-                                            if (change.changedToUp()) {
-                                                btnState = "idle"
-                                                stateRef.value = "idle"
-                                                vm.stopRecording()
-                                                break
-                                            }
-                                        }
+                                // 按下开始录音
+                                isRecording = true
+                                vm.startRecording()
+                                vm.playFeedbackSound()
+                                showToast("开始录音(松开停止)")
+                                // 等待抬起
+                                while (true) {
+                                    val event = awaitPointerEvent(PointerEventPass.Main)
+                                    val change = event.changes.firstOrNull() ?: break
+                                    if (change.changedToUp()) {
+                                        isRecording = false
+                                        vm.stopRecording()
+                                        break
                                     }
                                 }
                             }
@@ -1009,7 +966,7 @@ fun TouchpadScreen(
                     contentAlignment = Alignment.Center,
                 ) {
                     Icon(
-                        if (isActive) Icons.Default.Stop else Icons.Default.Mic,
+                        if (isRecording) Icons.Default.Stop else Icons.Default.Mic,
                         null,
                         Modifier.size(22.dp),
                         tint = iconColor,
@@ -1019,7 +976,7 @@ fun TouchpadScreen(
             // 波形条(仅录音时可见)
             WaveBars(
                 color = MaterialTheme.colorScheme.error,
-                active = isActive,
+                active = isRecording,
             )
             // 状态文字
             Text(text, fontSize = 11.sp, color = textColor)
@@ -1045,20 +1002,25 @@ fun TouchpadScreen(
 
         val isSet = slot != null
         val bgColor = if (isSet) MaterialTheme.colorScheme.primaryContainer
-        else MaterialTheme.colorScheme.surfaceVariant
+        else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
         val fgColor = if (isSet) MaterialTheme.colorScheme.onPrimaryContainer
         else MaterialTheme.colorScheme.onSurfaceVariant
 
         Box {
             Box(
                 modifier = Modifier
-                    .height(36.dp)
+                    .height(32.dp)
                     .fillMaxWidth()
-                    .background(bgColor, RoundedCornerShape(8.dp))
-                    .border(
-                        width = if (isSet) 0.dp else 1.dp,
-                        color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f),
-                        shape = RoundedCornerShape(8.dp),
+                    .background(bgColor, RoundedCornerShape(6.dp))
+                    .then(
+                        if (isSet) Modifier.border(0.dp, Color.Transparent, RoundedCornerShape(6.dp))
+                        else Modifier.dashedBorder(
+                            color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f),
+                            width = 1.dp,
+                            shape = RoundedCornerShape(6.dp),
+                            dash = 6f,
+                            gap = 3f,
+                        )
                     )
                     .pointerInput(slot, index) {
                         detectTapGestures(
@@ -1250,28 +1212,12 @@ fun TouchpadScreen(
                         )
                     }
                 }
-                // 停止按钮(MUSIC_FILE 模式下显示)
-                if (currentAudioMode == AudioInputManager.InputMode.MUSIC_FILE) {
-                    Spacer(Modifier.weight(1f))
-                    Box(
-                        modifier = Modifier
-                            .size(28.dp)
-                            .background(MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(8.dp))
-                            .clickable {
-                                vm.stopMusicPlayback()
-                                showToast("停止音频播放")
-                            },
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        Icon(Icons.Default.Stop, "停止", Modifier.size(16.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
-                    }
-                }
             }
 
             Spacer(Modifier.height(8.dp))
 
             // 历史区
-            Text("历史", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f))
+            Text("历史播放", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f))
             Spacer(Modifier.height(4.dp))
             if (audioHistory.isEmpty()) {
                 Text(
@@ -1312,7 +1258,7 @@ fun TouchpadScreen(
             Spacer(Modifier.height(8.dp))
 
             // 快捷 slot 区:4 列 x 2 行 = 8 个
-            Text("快捷", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f))
+            Text("快捷播放", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f))
             Spacer(Modifier.height(4.dp))
             Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 for (row in 0 until 2) {
@@ -1362,7 +1308,7 @@ fun TouchpadScreen(
             horizontalArrangement = Arrangement.spacedBy(6.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            MouseBtn("左键", Icons.Default.Mouse, BTN_LEFT, Modifier.weight(1f).height(44.dp), "鼠标左键:单击/按住拖拽", { showToast(it) }, { vm.playFeedbackSound() })
+            MouseBtn("左键", Icons.Default.MousePointer, BTN_LEFT, Modifier.weight(1f).height(44.dp), "鼠标左键:单击/按住拖拽", { showToast(it) }, { vm.playFeedbackSound() })
             MouseBtn("中键", Icons.Default.Mouse, BTN_MIDDLE, Modifier.weight(1f).height(44.dp), "鼠标中键:滚轮按键", { showToast(it) }, { vm.playFeedbackSound() })
             MouseBtn("右键", Icons.Default.Menu, BTN_RIGHT, Modifier.weight(1f).height(44.dp), "鼠标右键:上下文菜单", { showToast(it) }, { vm.playFeedbackSound() })
         }
@@ -1681,31 +1627,90 @@ fun TouchpadScreen(
         val isRecording by vm.isRecording.collectAsState()
 
         Column(modifier = Modifier.padding(horizontal = 12.dp)) {
-            // Tab 行(下划线风格)
-            TabRow(
-                selectedTabIndex = selectedTab,
+            // Tab 行(自定义下划线风格,对齐设计稿 ds-tabs:gap 16px、底部 2px 横线)
+            Row(
                 modifier = Modifier.fillMaxWidth(),
-                contentColor = MaterialTheme.colorScheme.primary,
+                horizontalArrangement = Arrangement.spacedBy(16.dp),
+                verticalAlignment = Alignment.CenterVertically,
             ) {
-                Tab(
-                    selected = selectedTab == 0,
-                    onClick = { selectedTab = 0 },
-                    text = { Text("语音", fontSize = 12.sp) },
-                    icon = { Icon(Icons.Default.GraphicEq, null, Modifier.size(14.dp)) },
-                )
-                Tab(
-                    selected = selectedTab == 1,
-                    onClick = { selectedTab = 1 },
-                    text = { Text("键盘", fontSize = 12.sp) },
-                    icon = { Icon(Icons.Default.Keyboard, null, Modifier.size(14.dp)) },
-                )
+                // 语音 Tab
+                Box(
+                    modifier = Modifier
+                        .clickable { selectedTab = 0 }
+                        .padding(vertical = 8.dp)
+                        .drawWithContent {
+                            drawContent()
+                            if (selectedTab == 0) {
+                                // 激活态:底部 2px 下划线,颜色 = onSurface
+                                drawRect(
+                                    color = MaterialTheme.colorScheme.onSurface,
+                                    topLeft = androidx.compose.ui.geometry.Offset(0f, size.height - 2.dp.toPx()),
+                                    size = androidx.compose.ui.geometry.Size(size.width, 2.dp.toPx()),
+                                )
+                            }
+                        },
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(
+                            Icons.Default.GraphicEq,
+                            null,
+                            Modifier.size(14.dp),
+                            tint = if (selectedTab == 0) MaterialTheme.colorScheme.onSurface
+                            else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
+                        )
+                        Spacer(Modifier.width(4.dp))
+                        Text(
+                            "语音",
+                            fontSize = 12.sp,
+                            color = if (selectedTab == 0) MaterialTheme.colorScheme.onSurface
+                            else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
+                            fontWeight = FontWeight.Medium,
+                        )
+                    }
+                }
+                // 键盘 Tab
+                Box(
+                    modifier = Modifier
+                        .clickable { selectedTab = 1 }
+                        .padding(vertical = 8.dp)
+                        .drawWithContent {
+                            drawContent()
+                            if (selectedTab == 1) {
+                                drawRect(
+                                    color = MaterialTheme.colorScheme.onSurface,
+                                    topLeft = androidx.compose.ui.geometry.Offset(0f, size.height - 2.dp.toPx()),
+                                    size = androidx.compose.ui.geometry.Size(size.width, 2.dp.toPx()),
+                                )
+                            }
+                        },
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(
+                            Icons.Default.Keyboard,
+                            null,
+                            Modifier.size(14.dp),
+                            tint = if (selectedTab == 1) MaterialTheme.colorScheme.onSurface
+                            else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
+                        )
+                        Spacer(Modifier.width(4.dp))
+                        Text(
+                            "键盘",
+                            fontSize = 12.sp,
+                            color = if (selectedTab == 1) MaterialTheme.colorScheme.onSurface
+                            else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
+                            fontWeight = FontWeight.Medium,
+                        )
+                    }
+                }
             }
 
             Spacer(Modifier.height(10.dp))
 
             when (selectedTab) {
                 0 -> {
-                    // 语音 Tab:麦克风状态 orb + PTT 录音 + 历史播放 + 快捷槽位
+                    // 语音 Tab:麦克风状态 orb + 分割线 + PTT 录音 + 历史播放 + 快捷槽位
                     // 顶部:状态指示器 + 状态文字(对齐设计稿 mm-mic-status)
                     Column(
                         modifier = Modifier.fillMaxWidth(),
@@ -1725,6 +1730,14 @@ fun TouchpadScreen(
                         }
                         Text(statusText, fontSize = 11.sp, color = statusColor, fontWeight = FontWeight.Medium)
                     }
+                    // 分割线(对齐设计稿 panelVoice 内 1px 分隔)
+                    Spacer(Modifier.height(4.dp))
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(1.dp)
+                            .background(MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f)),
+                    )
                     Spacer(Modifier.height(10.dp))
                     PttButton(modifier = Modifier.fillMaxWidth())
                     if (micEnabled) {
@@ -1765,7 +1778,7 @@ fun TouchpadScreen(
                     Spacer(Modifier.weight(1f))
                     // 独立旋转按钮(对齐设计稿横屏操作栏)
                     IconButtonSmall(
-                        icon = Icons.Default.ScreenRotation,
+                        icon = Icons.Default.RotateRight,
                         contentDescription = "切换竖屏",
                         onClick = { requestPortrait() },
                     )
@@ -1872,4 +1885,27 @@ private fun MouseBtn(
             Text(label, fontSize = 10.sp, color = fgColor)
         }
     }
+}
+
+/**
+ * 虚线边框(对齐设计稿 1px dashed)
+ * Compose 默认 border 不支持虚线,用 drawWithContent + dashPathEffect 实现
+ */
+private fun Modifier.dashedBorder(
+    color: Color,
+    width: androidx.compose.ui.unit.Dp,
+    shape: androidx.compose.ui.graphics.Shape = RoundedCornerShape(0.dp),
+    dash: Float = 8f,
+    gap: Float = 4f,
+): Modifier = this.drawWithContent {
+    drawContent()
+    val outline = shape.createOutline(size, layoutDirection, this)
+    drawOutline(
+        outline = outline,
+        color = color,
+        style = Stroke(
+            width = width.toPx(),
+            pathEffect = PathEffect.dashPathEffect(floatArrayOf(dash, gap), 0f),
+        ),
+    )
 }

@@ -46,10 +46,10 @@
         "deviceType": "desktop",
         "layoutSnapshot": {
           "version": 1,
-          "contentHeight": 1187,
+          "contentHeight": 901,
           "viewportWidth": 1440,
           "sourceHash": "fnv1a-8543b489",
-          "measuredAt": 1785782579628
+          "measuredAt": 1785913046655
         }
       },
       "devMetadata": {
@@ -70,10 +70,10 @@
         "deviceType": "desktop",
         "layoutSnapshot": {
           "version": 1,
-          "contentHeight": 1187,
+          "contentHeight": 901,
           "viewportWidth": 1440,
           "sourceHash": "fnv1a-d58d26c4",
-          "measuredAt": 1785821859492
+          "measuredAt": 1785913046655
         }
       },
       "devMetadata": {
@@ -293,8 +293,8 @@
           "version": 1,
           "contentHeight": 901,
           "viewportWidth": 1440,
-          "sourceHash": "fnv1a-c091b395",
-          "measuredAt": 1785821859492
+          "sourceHash": "fnv1a-2e5abb62",
+          "measuredAt": 1785916102357
         }
       },
       "devMetadata": {
@@ -321,7 +321,7 @@
       "path": "c:\\Users\\62744\\.trae-cn\\design_libraries\\dl_builtin_trae_work",
       "versionSource": "metadata.json"
     },
-    "showEdge": true,
-    "visualEditorEnabled": true
+    "showEdge": false,
+    "visualEditorEnabled": false
   }
 }

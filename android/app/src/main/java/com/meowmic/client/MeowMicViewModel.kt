@@ -162,6 +162,9 @@ class MeowMicViewModel : ViewModel() {
 
         // 操作反馈音效开关
         private const val KEY_SOUND_FEEDBACK = "sound_feedback"
+
+        // 触控风格(THINKPAD / MAC)
+        private const val KEY_TOUCH_STYLE = "touch_style"
     }
 
     private val _connectionState = MutableStateFlow<ConnectionState>(ConnectionState.Disconnected)
@@ -218,6 +221,10 @@ class MeowMicViewModel : ViewModel() {
     private val _soundFeedback = MutableStateFlow(false)
     val soundFeedback: StateFlow<Boolean> = _soundFeedback.asStateFlow()
 
+    // 触控风格(THINKPAD=Windows 风格反向滚动+无惯性 / MAC=自然滚动+平滑惯性)
+    private val _touchStyle = MutableStateFlow(TouchStyle.THINKPAD)
+    val touchStyle: StateFlow<TouchStyle> = _touchStyle.asStateFlow()
+
     private val audioInputManager = AudioInputManager()
     val currentAudioMode: StateFlow<AudioInputManager.InputMode> = audioInputManager.currentMode
 
@@ -259,6 +266,23 @@ class MeowMicViewModel : ViewModel() {
     // 启动反馈(一次性消息,UI 提示后清除)
     private val _launchFeedback = MutableStateFlow<String?>(null)
     val launchFeedback: StateFlow<String?> = _launchFeedback.asStateFlow()
+
+    // ============ 任务栏:运行中应用窗口(借鉴 Windows 任务栏) ============
+    /** 运行中应用列表(按 exe 路径分组,前台应用置顶) */
+    private val _runningApps = MutableStateFlow<List<RunningApp>>(emptyList())
+    val runningApps: StateFlow<List<RunningApp>> = _runningApps.asStateFlow()
+
+    /** 任务栏图标缓存(exePath → Bitmap),与快捷启动图标缓存分开(键空间不同) */
+    private val _exeIconCache = mutableMapOf<String, Bitmap>()
+    val exeIconCache: Map<String, Bitmap> get() = _exeIconCache
+    /** 任务栏图标缓存版本号:每次图标加载完成后递增,驱动 UI 重组 */
+    private val _exeIconVersion = MutableStateFlow(0)
+    val exeIconVersion: StateFlow<Int> = _exeIconVersion.asStateFlow()
+
+    /** 运行中应用轮询协程(LauncherScreen 进入时启动,离开时取消) */
+    private var runningAppsPollJob: Job? = null
+    /** 任务栏轮询间隔(秒):太短会增加网络/电量开销,太长会感觉不灵敏 */
+    private val runningAppsPollIntervalMs = 2000L
 
     // ============ 自动更新 ============
     private val _updateState = MutableStateFlow<UpdateState>(UpdateState.Idle)
@@ -329,7 +353,7 @@ class MeowMicViewModel : ViewModel() {
                     } else {
                         audioCapture = audio
                     }
-                    touchHandler = TouchHandler()
+                    touchHandler = TouchHandler().also { it.touchStyle = _touchStyle.value }
                     _connectionState.value = ConnectionState.Connected(addr)
                     saveHistory(addr)
                     startStatsPolling()
@@ -494,7 +518,7 @@ class MeowMicViewModel : ViewModel() {
                 } else {
                     audioCapture = audio
                 }
-                touchHandler = TouchHandler()
+                touchHandler = TouchHandler().also { it.touchStyle = _touchStyle.value }
                 _connectionState.value = ConnectionState.Connected(addr)
                 saveHistory(addr)
                 startStatsPolling()
@@ -632,7 +656,7 @@ class MeowMicViewModel : ViewModel() {
         } else {
             audioCapture = audio
         }
-        touchHandler = TouchHandler()
+        touchHandler = TouchHandler().also { it.touchStyle = _touchStyle.value }
         _connectionState.value = ConnectionState.Connected(serverAddr)
         saveHistory(serverAddr)
         // 配对状态已变化,刷新列表徽标
@@ -728,6 +752,17 @@ class MeowMicViewModel : ViewModel() {
     fun setSoundFeedback(enabled: Boolean) {
         _soundFeedback.value = enabled
         context?.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)?.edit()?.putBoolean(KEY_SOUND_FEEDBACK, enabled)?.apply()
+    }
+
+    /**
+     * 设置触控风格(THINKPAD / MAC)。持久化到 SharedPreferences,重启后保留。
+     * 切换后立即应用到当前 touchHandler(无需重连)。
+     */
+    fun setTouchStyle(style: TouchStyle) {
+        _touchStyle.value = style
+        touchHandler?.touchStyle = style
+        context?.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)?.edit()
+            ?.putString(KEY_TOUCH_STYLE, style.name)?.apply()
     }
 
     /**
@@ -913,6 +948,10 @@ class MeowMicViewModel : ViewModel() {
 
         // 操作反馈音效开关
         _soundFeedback.value = prefs.getBoolean(KEY_SOUND_FEEDBACK, false)
+
+        // 触控风格
+        _touchStyle.value = TouchStyle.fromName(prefs.getString(KEY_TOUCH_STYLE, TouchStyle.THINKPAD.name))
+        touchHandler?.touchStyle = _touchStyle.value
     }
 
     private fun persistAudioPanel() {
@@ -1186,6 +1225,10 @@ class MeowMicViewModel : ViewModel() {
         _appListState.value = AppListState.Idle
         _iconCache.clear()
         _launchFeedback.value = null
+        // 清空任务栏状态(运行中应用与 PC 绑定,断开后失效)
+        stopRunningAppsPolling()
+        _runningApps.value = emptyList()
+        _exeIconCache.clear()
     }
 
     // ==================== 快捷启动(借鉴 Sunshine/Moonlight) ====================
@@ -1370,6 +1413,103 @@ class MeowMicViewModel : ViewModel() {
         val arr = JSONArray()
         _quickAppIds.value.forEach { arr.put(it) }
         prefs.edit().putString(KEY_QUICK_APPS, arr.toString()).apply()
+    }
+
+    // ============ 任务栏:运行中应用窗口管理 ============
+
+    /**
+     * 启动运行中应用轮询。LauncherScreen 进入时调用,离开时调用 [stopRunningAppsPolling]。
+     *
+     * 轮询周期:[runningAppsPollIntervalMs],每次拉取窗口列表 + 触发缺失图标加载。
+     * 失败不报错(网络抖动时保留上次结果);断开连接时自动停止。
+     */
+    fun startRunningAppsPolling() {
+        if (runningAppsPollJob?.isActive == true) return
+        if (_connectionState.value !is ConnectionState.Connected) return
+        runningAppsPollJob = viewModelScope.launch(Dispatchers.IO) {
+            // 首次立即拉取,后续按间隔轮询
+            while (isActive && _connectionState.value is ConnectionState.Connected) {
+                pollRunningAppsOnce()
+                delay(runningAppsPollIntervalMs)
+            }
+        }
+    }
+
+    /** 停止运行中应用轮询。LauncherScreen 离开时调用。 */
+    fun stopRunningAppsPolling() {
+        runningAppsPollJob?.cancel()
+        runningAppsPollJob = null
+    }
+
+    /** 单次拉取运行中应用 + 触发缺失图标加载 */
+    private suspend fun pollRunningAppsOnce() {
+        val addr = (_connectionState.value as? ConnectionState.Connected)?.serverAddr ?: return
+        val pk = clientPubkeyB64().ifBlank { return }
+        val list = LauncherRepository.fetchRunningApps(addr, pk)
+        if (list != null) {
+            _runningApps.value = list
+            // 加载缺失图标(仅对 exePath 非空且未缓存的)
+            list.forEach { app ->
+                if (app.exePath.isNotBlank() && app.exePath !in _exeIconCache) {
+                    loadExeIconInternal(addr, pk, app.exePath)
+                }
+            }
+        }
+        // list 为 null 时保留上次结果(网络抖动不闪烁)
+    }
+
+    /** 单次手动刷新(用户点击任务栏空白处触发;复用轮询管线) */
+    fun refreshRunningApps() {
+        viewModelScope.launch(Dispatchers.IO) { pollRunningAppsOnce() }
+    }
+
+    /** 加载 exe 图标到缓存(供 UI 在 exeIconCache 未命中时调用) */
+    fun loadExeIcon(exePath: String) {
+        if (exePath.isBlank() || exePath in _exeIconCache) return
+        val addr = (_connectionState.value as? ConnectionState.Connected)?.serverAddr ?: return
+        val pk = clientPubkeyB64().ifBlank { return }
+        loadExeIconInternal(addr, pk, exePath)
+    }
+
+    private fun loadExeIconInternal(addr: String, pk: String, exePath: String) {
+        viewModelScope.launch {
+            val bmp = LauncherRepository.fetchExeIcon(addr, exePath, pk)
+            if (bmp != null) {
+                _exeIconCache[exePath] = bmp
+                _exeIconVersion.value += 1
+            }
+        }
+    }
+
+    /**
+     * 前台激活指定窗口(模拟任务栏点击)。
+     * 单窗口应用直接激活;多窗口应用由 UI 在弹出列表中调用本方法。
+     */
+    fun focusWindow(hwnd: Long) {
+        val addr = (_connectionState.value as? ConnectionState.Connected)?.serverAddr ?: return
+        val pk = clientPubkeyB64().ifBlank { return }
+        viewModelScope.launch(Dispatchers.IO) {
+            val ok = LauncherRepository.focusWindow(addr, hwnd, pk)
+            if (ok) {
+                // 立即刷新一次,让 UI 即时反映前台变化
+                pollRunningAppsOnce()
+            }
+        }
+    }
+
+    /**
+     * 优雅关闭指定窗口(发送 WM_CLOSE)。
+     * 关闭后立即刷新一次,让 UI 即时移除条目。
+     */
+    fun closeWindow(hwnd: Long) {
+        val addr = (_connectionState.value as? ConnectionState.Connected)?.serverAddr ?: return
+        val pk = clientPubkeyB64().ifBlank { return }
+        viewModelScope.launch(Dispatchers.IO) {
+            val ok = LauncherRepository.closeWindow(addr, hwnd, pk)
+            if (ok) {
+                pollRunningAppsOnce()
+            }
+        }
     }
 
     /** 连接到发现到的服务端(快捷方法) */

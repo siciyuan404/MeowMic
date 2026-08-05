@@ -7,6 +7,21 @@ import kotlin.math.abs
 import kotlin.math.hypot
 
 /**
+ * 触控风格
+ * - THINKPAD:Windows 风格(反向滚动 + 无惯性 + 双指缩放需配合 Ctrl)
+ * - MAC:macOS 风格(自然滚动 + 平滑惯性 + 原生双指缩放)
+ */
+enum class TouchStyle {
+    THINKPAD,
+    MAC;
+
+    companion object {
+        fun fromName(name: String?): TouchStyle =
+            entries.firstOrNull { it.name == name } ?: THINKPAD
+    }
+}
+
+/**
  * 触摸事件处理器(参考 moonlight-android 的触控板逻辑)
  *
  * 核心设计(借鉴 moonlight-android):
@@ -23,6 +38,10 @@ import kotlin.math.hypot
  * - 双指滑动:鼠标滚轮滚动
  * - 双指轻触:鼠标右键单击
  *
+ * 风格差异(由 [touchStyle] 控制):
+ * - **滚动方向**:THINKPAD 反向(手指上滑 → 页面向下);MAC 自然(手指上滑 → 页面向上)
+ * - **滚动惯性**:MAC 抬起后继续衰减滚动若干帧;THINKPAD 立即停止
+ *
  * 事件类型常量: 0x02=Move 0x04=Button 0x05=Scroll
  * 按钮掩码位: bit0=左键 bit1=右键 bit2=中键
  */
@@ -32,9 +51,10 @@ class TouchHandler(
 ) {
     var screenRotation: Int = 0
 
-    // ============ Handler(主线程,用于定时触发长按) ============
-    // 参考 moonlight-android:长按不依赖 ACTION_MOVE(手指静止时不触发),
-    // 改用 postDelayed 在 longPressTimeout 后强制触发左键按下。
+    /** 触控风格(运行时可切换,默认 THINKPAD) */
+    var touchStyle: TouchStyle = TouchStyle.THINKPAD
+
+    // ============ Handler(主线程,用于定时触发长按和惯性滚动) ============
     private val handler = Handler(Looper.getMainLooper())
     private val longPressRunnable = Runnable {
         if (!isLeftDrag && !isTwoFingerScroll && downPointerCount == 1) {
@@ -43,6 +63,9 @@ class TouchHandler(
             leftDragTriggered = true
         }
     }
+
+    /** 惯性滚动 Runnable(MAC 风格):抬起后按速度衰减继续滚动 */
+    private val inertiaRunnable = Runnable { tickInertia() }
 
     // ============ 按钮掩码常量 ============
     private val BTN_LEFT = 0x01
@@ -62,10 +85,8 @@ class TouchHandler(
     private var downPointerCount: Int = 0
 
     // ============ 多指 pointerId 跟踪(Bug A:不再用 pointerIndex) ============
-    // Android 在某指抬起时 pointerIndex 会重排,必须用 pointerId 稳定跟踪。
     private var primaryPointerId: Int = MotionEvent.INVALID_POINTER_ID
     private var secondaryPointerId: Int = MotionEvent.INVALID_POINTER_ID
-    // 双指轻触右键准备:POINTER_UP 时记录剩余指坐标,UP 时用它与抬指坐标算距离
     private var pendingSingleX: Float = 0f
     private var pendingSingleY: Float = 0f
 
@@ -79,6 +100,20 @@ class TouchHandler(
     // ============ 双指滚动状态 ============
     private var lastScrollY: Float = 0f
     private var isTwoFingerScroll: Boolean = false
+    /** 惯性滚动速度(MAC 风格抬起后衰减用) */
+    private var inertiaVelocity: Float = 0f
+    /** 惯性滚动是否在运行 */
+    private var isInertiaRunning: Boolean = false
+    /** 最近一次双指滚动 delta,用于抬起时初始化惯性速度 */
+    private var lastScrollDelta: Float = 0f
+    /** 惯性滚动的最后事件时间戳,用于计算衰减帧率 */
+    private var lastInertiaTime: Long = 0L
+    /** 惯性阈值,小于此值停止 */
+    private val inertiaStopThreshold = 0.5f
+    /** 惯性衰减系数(每帧乘以此系数,接近 1 = 衰减慢) */
+    private val inertiaFriction = 0.95f
+    /** 惯性滚动间隔(ms),~60fps */
+    private val inertiaIntervalMs = 16L
 
     // ============ 点击/长按判定阈值(参考 moonlight-android) ============
     private val clickThreshold = 24f            // 点击允许的最大移动距离
@@ -104,6 +139,8 @@ class TouchHandler(
 
         when (action) {
             MotionEvent.ACTION_DOWN -> {
+                // 触控开始:取消任何惯性滚动
+                cancelInertia()
                 primaryPointerId = event.getPointerId(0)
                 secondaryPointerId = MotionEvent.INVALID_POINTER_ID
                 downTime = currentTime
@@ -117,17 +154,15 @@ class TouchHandler(
                 isLeftDrag = false
                 leftDragTriggered = false
                 lastScrollY = y
+                lastScrollDelta = 0f
                 pendingSingleX = x
                 pendingSingleY = y
-                // 长按由 Runnable 定时触发(手指静止也能在 longPressTimeout 后触发拖拽)
                 handler.postDelayed(longPressRunnable, longPressTimeout)
                 return false
             }
 
             MotionEvent.ACTION_POINTER_DOWN -> {
-                // 双指介入立即取消未触发的长按(避免双指操作时误触发左键拖拽)
                 handler.removeCallbacks(longPressRunnable)
-                // Bug A:用 pointerId 跟踪新落下的手指
                 val newId = event.getPointerId(pointerIndex)
                 if (primaryPointerId == MotionEvent.INVALID_POINTER_ID) {
                     primaryPointerId = newId
@@ -136,14 +171,11 @@ class TouchHandler(
                 }
                 if (pointerCount == 2) {
                     isTwoFingerScroll = false
-                    // Bug B:滚动参考点改为两指中点 Y
                     val primaryIdx = event.findPointerIndex(primaryPointerId)
                     val secondaryIdx = event.findPointerIndex(secondaryPointerId)
                     if (primaryIdx >= 0 && secondaryIdx >= 0) {
                         lastScrollY = (event.getY(primaryIdx) + event.getY(secondaryIdx)) / 2f
                     }
-                    // Bug D:取消单指拖拽时,同时清 leftDragTriggered,
-                    // 否则 ACTION_UP 会再发一次 button up
                     if (isLeftDrag) {
                         NativeBridge.sendButtonUp(BTN_LEFT)
                         isLeftDrag = false
@@ -163,7 +195,6 @@ class TouchHandler(
                 }
 
                 if (pointerCount >= 2) {
-                    // Bug A + B:双指滚动,用 findPointerIndex 取两指坐标,中点 Y 作参考
                     val primaryIdx = event.findPointerIndex(primaryPointerId)
                     val secondaryIdx = event.findPointerIndex(secondaryPointerId)
                     if (primaryIdx < 0 || secondaryIdx < 0) {
@@ -171,18 +202,18 @@ class TouchHandler(
                     }
                     var handled = false
                     val historySize = event.historySize
+                    var lastDelta = 0f
                     for (i in 0 until historySize) {
                         val histMidY = (event.getHistoricalY(primaryIdx, i) +
                                 event.getHistoricalY(secondaryIdx, i)) / 2f
                         val deltaY = histMidY - lastScrollY
                         lastScrollY = histMidY
-                        // Bug B:触发阈值 10f(参考 Moonlight TWO_FINGER_SCROLL_DEAD_ZONE)
                         if (!isTwoFingerScroll && abs(deltaY) > 10f) {
                             isTwoFingerScroll = true
                         }
-                        // Bug B:已触发后最小 delta 1f(不再用 0.5f)
                         if (isTwoFingerScroll && abs(deltaY) >= 1f) {
-                            sendScroll(applyScrollAcceleration(deltaY))
+                            sendScroll(applyScrollDirection(deltaY))
+                            lastDelta = deltaY
                             handled = true
                         }
                     }
@@ -194,9 +225,12 @@ class TouchHandler(
                         isTwoFingerScroll = true
                     }
                     if (isTwoFingerScroll && abs(deltaY) >= 1f) {
-                        sendScroll(applyScrollAcceleration(deltaY))
+                        sendScroll(applyScrollDirection(deltaY))
+                        lastDelta = deltaY
                         handled = true
                     }
+                    // 记录最近一次 delta 用于 MAC 风格惯性初始化
+                    if (handled) lastScrollDelta = lastDelta
                     return handled
                 }
 
@@ -224,8 +258,7 @@ class TouchHandler(
                 lastX = x
                 lastY = y
 
-                // 长按取消判定:手指挪出 slop 范围则取消未触发的长按 Runnable
-                // (长按触发完全由 longPressRunnable 驱动,不依赖 ACTION_MOVE)
+                // 长按取消判定
                 val totalDx = x - downX
                 val totalDy = y - downY
                 val totalDist = hypot(totalDx, totalDy)
@@ -237,20 +270,21 @@ class TouchHandler(
             }
 
             MotionEvent.ACTION_POINTER_UP -> {
-                // Bug A:用 pointerId 判定哪根手指抬起,清空对应 id
                 val liftedId = event.getPointerId(pointerIndex)
                 if (liftedId == primaryPointerId) {
-                    // 主指抬起:副指升为主指
                     primaryPointerId = secondaryPointerId
                     secondaryPointerId = MotionEvent.INVALID_POINTER_ID
                 } else if (liftedId == secondaryPointerId) {
                     secondaryPointerId = MotionEvent.INVALID_POINTER_ID
                 }
                 if (pointerCount <= 2) {
+                    // MAC 风格:从双指变单指时启动惯性滚动
+                    if (touchStyle == TouchStyle.MAC && isTwoFingerScroll && abs(lastScrollDelta) > 1f) {
+                        startInertia(lastScrollDelta)
+                    }
                     isTwoFingerScroll = false
                 }
-                // Bug C:双指场景下抬起一指(pointerCount==2 表示从 2 指变 1 指),
-                // 未触发滚动时,记录剩余指当前坐标 + 更新 downTime,准备双指轻触右键判定
+                // 双指轻触右键准备
                 if (downPointerCount >= 2 && !isTwoFingerScroll && pointerCount == 2) {
                     val remainingId = if (primaryPointerId != MotionEvent.INVALID_POINTER_ID)
                         primaryPointerId else secondaryPointerId
@@ -263,7 +297,7 @@ class TouchHandler(
                         }
                     }
                 }
-                // 更新 lastX/lastY 为剩余手指坐标,避免后续单指移动跳变
+                // 更新 lastX/lastY 为剩余手指坐标
                 val trackId = if (primaryPointerId != MotionEvent.INVALID_POINTER_ID)
                     primaryPointerId else secondaryPointerId
                 if (trackId != MotionEvent.INVALID_POINTER_ID) {
@@ -277,8 +311,11 @@ class TouchHandler(
             }
 
             MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
-                // 抬起/取消时清理未触发的长按 Runnable
                 handler.removeCallbacks(longPressRunnable)
+                // MAC 风格:单指场景下双指滚动结束也可能走到这里
+                if (touchStyle == TouchStyle.MAC && isTwoFingerScroll && abs(lastScrollDelta) > 1f) {
+                    startInertia(lastScrollDelta)
+                }
                 // 长按拖拽抬起
                 if (leftDragTriggered) {
                     NativeBridge.sendButtonUp(BTN_LEFT)
@@ -290,9 +327,7 @@ class TouchHandler(
                     return true
                 }
 
-                // Bug C:双指轻触 → 右键
-                // 距离用 pendingSingleX/Y(POINTER_UP 时剩余指坐标)到当前 x/y(抬指坐标),
-                // 时长用 currentTime - downTime(downTime 在 POINTER_UP 时已更新)
+                // 双指轻触 → 右键
                 if (downPointerCount >= 2 && !isTwoFingerScroll) {
                     val dx = x - pendingSingleX
                     val dy = y - pendingSingleY
@@ -308,7 +343,7 @@ class TouchHandler(
                     return false
                 }
 
-                // ============ 单指场景:原有单击/双击逻辑(不动) ============
+                // 单指场景:原有单击/双击逻辑
                 val totalDx = x - downX
                 val totalDy = y - downY
                 val totalDist = hypot(totalDx, totalDy)
@@ -379,30 +414,76 @@ class TouchHandler(
     }
 
     /**
-     * 滚轮加速曲线(参考 moonlight-android)
-     * - 慢速(小 delta):放大,便于精确滚动
-     * - 快速(大 delta):抑制,防止过冲
-     * 输入 delta 是原始像素位移,输出滚轮量
+     * 应用滚动方向:
+     * - THINKPAD:反向滚动(传统 Windows 行为,手指上滑 → 页面向下)
+     *   原 deltaY 为负(上滑)→ 取反 → sendScroll 传正 → PC 端 wheel_delta = 正 * -12 = 负 = 向下滚 ✓
+     * - MAC:自然滚动(手指上滑 → 页面向上)
+     *   原 deltaY 为负(上滑)→ 不取反 → sendScroll 传负 → PC 端 wheel_delta = 负 * -12 = 正 = 向上滚 ✓
      *
-     * 方向约定(与 PC 端 touch_inject.rs:67 wheel_delta = dy * -12.0 配合):
-     * - 双指上滑 → 中点 Y 减小 → deltaY 为负 → sendScroll 传负值
-     *   → PC 端 wheel_delta = 负 * -12 = 正 = 向上滚(页面向上滚)✓
-     * - 双指下滑 → deltaY 为正 → wheel_delta 为负 = 向下滚(页面向下滚)✓
-     * 故本函数保留 sign,不取反。
+     * 注意:PC 端 touch_inject.rs wheel_delta = dy * -12.0
+     */
+    private fun applyScrollDirection(deltaY: Float): Float {
+        return when (touchStyle) {
+            TouchStyle.THINKPAD -> -deltaY  // 反向滚动
+            TouchStyle.MAC -> deltaY       // 自然滚动
+        }
+    }
+
+    /**
+     * 滚轮加速曲线(参考 moonlight-android)
+     * 输入 delta 是原始像素位移,输出滚轮量
      */
     private fun applyScrollAcceleration(delta: Float): Float {
         val absDelta = abs(delta)
         val sign = if (delta >= 0) 1f else -1f
-        // 指数曲线: pow(absDelta, 0.7) * scale
-        // 小 delta(1px): 1^0.7 * 0.8 = 0.8(轻微放大)
-        // 中 delta(10px): 10^0.7 * 0.8 ≈ 4.0(适中)
-        // 大 delta(50px): 50^0.7 * 0.8 ≈ 13.3(抑制)
         val accelerated = Math.pow(absDelta.toDouble(), 0.7).toFloat() * 0.8f
         return sign * accelerated
     }
 
+    /**
+     * 启动惯性滚动(MAC 风格)
+     * @param lastDelta 抬起时最后一次双指滚动 delta
+     */
+    private fun startInertia(lastDelta: Float) {
+        if (isInertiaRunning) return
+        // 取上一次方向(已经过 applyScrollDirection 处理)
+        inertiaVelocity = applyScrollAcceleration(lastDelta) * 0.5f  // 初始速度取一部分
+        if (abs(inertiaVelocity) < inertiaStopThreshold) return
+        isInertiaRunning = true
+        lastInertiaTime = System.currentTimeMillis()
+        handler.post(inertiaRunnable)
+    }
+
+    /** 惯性滚动单帧 */
+    private fun tickInertia() {
+        if (!isInertiaRunning) return
+        if (abs(inertiaVelocity) < inertiaStopThreshold) {
+            stopInertia()
+            return
+        }
+        // 发送一帧滚动
+        sendScroll(inertiaVelocity)
+        // 衰减
+        inertiaVelocity *= inertiaFriction
+        // 下一帧
+        handler.postDelayed(inertiaRunnable, inertiaIntervalMs)
+    }
+
+    /** 停止惯性滚动 */
+    private fun stopInertia() {
+        handler.removeCallbacks(inertiaRunnable)
+        isInertiaRunning = false
+        inertiaVelocity = 0f
+    }
+
+    /** 取消惯性滚动(新触控开始时调用) */
+    private fun cancelInertia() {
+        if (isInertiaRunning) stopInertia()
+    }
+
     fun reset() {
         handler.removeCallbacks(longPressRunnable)
+        stopInertia()
         hasLast = false
         isTwoFingerScroll = false
         isLeftDrag = false

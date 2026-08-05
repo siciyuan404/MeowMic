@@ -32,6 +32,32 @@ data class DirEntry(
 )
 
 /**
+ * 单个运行中窗口信息(任务栏功能)
+ *
+ * @param hwnd   窗口句柄(十进制字符串,作为 focus/close 的稳定标识;PC 端 u64)
+ * @param title  窗口标题
+ * @param isActive 是否为当前前台窗口
+ */
+data class WindowInfo(
+    val hwnd: Long,
+    val title: String,
+    val isActive: Boolean,
+)
+
+/**
+ * 运行中应用(按 exe 路径分组,任务栏功能)
+ *
+ * @param name     显示名(exe 文件名去后缀,首字母大写)
+ * @param exePath  进程可执行文件绝对路径(用作客户端图标缓存键)
+ * @param windows  该进程拥有的窗口列表
+ */
+data class RunningApp(
+    val name: String,
+    val exePath: String,
+    val windows: List<WindowInfo>,
+)
+
+/**
  * 添加应用的结果(包含错误详情,便于 UI 提示)
  */
 sealed class AddAppResult {
@@ -56,6 +82,10 @@ data class DirListing(
  * - GET  /applist?pubkey=<b64>              返回应用库 JSON 数组
  * - GET  /app_icon?id=<app_id>&pubkey=<b64> 返回 exe 图标 PNG
  * - POST /launch?id=<app_id>&pubkey=<b64>   启动指定应用
+ * - GET  /running_apps?pubkey=<b64>         返回运行中应用窗口列表(任务栏)
+ * - GET  /exe_icon?path=<exe_path>&pubkey=<b64>  返回 exe 图标 PNG(任务栏,按路径提取)
+ * - POST /focus_window?hwnd=<n>&pubkey=<b64>     前台激活指定窗口
+ * - POST /close_window?hwnd=<n>&pubkey=<b64>     优雅关闭指定窗口(WM_CLOSE)
  *
  * 鉴权:query 必须带 pubkey=<客户端公钥b64>,且该 pubkey 必须已配对,否则 403。
  * 参考 Sunshine/Moonlight 的 applist + launch API 形态。
@@ -297,4 +327,159 @@ object LauncherRepository {
             null
         }
     }
+
+    // ============ 任务栏:运行中应用窗口管理 ============
+
+    /**
+     * 拉取 PC 端运行中应用窗口列表(按 exe 路径分组)。
+     * 用于底部任务栏展示:每组对应一个应用图标,可能含多个窗口。
+     *
+     * @return 应用列表;失败返回 null
+     */
+    suspend fun fetchRunningApps(serverAddr: String, pubkey: String): List<RunningApp>? =
+        withContext(Dispatchers.IO) {
+            val url = "${httpBaseUrl(serverAddr)}/running_apps?pubkey=${encodeParam(pubkey)}"
+            try {
+                val conn = (URL(url).openConnection() as HttpURLConnection).apply {
+                    connectTimeout = CONNECT_TIMEOUT_MS
+                    readTimeout = READ_TIMEOUT_MS
+                    requestMethod = "GET"
+                    useCaches = false
+                    instanceFollowRedirects = false
+                }
+                try {
+                    if (conn.responseCode == 200) {
+                        val body = conn.inputStream.bufferedReader().use { it.readText() }
+                        parseRunningApps(body)
+                    } else {
+                        Log.w(TAG, "fetchRunningApps HTTP ${conn.responseCode}")
+                        null
+                    }
+                } finally {
+                    conn.disconnect()
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "fetchRunningApps 失败: ${e.message}")
+                null
+            }
+        }
+
+    private fun parseRunningApps(body: String): List<RunningApp>? {
+        return try {
+            val arr = JSONArray(body)
+            (0 until arr.length()).mapNotNull { i ->
+                val obj = arr.optJSONObject(i) ?: return@mapNotNull null
+                val name = obj.optString("name", "")
+                val exePath = obj.optString("exe_path", "")
+                val winArr = obj.optJSONArray("windows") ?: JSONArray()
+                val windows = (0 until winArr.length()).mapNotNull { j ->
+                    val w = winArr.optJSONObject(j) ?: return@mapNotNull null
+                    val hwnd = w.optLong("hwnd", 0)
+                    if (hwnd == 0L) return@mapNotNull null
+                    WindowInfo(
+                        hwnd = hwnd,
+                        title = w.optString("title", ""),
+                        isActive = w.optBoolean("is_active", false),
+                    )
+                }
+                if (windows.isEmpty()) return@mapNotNull null
+                RunningApp(name = name, exePath = exePath, windows = windows)
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "解析 running_apps 失败: ${e.message}")
+            null
+        }
+    }
+
+    /**
+     * 拉取 exe 图标 PNG(按 exe 路径提取,用于任务栏应用图标)。
+     * 客户端按 exePath 缓存,避免重复请求。
+     *
+     * @param exePath 进程可执行文件绝对路径(Windows 反斜杠路径)
+     * @return 解码后的 Bitmap;失败返回 null
+     */
+    suspend fun fetchExeIcon(serverAddr: String, exePath: String, pubkey: String): Bitmap? =
+        withContext(Dispatchers.IO) {
+            val url = "${httpBaseUrl(serverAddr)}/exe_icon?path=${encodeParam(exePath)}&pubkey=${encodeParam(pubkey)}"
+            try {
+                val conn = (URL(url).openConnection() as HttpURLConnection).apply {
+                    connectTimeout = CONNECT_TIMEOUT_MS
+                    readTimeout = READ_TIMEOUT_MS
+                    requestMethod = "GET"
+                    useCaches = false
+                    instanceFollowRedirects = false
+                }
+                try {
+                    when (conn.responseCode) {
+                        200 -> {
+                            val bytes = conn.inputStream.use { it.readBytes() }
+                            BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+                        }
+                        else -> {
+                            Log.d(TAG, "fetchExeIcon HTTP ${conn.responseCode}")
+                            null
+                        }
+                    }
+                } finally {
+                    conn.disconnect()
+                }
+            } catch (e: Exception) {
+                Log.d(TAG, "fetchExeIcon 失败: ${e.message}")
+                null
+            }
+        }
+
+    /**
+     * 前台激活指定窗口(模拟任务栏点击)。
+     * @return true 表示 PC 已接受请求
+     */
+    suspend fun focusWindow(serverAddr: String, hwnd: Long, pubkey: String): Boolean =
+        withContext(Dispatchers.IO) {
+            val url = "${httpBaseUrl(serverAddr)}/focus_window?hwnd=$hwnd&pubkey=${encodeParam(pubkey)}"
+            try {
+                val conn = (URL(url).openConnection() as HttpURLConnection).apply {
+                    connectTimeout = CONNECT_TIMEOUT_MS
+                    readTimeout = READ_TIMEOUT_MS
+                    requestMethod = "POST"
+                    useCaches = false
+                    instanceFollowRedirects = false
+                    setFixedLengthStreamingMode(0)
+                }
+                try {
+                    conn.responseCode == 200
+                } finally {
+                    conn.disconnect()
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "focusWindow 失败: ${e.message}")
+                false
+            }
+        }
+
+    /**
+     * 优雅关闭指定窗口(发送 WM_CLOSE)。
+     * @return true 表示 PC 已接受请求
+     */
+    suspend fun closeWindow(serverAddr: String, hwnd: Long, pubkey: String): Boolean =
+        withContext(Dispatchers.IO) {
+            val url = "${httpBaseUrl(serverAddr)}/close_window?hwnd=$hwnd&pubkey=${encodeParam(pubkey)}"
+            try {
+                val conn = (URL(url).openConnection() as HttpURLConnection).apply {
+                    connectTimeout = CONNECT_TIMEOUT_MS
+                    readTimeout = READ_TIMEOUT_MS
+                    requestMethod = "POST"
+                    useCaches = false
+                    instanceFollowRedirects = false
+                    setFixedLengthStreamingMode(0)
+                }
+                try {
+                    conn.responseCode == 200
+                } finally {
+                    conn.disconnect()
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "closeWindow 失败: ${e.message}")
+                false
+            }
+        }
 }

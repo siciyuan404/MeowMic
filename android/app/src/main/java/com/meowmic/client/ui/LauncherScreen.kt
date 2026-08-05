@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.CircleShape
@@ -40,11 +41,20 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.IntRect
+import androidx.compose.ui.unit.IntSize
+import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.Popup
+import androidx.compose.ui.window.PopupPositionProvider
+import androidx.compose.ui.window.PopupProperties
 import com.meowmic.client.AppListState
 import com.meowmic.client.ConnectionState
 import com.meowmic.client.DirListing
 import com.meowmic.client.MeowMicViewModel
+import com.meowmic.client.RunningApp
+import com.meowmic.client.WindowInfo
 import kotlin.math.abs
 
 // 网格规格:竖屏 5×6=30,横屏 8×3=24(横向更宽,行数减少)
@@ -57,7 +67,6 @@ private fun gridColumns(landscape: Boolean) =
 private fun gridRows(landscape: Boolean) =
     if (landscape) GRID_ROWS_LANDSCAPE else GRID_ROWS_PORTRAIT
 private fun pageSize(landscape: Boolean) = gridColumns(landscape) * gridRows(landscape)
-private val DOCK_COUNT = 4
 
 /**
  * 快捷启动页面(借鉴 Sunshine/Moonlight 的 applist + launch 形态)
@@ -88,6 +97,16 @@ fun LauncherScreen(
     LaunchedEffect(connectionState) {
         if (connectionState is ConnectionState.Connected && appListState is AppListState.Idle) {
             vm.loadAppList()
+        }
+    }
+
+    // 任务栏轮询:进入页面启动,离开页面停止(借鉴 Windows 任务栏的实时窗口列表)
+    DisposableEffect(connectionState) {
+        if (connectionState is ConnectionState.Connected) {
+            vm.startRunningAppsPolling()
+        }
+        onDispose {
+            vm.stopRunningAppsPolling()
         }
     }
 
@@ -177,12 +196,8 @@ fun LauncherScreen(
                 PageIndicator(pagerState = pagerState, pageCount = pageCount)
             }
 
-            // 5. 底部 Dock 栏
-            DockBar(
-                quickAppIds = quickAppIds,
-                vm = vm,
-                onLaunch = { id -> vm.launchApp(id) },
-            )
+            // 5. 底部任务栏:运行中应用窗口 + 服务开关(借鉴 Windows 任务栏)
+            Taskbar(vm = vm)
         }
 
         // Snackbar 固定底部
@@ -692,80 +707,383 @@ private fun PageIndicator(
     }
 }
 
-/** 底部 Dock 栏:前 4 个快捷应用 */
+/**
+ * 底部任务栏:运行中应用窗口 + 服务开关(借鉴 Windows 任务栏)
+ *
+ * 结构:
+ * - 左侧:运行中应用列表(横向滚动),每组按 exe 分组,前台应用高亮
+ *   - 单窗口:点击直接激活;右下角小圆点标记前台
+ *   - 多窗口:点击弹出窗口列表;右上角堆叠徽标显示窗口数
+ * - 分隔线
+ * - 右侧:服务开关(麦克风 / 外放静音 / 提示音)
+ */
 @Composable
-private fun DockBar(
-    quickAppIds: List<String>,
-    vm: MeowMicViewModel,
-    onLaunch: (String) -> Unit,
-) {
+private fun Taskbar(vm: MeowMicViewModel) {
+    val runningApps by vm.runningApps.collectAsState()
+    val micEnabled by vm.micEnabled.collectAsState()
+    val muteSpeaker by vm.muteSpeaker.collectAsState()
+    val soundFeedback by vm.soundFeedback.collectAsState()
+    val exeIconVersion by vm.exeIconVersion.collectAsState() // 驱动图标加载后重组
+
+    // 当前展开多窗口弹出的应用 key(exePath);null=无弹出
+    var expandedAppKey by remember { mutableStateOf<String?>(null) }
+
     Card(
         modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(16.dp),
+        shape = RoundedCornerShape(12.dp),
         colors = CardDefaults.cardColors(
             containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
         ),
     ) {
         Row(
-            modifier = Modifier.fillMaxWidth().padding(8.dp),
-            horizontalArrangement = Arrangement.SpaceEvenly,
+            modifier = Modifier.fillMaxWidth(),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            for (i in 0 until DOCK_COUNT) {
-                val appId = quickAppIds.getOrNull(i)
-                if (appId != null) {
-                    DockItem(
-                        appId = appId,
-                        vm = vm,
-                        onClick = { onLaunch(appId) },
+            // 1. 运行中应用(横向滚动)
+            Row(
+                modifier = Modifier
+                    .weight(1f)
+                    .horizontalScroll(rememberScrollState())
+                    .padding(4.dp),
+                horizontalArrangement = Arrangement.spacedBy(2.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                if (runningApps.isEmpty()) {
+                    Text(
+                        "无运行中应用",
+                        fontSize = 10.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
                     )
                 } else {
-                    // 空位占位(对齐设计稿 dock-item 透明背景)
-                    Box(
-                        modifier = Modifier
-                            .size(32.dp)
-                            .background(
-                                MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
-                                RoundedCornerShape(8.dp),
-                            ),
+                    runningApps.forEach { app ->
+                        TaskAppItem(
+                            app = app,
+                            exeIconVersion = exeIconVersion,
+                            vm = vm,
+                            isExpanded = expandedAppKey == app.exePath,
+                            onToggleExpand = {
+                                expandedAppKey = if (expandedAppKey == app.exePath) null else app.exePath
+                            },
+                            onDismissExpand = { expandedAppKey = null },
+                        )
+                    }
+                }
+            }
+
+            // 2. 分隔线
+            Box(
+                modifier = Modifier
+                    .width(1.dp)
+                    .height(24.dp)
+                    .background(MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f)),
+            )
+
+            // 3. 服务开关(麦克风 / 外放 / 提示音)
+            Row(
+                modifier = Modifier.padding(4.dp),
+                horizontalArrangement = Arrangement.spacedBy(1.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                TaskServiceButton(
+                    icon = if (micEnabled) Icons.Default.Mic else Icons.Default.MicOff,
+                    isOn = micEnabled,
+                    contentDescription = if (micEnabled) "关闭麦克风" else "开启麦克风",
+                    onClick = { vm.setMicEnabled(!micEnabled) },
+                )
+                TaskServiceButton(
+                    icon = if (muteSpeaker) Icons.Default.VolumeOff else Icons.Default.VolumeUp,
+                    isOn = !muteSpeaker,
+                    contentDescription = if (muteSpeaker) "取消静音" else "静音外放",
+                    onClick = { vm.setMuteSpeaker(!muteSpeaker) },
+                )
+                TaskServiceButton(
+                    icon = Icons.Default.GraphicEq,
+                    isOn = soundFeedback,
+                    contentDescription = if (soundFeedback) "关闭提示音" else "开启提示音",
+                    onClick = { vm.setSoundFeedback(!soundFeedback) },
+                )
+            }
+        }
+    }
+}
+
+/**
+ * 任务栏单个应用按钮
+ *
+ * - 单窗口:点击直接 focusWindow;前台窗口右下角显示小圆点
+ * - 多窗口:点击弹出窗口列表;右上角显示窗口数徽标
+ */
+@Composable
+private fun TaskAppItem(
+    app: RunningApp,
+    exeIconVersion: Int,
+    vm: MeowMicViewModel,
+    isExpanded: Boolean,
+    onToggleExpand: () -> Unit,
+    onDismissExpand: () -> Unit,
+) {
+    // exeIconVersion 参数变化时触发重组,从而重新读取 exeIconCache
+    val bmp: Bitmap? = vm.exeIconCache[app.exePath]
+    val hasMultipleWindows = app.windows.size > 1
+    val isActive = app.windows.any { it.isActive }
+
+    Box {
+        Row(
+            modifier = Modifier
+                .clickable {
+                    if (hasMultipleWindows) {
+                        onToggleExpand()
+                    } else {
+                        app.windows.firstOrNull()?.let { vm.focusWindow(it.hwnd) }
+                    }
+                }
+                .background(
+                    if (isActive) MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)
+                    else Color.Transparent,
+                    RoundedCornerShape(6.dp),
+                )
+                .padding(horizontal = 5.dp, vertical = 3.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(3.dp),
+        ) {
+            // 应用图标(18×18 圆角方块)
+            Box(
+                modifier = Modifier
+                    .size(18.dp)
+                    .background(MaterialTheme.colorScheme.surface, RoundedCornerShape(4.dp)),
+                contentAlignment = Alignment.Center,
+            ) {
+                if (bmp != null) {
+                    Image(
+                        bitmap = bmp.asImageBitmap(),
+                        contentDescription = app.name,
+                        modifier = Modifier.size(12.dp),
                     )
+                } else {
+                    if (app.exePath.isNotBlank()) {
+                        LaunchedEffect(app.exePath) { vm.loadExeIcon(app.exePath) }
+                    }
+                    Icon(
+                        Icons.Default.Apps,
+                        contentDescription = null,
+                        modifier = Modifier.size(12.dp),
+                        tint = MaterialTheme.colorScheme.primary,
+                    )
+                }
+            }
+            // 应用名(最多 32dp 宽,超出省略)
+            Text(
+                app.name,
+                fontSize = 9.sp,
+                fontWeight = FontWeight.Medium,
+                color = MaterialTheme.colorScheme.onSurface,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.widthIn(max = 32.dp),
+            )
+            // 徽标:多窗口显示堆叠计数,单窗口前台显示小圆点
+            if (hasMultipleWindows) {
+                Box(
+                    modifier = Modifier
+                        .size(12.dp)
+                        .background(MaterialTheme.colorScheme.primary, CircleShape)
+                        .border(1.5.dp, MaterialTheme.colorScheme.surface, CircleShape),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(
+                        "${app.windows.size}",
+                        fontSize = 8.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.onPrimary,
+                    )
+                }
+            } else if (isActive) {
+                Box(
+                    modifier = Modifier
+                        .size(5.dp)
+                        .background(MaterialTheme.colorScheme.primary, CircleShape),
+                )
+            }
+        }
+
+        // 多窗口弹出列表
+        if (isExpanded && hasMultipleWindows) {
+            Popup(
+                popupPositionProvider = AboveAnchorPositionProvider,
+                onDismissRequest = onDismissExpand,
+                properties = PopupProperties(
+                    focusable = true,
+                    dismissOnBackPress = true,
+                    dismissOnClickOutside = true,
+                ),
+            ) {
+                TaskPopWindow(app = app, vm = vm, onDismiss = onDismissExpand)
+            }
+        }
+    }
+}
+
+/**
+ * 弹出位置提供者:将 Popup 放置在锚点(任务栏按钮)正上方,水平居中,留 10px 间距
+ */
+private object AboveAnchorPositionProvider : PopupPositionProvider {
+    override fun calculatePosition(
+        anchorBounds: IntRect,
+        windowSize: IntSize,
+        layoutDirection: LayoutDirection,
+        popupContentSize: IntSize,
+    ): IntOffset {
+        val x = anchorBounds.left + (anchorBounds.width - popupContentSize.width) / 2
+        val y = anchorBounds.top - popupContentSize.height - 10
+        return IntOffset(x, y)
+    }
+}
+
+/**
+ * 多窗口弹出列表(气泡卡片)
+ *
+ * 结构:标题栏(应用名 · N 个窗口) + 窗口列表(可滚动)
+ * 每个窗口条目:图标 + 标题 + 关闭按钮;当前前台窗口高亮
+ */
+@Composable
+private fun TaskPopWindow(
+    app: RunningApp,
+    vm: MeowMicViewModel,
+    onDismiss: () -> Unit,
+) {
+    Card(
+        modifier = Modifier
+            .widthIn(min = 190.dp, max = 240.dp),
+        shape = RoundedCornerShape(12.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surface
+        ),
+        elevation = CardDefaults.cardElevation(defaultElevation = 6.dp),
+    ) {
+        Column {
+            // 标题栏
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
+                    .padding(horizontal = 10.dp, vertical = 6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                Icon(
+                    Icons.Default.Apps,
+                    contentDescription = null,
+                    modifier = Modifier.size(11.dp),
+                    tint = MaterialTheme.colorScheme.primary,
+                )
+                Text(
+                    "${app.name} · ${app.windows.size} 个窗口",
+                    fontSize = 9.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            HorizontalDivider(thickness = 0.5.dp)
+            // 窗口列表(可滚动,最高 160dp)
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = 160.dp)
+                    .verticalScroll(rememberScrollState())
+                    .padding(4.dp),
+                verticalArrangement = Arrangement.spacedBy(2.dp),
+            ) {
+                app.windows.forEach { window ->
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable {
+                                vm.focusWindow(window.hwnd)
+                                onDismiss()
+                            }
+                            .background(
+                                if (window.isActive) MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)
+                                else Color.Transparent,
+                                RoundedCornerShape(8.dp),
+                            )
+                            .padding(horizontal = 6.dp, vertical = 5.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
+                        // 窗口图标(复用应用图标占位)
+                        Box(
+                            modifier = Modifier
+                                .size(16.dp)
+                                .background(
+                                    MaterialTheme.colorScheme.surfaceVariant,
+                                    RoundedCornerShape(4.dp),
+                                ),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Icon(
+                                Icons.Default.Apps,
+                                contentDescription = null,
+                                modifier = Modifier.size(10.dp),
+                                tint = MaterialTheme.colorScheme.primary,
+                            )
+                        }
+                        // 窗口标题
+                        Text(
+                            window.title.ifBlank { "未命名窗口" },
+                            fontSize = 10.sp,
+                            fontWeight = FontWeight.Medium,
+                            color = MaterialTheme.colorScheme.onSurface,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f),
+                        )
+                        // 关闭按钮
+                        Box(
+                            modifier = Modifier
+                                .size(16.dp)
+                                .clickable { vm.closeWindow(window.hwnd) },
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Icon(
+                                Icons.Default.Close,
+                                contentDescription = "关闭窗口",
+                                modifier = Modifier.size(9.dp),
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
                 }
             }
         }
     }
 }
 
-/** Dock 单项:32×32 圆角图标(对齐设计稿 dock-item) */
+/**
+ * 服务开关按钮(麦克风 / 外放 / 提示音)
+ *
+ * 22×22 方形按钮,开启时图标为主色,关闭时为灰色
+ */
 @Composable
-private fun DockItem(appId: String, vm: MeowMicViewModel, onClick: () -> Unit) {
-    val v by vm.iconVersion.collectAsState()
-    val bmp: Bitmap? = vm.iconCache[appId]
-    IconButton(
-        onClick = onClick,
-        modifier = Modifier.size(32.dp),
+private fun TaskServiceButton(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    isOn: Boolean,
+    contentDescription: String,
+    onClick: () -> Unit,
+) {
+    Box(
+        modifier = Modifier
+            .size(22.dp)
+            .clickable(onClick = onClick),
+        contentAlignment = Alignment.Center,
     ) {
-        Box(
-            modifier = Modifier
-                .size(32.dp)
-                .background(MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(8.dp)),
-            contentAlignment = Alignment.Center,
-        ) {
-            if (bmp != null) {
-                Image(
-                    bitmap = bmp.asImageBitmap(),
-                    contentDescription = appId,
-                    modifier = Modifier.size(18.dp),
-                )
-            } else {
-                LaunchedEffect(appId) { vm.loadIcon(appId) }
-                Icon(
-                    Icons.Default.Apps,
-                    contentDescription = null,
-                    modifier = Modifier.size(18.dp),
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-        }
+        Icon(
+            icon,
+            contentDescription = contentDescription,
+            modifier = Modifier.size(12.dp),
+            tint = if (isOn) MaterialTheme.colorScheme.primary
+            else MaterialTheme.colorScheme.onSurfaceVariant,
+        )
     }
 }
 
