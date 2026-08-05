@@ -8,6 +8,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.pager.HorizontalPager
@@ -32,6 +33,8 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.boundsInRoot
 import androidx.compose.ui.layout.onGloballyPositioned
@@ -827,17 +830,28 @@ private fun TaskAppItem(
     val bmp: Bitmap? = vm.exeIconCache[app.exePath]
     val hasMultipleWindows = app.windows.size > 1
     val isActive = app.windows.any { it.isActive }
+    val haptic = LocalHapticFeedback.current
+
+    // 长按弹出的关闭按钮弹出窗(null=未展开)
+    var showClosePopup by remember { mutableStateOf(false) }
 
     Box {
         Row(
             modifier = Modifier
-                .clickable {
-                    if (hasMultipleWindows) {
-                        onToggleExpand()
-                    } else {
-                        app.windows.firstOrNull()?.let { vm.focusWindow(it.hwnd) }
-                    }
-                }
+                .combinedClickable(
+                    onClick = {
+                        if (hasMultipleWindows) {
+                            onToggleExpand()
+                        } else {
+                            app.windows.firstOrNull()?.let { vm.focusWindow(it.hwnd) }
+                        }
+                    },
+                    onLongClick = {
+                        // 长按:震动反馈 + 弹出关闭按钮
+                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                        showClosePopup = true
+                    },
+                )
                 .background(
                     if (isActive) MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)
                     else Color.Transparent,
@@ -919,6 +933,33 @@ private fun TaskAppItem(
                 ),
             ) {
                 TaskPopWindow(app = app, vm = vm, onDismiss = onDismissExpand)
+            }
+        }
+
+        // 长按弹出的关闭按钮(单窗口直接关闭,多窗口关闭全部)
+        if (showClosePopup) {
+            Popup(
+                popupPositionProvider = AboveAnchorPositionProvider,
+                onDismissRequest = { showClosePopup = false },
+                properties = PopupProperties(
+                    focusable = true,
+                    dismissOnBackPress = true,
+                    dismissOnClickOutside = true,
+                ),
+            ) {
+                TaskClosePopup(
+                    app = app,
+                    onClose = {
+                        if (hasMultipleWindows) {
+                            // 多窗口:逐个关闭所有窗口
+                            app.windows.forEach { vm.closeWindow(it.hwnd) }
+                        } else {
+                            app.windows.firstOrNull()?.let { vm.closeWindow(it.hwnd) }
+                        }
+                        showClosePopup = false
+                    },
+                    onDismiss = { showClosePopup = false },
+                )
             }
         }
     }
@@ -1055,6 +1096,56 @@ private fun TaskPopWindow(
                     }
                 }
             }
+        }
+    }
+}
+
+/**
+ * 长按任务栏任务弹出的关闭按钮卡片
+ *
+ * 单窗口:显示"关闭"按钮,关闭该窗口
+ * 多窗口:显示"关闭全部(N)"按钮,逐个关闭所有窗口
+ */
+@Composable
+private fun TaskClosePopup(
+    app: RunningApp,
+    onClose: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val hasMultipleWindows = app.windows.size > 1
+    val closeLabel = if (hasMultipleWindows) "关闭全部(${app.windows.size})" else "关闭"
+
+    Card(
+        modifier = Modifier.widthIn(min = 90.dp, max = 140.dp),
+        shape = RoundedCornerShape(10.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surface
+        ),
+        elevation = CardDefaults.cardElevation(defaultElevation = 6.dp),
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable {
+                    onClose()
+                    onDismiss()
+                }
+                .padding(horizontal = 10.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            Icon(
+                Icons.Default.Close,
+                contentDescription = null,
+                modifier = Modifier.size(12.dp),
+                tint = MaterialTheme.colorScheme.error,
+            )
+            Text(
+                closeLabel,
+                fontSize = 11.sp,
+                fontWeight = FontWeight.Medium,
+                color = MaterialTheme.colorScheme.onSurface,
+            )
         }
     }
 }
