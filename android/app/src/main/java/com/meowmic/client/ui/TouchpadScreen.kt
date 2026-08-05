@@ -1919,8 +1919,8 @@ private fun Modifier.dashedBorder(
             topLeft = androidx.compose.ui.geometry.Offset(outline.roundRect.left, outline.roundRect.top),
             size = androidx.compose.ui.geometry.Size(outline.roundRect.width, outline.roundRect.height),
             cornerRadius = androidx.compose.ui.geometry.CornerRadius(
-                outline.roundRect.cornerRadius.x,
-                outline.roundRect.cornerRadius.y,
+                outline.roundRect.topLeftCornerRadius.x,
+                outline.roundRect.topLeftCornerRadius.y,
             ),
             style = stroke,
         )
