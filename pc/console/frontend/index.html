@@ -2274,8 +2274,9 @@
             const Tauri = window.__TAURI__;
             if (!confirm('确定要移除设备 "' + clientName + '" 吗?该设备需要重新配对才能连接。')) return;
             try {
-                await Tauri.invoke('unpair_client', { pubkeyB64: pubkeyB64 });
+                await Tauri.invoke('unpair_client', { pubkey_b64: pubkeyB64 });
                 await refreshPairing();
+                showToast('已移除设备: ' + clientName);
             } catch(e) {
                 showError(String(e));
             }

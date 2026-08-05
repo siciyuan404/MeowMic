@@ -935,26 +935,17 @@ async fn run_pairing_server(pairing: Option<Arc<PairingManager>>, addr: SocketAd
                 }
             } else if method == "POST" && path == "/pairing/unpair" {
                 let pm = pairing.as_ref().unwrap();
-                // 解析 pubkey=<b64>
-                let pubkey = query
-                    .split('&')
-                    .find_map(|kv| {
-                        let (k, v) = kv.split_once('=')?;
-                        if k == "pubkey" {
-                            Some(v.to_string())
-                        } else {
-                            None
-                        }
-                    });
+                // 解析 pubkey=<b64>，并进行 URL 解码(处理 +/= 等特殊字符)
+                let pubkey = extract_query_param(query, "pubkey").map(|v| url_decode(&v));
                 match pubkey {
-                    Some(pk) => match pm.unpair_client(&pk).await {
+                    Some(pk) if !pk.is_empty() => match pm.unpair_client(&pk).await {
                         Ok(()) => ("200 OK", r#"{"ok":true}"#.to_string()),
                         Err(e) => {
                             let body = format!(r#"{{"ok":false,"error":"{}"}}"#, e);
                             ("500 Internal Server Error", body)
                         }
                     },
-                    None => {
+                    _ => {
                         let body = r#"{"error":"missing pubkey param"}"#.to_string();
                         ("400 Bad Request", body)
                     }

@@ -197,7 +197,7 @@ object LauncherRepository {
                         val kind = when (code) {
                             403 -> {
                                 val hasNotPaired = body.contains("not paired")
-                                    || body.contains(""not paired"")
+                                    || body.contains("\"not paired\"")
                                 if (hasNotPaired)
                                     AppListFetchKind.NotPaired403(body)
                                 else
