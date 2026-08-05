@@ -51,8 +51,8 @@ import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Outline
 import androidx.compose.ui.input.pointer.PointerEventPass
-import androidx.compose.ui.input.pointer.awaitPointerEvent
 import androidx.compose.ui.input.pointer.changedToUp
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.pointerInteropFilter
@@ -679,7 +679,7 @@ fun TouchpadScreen(
                 horizontalArrangement = Arrangement.spacedBy(1.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                MouseBtn("左键", Icons.Default.MousePointer, BTN_LEFT, Modifier.weight(1f).height(44.dp), "鼠标左键:单击/按住拖拽", { showToast(it) }, { vm.playFeedbackSound() })
+                MouseBtn("左键", Icons.Default.Mouse, BTN_LEFT, Modifier.weight(1f).height(44.dp), "鼠标左键:单击/按住拖拽", { showToast(it) }, { vm.playFeedbackSound() })
                 MouseBtn("中键", Icons.Default.Mouse, BTN_MIDDLE, Modifier.weight(1f).height(44.dp), "鼠标中键:滚轮按键", { showToast(it) }, { vm.playFeedbackSound() })
                 MouseBtn("右键", Icons.Default.Menu, BTN_RIGHT, Modifier.weight(1f).height(44.dp), "鼠标右键:上下文菜单", { showToast(it) }, { vm.playFeedbackSound() })
             }
@@ -1308,7 +1308,7 @@ fun TouchpadScreen(
             horizontalArrangement = Arrangement.spacedBy(6.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            MouseBtn("左键", Icons.Default.MousePointer, BTN_LEFT, Modifier.weight(1f).height(44.dp), "鼠标左键:单击/按住拖拽", { showToast(it) }, { vm.playFeedbackSound() })
+            MouseBtn("左键", Icons.Default.Mouse, BTN_LEFT, Modifier.weight(1f).height(44.dp), "鼠标左键:单击/按住拖拽", { showToast(it) }, { vm.playFeedbackSound() })
             MouseBtn("中键", Icons.Default.Mouse, BTN_MIDDLE, Modifier.weight(1f).height(44.dp), "鼠标中键:滚轮按键", { showToast(it) }, { vm.playFeedbackSound() })
             MouseBtn("右键", Icons.Default.Menu, BTN_RIGHT, Modifier.weight(1f).height(44.dp), "鼠标右键:上下文菜单", { showToast(it) }, { vm.playFeedbackSound() })
         }
@@ -1625,6 +1625,8 @@ fun TouchpadScreen(
         var selectedTab by remember { mutableStateOf(0) }  // 0=语音, 1=键盘
         val micEnabled by vm.micEnabled.collectAsState()
         val isRecording by vm.isRecording.collectAsState()
+        // 提前在 @Composable 上下文取色,供 drawWithContent 的 DrawScope 使用
+        val onSurfaceColor = MaterialTheme.colorScheme.onSurface
 
         Column(modifier = Modifier.padding(horizontal = 12.dp)) {
             // Tab 行(自定义下划线风格,对齐设计稿 ds-tabs:gap 16px、底部 2px 横线)
@@ -1643,7 +1645,7 @@ fun TouchpadScreen(
                             if (selectedTab == 0) {
                                 // 激活态:底部 2px 下划线,颜色 = onSurface
                                 drawRect(
-                                    color = MaterialTheme.colorScheme.onSurface,
+                                    color = onSurfaceColor,
                                     topLeft = androidx.compose.ui.geometry.Offset(0f, size.height - 2.dp.toPx()),
                                     size = androidx.compose.ui.geometry.Size(size.width, 2.dp.toPx()),
                                 )
@@ -1678,7 +1680,7 @@ fun TouchpadScreen(
                             drawContent()
                             if (selectedTab == 1) {
                                 drawRect(
-                                    color = MaterialTheme.colorScheme.onSurface,
+                                    color = onSurfaceColor,
                                     topLeft = androidx.compose.ui.geometry.Offset(0f, size.height - 2.dp.toPx()),
                                     size = androidx.compose.ui.geometry.Size(size.width, 2.dp.toPx()),
                                 )
@@ -1900,12 +1902,32 @@ private fun Modifier.dashedBorder(
 ): Modifier = this.drawWithContent {
     drawContent()
     val outline = shape.createOutline(size, layoutDirection, this)
-    drawOutline(
-        outline = outline,
-        color = color,
-        style = Stroke(
-            width = width.toPx(),
-            pathEffect = PathEffect.dashPathEffect(floatArrayOf(dash, gap), 0f),
-        ),
+    val stroke = Stroke(
+        width = width.toPx(),
+        pathEffect = PathEffect.dashPathEffect(floatArrayOf(dash, gap), 0f),
     )
+    // 按 Outline 类型分发到 DrawScope 原生绘制方法(兼容 Compose UI 1.6.x)
+    when (outline) {
+        is Outline.Rectangle -> drawRect(
+            color = color,
+            topLeft = androidx.compose.ui.geometry.Offset(outline.rect.left, outline.rect.top),
+            size = androidx.compose.ui.geometry.Size(outline.rect.width, outline.rect.height),
+            style = stroke,
+        )
+        is Outline.Rounded -> drawRoundRect(
+            color = color,
+            topLeft = androidx.compose.ui.geometry.Offset(outline.roundRect.left, outline.roundRect.top),
+            size = androidx.compose.ui.geometry.Size(outline.roundRect.width, outline.roundRect.height),
+            cornerRadius = androidx.compose.ui.geometry.CornerRadius(
+                outline.roundRect.cornerRadius.x,
+                outline.roundRect.cornerRadius.y,
+            ),
+            style = stroke,
+        )
+        is Outline.Generic -> drawPath(
+            path = outline.path,
+            color = color,
+            style = stroke,
+        )
+    }
 }
