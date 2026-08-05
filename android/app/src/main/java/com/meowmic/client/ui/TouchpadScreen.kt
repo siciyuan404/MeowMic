@@ -1474,12 +1474,12 @@ fun TouchpadScreen(
                     val lockThreshold = 24.dp.toPx()  // 向上滑动锁定阈值
                     awaitEachGesture {
                         val down = awaitFirstDown(requireUnconsumed = false)
-                        val pointerId = down.pointerId
+                        val pointerId = down.id
                         val startY = down.position.y
                         var gestureLocked = false  // 本次手势是否已触发锁定
                         while (true) {
                             val event = awaitPointerEvent(PointerEventPass.Main)
-                            val change = event.changes.firstOrNull { it.pointerId == pointerId } ?: continue
+                            val change = event.changes.firstOrNull { it.id == pointerId } ?: continue
                             val dy = change.position.y - startY
                             // 向上滑动超过阈值 → 锁定(消费事件,阻止滚动)
                             if (!gestureLocked && dy < -lockThreshold) {
