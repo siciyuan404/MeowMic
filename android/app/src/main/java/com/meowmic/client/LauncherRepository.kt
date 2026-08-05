@@ -75,7 +75,10 @@ object LauncherRepository {
         return "http://$host:${port + 4}"
     }
 
-    private fun encodeParam(s: String): String = URLEncoder.encode(s, "UTF-8")
+    private fun encodeParam(s: String): String =
+        // URLEncoder.encode 把空格编码为 '+',但 PC 端 url_decode 不解码 '+'
+        // (base64 的 '+' 应保留)。改用 %20 编码空格,与服务端兼容。
+        URLEncoder.encode(s, "UTF-8").replace("+", "%20")
 
     /**
      * 拉取 PC 端应用库。

@@ -7,7 +7,7 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.pager.HorizontalPager
@@ -24,10 +24,17 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.boundsInRoot
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -38,10 +45,18 @@ import com.meowmic.client.AppListState
 import com.meowmic.client.ConnectionState
 import com.meowmic.client.DirListing
 import com.meowmic.client.MeowMicViewModel
+import kotlin.math.abs
 
-private val GRID_COLUMNS = 5
-private val GRID_ROWS = 6
-private val PAGE_SIZE = GRID_COLUMNS * GRID_ROWS // 30
+// 网格规格:竖屏 5×6=30,横屏 8×3=24(横向更宽,行数减少)
+private val GRID_COLUMNS_PORTRAIT = 5
+private val GRID_ROWS_PORTRAIT = 6
+private val GRID_COLUMNS_LANDSCAPE = 8
+private val GRID_ROWS_LANDSCAPE = 3
+private fun gridColumns(landscape: Boolean) =
+    if (landscape) GRID_COLUMNS_LANDSCAPE else GRID_COLUMNS_PORTRAIT
+private fun gridRows(landscape: Boolean) =
+    if (landscape) GRID_ROWS_LANDSCAPE else GRID_ROWS_PORTRAIT
+private fun pageSize(landscape: Boolean) = gridColumns(landscape) * gridRows(landscape)
 private val DOCK_COUNT = 4
 
 /**
@@ -67,6 +82,7 @@ fun LauncherScreen(
     var editMode by remember { mutableStateOf(false) }
     var showAddDialog by remember { mutableStateOf(false) }
     var locked by remember { mutableStateOf(false) }
+    var landscape by remember { mutableStateOf(false) }
 
     // 进入页面时拉取应用库(仅一次,且需已连接)
     LaunchedEffect(connectionState) {
@@ -86,7 +102,10 @@ fun LauncherScreen(
     val addr = (connectionState as? ConnectionState.Connected)?.serverAddr ?: ""
 
     // 分页 pagerState(提升到此处,PageIndicator 与 PagerGrid 共享)
-    val pageCount = if (quickAppIds.isEmpty()) 1 else (quickAppIds.size + PAGE_SIZE - 1) / PAGE_SIZE
+    // 横竖屏切换时 pageSize 变化,pageCount 随之重组
+    val currentPageSize = pageSize(landscape)
+    val pageCount = if (quickAppIds.isEmpty()) 1 else
+        (quickAppIds.size + currentPagePageSize - 1) / currentPagePageSize
     val pagerState = rememberPagerState(pageCount = { pageCount })
 
     Box(modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
@@ -94,13 +113,14 @@ fun LauncherScreen(
             modifier = Modifier.fillMaxSize().padding(12.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            // 1. 顶部状态栏
-            StatusBar(addr)
+            // 1. 顶部状态栏(横屏时隐藏,腾出垂直空间)
+            if (!landscape) StatusBar(addr)
 
-            // 2. 顶部操作栏
+            // 2. 顶部操作栏(无标题,全部按钮排列)
             TopBar(
                 editMode = editMode,
                 locked = locked,
+                landscape = landscape,
                 onBack = onBack,
                 onToggleEdit = { editMode = !editMode },
                 onAdd = { showAddDialog = true },
@@ -108,6 +128,7 @@ fun LauncherScreen(
                     if (!locked) editMode = false
                     locked = !locked
                 },
+                onToggleLandscape = { landscape = !landscape },
             )
 
             // 3. 分页网格
@@ -141,9 +162,11 @@ fun LauncherScreen(
                             vm = vm,
                             editMode = editMode,
                             locked = locked,
+                            landscape = landscape,
                             onLaunch = { id -> vm.launchApp(id) },
                             onRemove = { id -> vm.removeQuickApp(id) },
                             onAdd = { showAddDialog = true },
+                            onMove = { from, to -> vm.moveQuickApp(from, to) },
                         )
                     }
                 }
@@ -232,15 +255,17 @@ private fun StatusBar(addr: String) {
     }
 }
 
-/** 顶部操作栏:返回(secondary) / 标题 / 编辑(ghost) / 添加(ghost) / 锁定(ghost) */
+/** 顶部操作栏:返回 / 编辑 / 添加 / 锁定 / 切换横屏(无标题,全部按钮) */
 @Composable
 private fun TopBar(
     editMode: Boolean,
     locked: Boolean,
+    landscape: Boolean,
     onBack: () -> Unit,
     onToggleEdit: () -> Unit,
     onAdd: () -> Unit,
     onToggleLock: () -> Unit,
+    onToggleLandscape: () -> Unit,
 ) {
     Row(
         modifier = Modifier.fillMaxWidth(),
@@ -270,14 +295,8 @@ private fun TopBar(
                 tint = MaterialTheme.colorScheme.onSurface,
             )
         }
-        Text(
-            "快捷启动",
-            modifier = Modifier.weight(1f),
-            textAlign = TextAlign.Center,
-            fontSize = 12.sp,
-            fontWeight = FontWeight.SemiBold,
-            color = MaterialTheme.colorScheme.onSurface,
-        )
+        // 中间弹性间距(原"快捷启动"文字位置,现空出)
+        Spacer(Modifier.weight(1f))
         // 编辑按钮:ghost 风格(透明背景,激活时主色),锁定时禁用
         Box(
             modifier = Modifier
@@ -311,6 +330,8 @@ private fun TopBar(
         }
         // 锁定按钮:ghost 风格,激活时主色高亮
         LockButton(locked = locked, onClick = onToggleLock)
+        // 切换横屏按钮:ghost 风格,激活时主色高亮
+        LandscapeButton(landscape = landscape, onClick = onToggleLandscape)
     }
 }
 
@@ -343,9 +364,38 @@ private fun LockButton(locked: Boolean, onClick: () -> Unit) {
     }
 }
 
+/** 切换横屏按钮:横屏时品牌色高亮 */
+@Composable
+private fun LandscapeButton(landscape: Boolean, onClick: () -> Unit) {
+    val backgroundColor by animateColorAsState(
+        targetValue = if (landscape) MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)
+        else Color.Transparent,
+        label = "landscapeBg",
+    )
+    val iconTint by animateColorAsState(
+        targetValue = if (landscape) MaterialTheme.colorScheme.primary
+        else MaterialTheme.colorScheme.onSurfaceVariant,
+        label = "landscapeTint",
+    )
+    Box(
+        modifier = Modifier
+            .size(28.dp)
+            .background(backgroundColor, RoundedCornerShape(8.dp))
+            .clickable(onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) {
+        Icon(
+            if (landscape) Icons.Default.ScreenRotation else Icons.Default.StayCurrentPortrait,
+            contentDescription = if (landscape) "切回竖屏" else "切换横屏",
+            modifier = Modifier.size(18.dp),
+            tint = iconTint,
+        )
+    }
+}
+
 /** 空状态:已弃用,统一用 PagerGrid 显示空位"添加"格子 */
 
-/** 分页网格:HorizontalPager + 每页 5×6,空位全部显示"添加" */
+/** 分页网格:HorizontalPager,竖屏 5×6 / 横屏 8×3,空位全部显示"添加" */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun PagerGrid(
@@ -354,45 +404,96 @@ private fun PagerGrid(
     vm: MeowMicViewModel,
     editMode: Boolean,
     locked: Boolean,
+    landscape: Boolean,
     onLaunch: (String) -> Unit,
     onRemove: (String) -> Unit,
     onAdd: () -> Unit,
+    onMove: (from: Int, to: Int) -> Unit,
 ) {
-    HorizontalPager(
-        state = pagerState,
-        modifier = Modifier.fillMaxSize(),
-        pageSpacing = 8.dp,
-    ) { pageIndex ->
-        val start = pageIndex * PAGE_SIZE
-        val end = minOf(start + PAGE_SIZE, quickAppIds.size)
-        val pageItems = quickAppIds.subList(start, end)
+    val columns = gridColumns(landscape)
+    val rows = gridRows(landscape)
+    val currentPageSize = pageSize(landscape)
 
-        Column(
+    // 拖动排序状态
+    var draggingIndex by remember { mutableStateOf<Int?>(null) }
+    // 每个 cell 的屏幕位置(用于拖动时命中检测)
+    val cellBounds = remember { mutableStateMapOf<Int, Rect>() }
+    // 网格区域在 root 中的原点(用于将局部坐标转为 root 坐标)
+    var gridOrigin by remember { mutableStateOf(Offset.Zero) }
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .onGloballyPositioned { gridOrigin = it.positionInRoot() }
+            // 长按拖动排序(锁定时禁用);长按前不消费事件,不影响 Pager 横向滑动
+            .pointerInput(locked, columns, rows) {
+                if (locked) return@pointerInput
+                detectDragGesturesAfterLongPress(
+                    onDragStart = { offset ->
+                        val globalPos = offset + gridOrigin
+                        val hit = cellBounds.entries.firstOrNull { it.value.contains(globalPos) }?.key
+                        if (hit != null && hit < quickAppIds.size) {
+                            draggingIndex = hit
+                        }
+                    },
+                    onDrag = { change, _ ->
+                        change.consume()
+                        val current = draggingIndex ?: return@detectDragGesturesAfterLongPress
+                        val globalPos = change.position + gridOrigin
+                        val target = cellBounds.entries.firstOrNull { it.value.contains(globalPos) }?.key
+                        if (target != null && target != current && target < quickAppIds.size) {
+                            onMove(current, target)
+                            draggingIndex = target
+                        }
+                    },
+                    onDragEnd = { draggingIndex = null },
+                    onDragCancel = { draggingIndex = null },
+                )
+            }
+    ) {
+        HorizontalPager(
+            state = pagerState,
             modifier = Modifier.fillMaxSize(),
-            verticalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            for (row in 0 until GRID_ROWS) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    for (col in 0 until GRID_COLUMNS) {
-                        val index = row * GRID_COLUMNS + col
-                        Box(modifier = Modifier.weight(1f)) {
-                            val appId = pageItems.getOrNull(index)
-                            if (appId != null) {
-                                QuickAppCell(
-                                    appId = appId,
-                                    name = vm.findApp(appId)?.name ?: appId,
-                                    vm = vm,
-                                    editMode = editMode,
-                                    locked = locked,
-                                    onLaunch = onLaunch,
-                                    onRemove = onRemove,
-                                )
-                            } else {
-                                // 所有空位都显示"添加"(对齐设计稿)
-                                AddCell(onClick = onAdd, locked = locked)
+            pageSpacing = 8.dp,
+        ) { pageIndex ->
+            val start = pageIndex * currentPageSize
+            val end = minOf(start + currentPageSize, quickAppIds.size)
+            val pageItems = quickAppIds.subList(start, end)
+
+            Column(
+                modifier = Modifier.fillMaxSize(),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                for (row in 0 until rows) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        for (col in 0 until columns) {
+                            val indexInPage = row * columns + col
+                            val globalIndex = start + indexInPage
+                            Box(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .onGloballyPositioned { coords ->
+                                        cellBounds[globalIndex] = coords.boundsInRoot()
+                                    }
+                            ) {
+                                val appId = pageItems.getOrNull(indexInPage)
+                                if (appId != null) {
+                                    QuickAppCell(
+                                        appId = appId,
+                                        name = vm.findApp(appId)?.name ?: appId,
+                                        vm = vm,
+                                        editMode = editMode,
+                                        isDragging = draggingIndex == globalIndex,
+                                        onLaunch = onLaunch,
+                                        onRemove = onRemove,
+                                    )
+                                } else {
+                                    // 所有空位都显示"添加"(对齐设计稿)
+                                    AddCell(onClick = onAdd, locked = locked)
+                                }
                             }
                         }
                     }
@@ -402,7 +503,7 @@ private fun PagerGrid(
     }
 }
 
-/** 快捷启动格子:图标 + 名称,点击启动,长按(编辑模式)删除,锁定时禁用长按 */
+/** 快捷启动格子:图标 + 名称,点击启动,长按拖动排序,编辑模式右上角 X 删除 */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun QuickAppCell(
@@ -410,33 +511,38 @@ private fun QuickAppCell(
     name: String,
     vm: MeowMicViewModel,
     editMode: Boolean,
-    locked: Boolean,
+    isDragging: Boolean,
     onLaunch: (String) -> Unit,
     onRemove: (String) -> Unit,
 ) {
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .combinedClickable(
-                onClick = {
-                    if (editMode) onRemove(appId) else onLaunch(appId)
-                },
-                onLongClick = if (locked) null else { { onRemove(appId) } },
-            )
+            .graphicsLayer {
+                // 拖动中:轻微放大 + 提高透明度(视觉反馈)
+                if (isDragging) {
+                    scaleX = 1.1f
+                    scaleY = 1.1f
+                    alpha = 0.85f
+                }
+            }
+            .clickable { onLaunch(appId) }
             .padding(start = 2.dp, end = 2.dp, top = 4.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(4.dp),
     ) {
         Box(contentAlignment = Alignment.Center) {
             AppIconBox(appId = appId, vm = vm)
-            // 编辑模式:删除角标
+            // 编辑模式:右上角 X 删除按钮
             if (editMode) {
                 Surface(
                     shape = CircleShape,
                     color = MaterialTheme.colorScheme.error,
                     modifier = Modifier
                         .align(Alignment.TopEnd)
-                        .size(16.dp),
+                        .offset(x = 2.dp, y = (-2).dp)
+                        .size(16.dp)
+                        .clickable { onRemove(appId) },
                 ) {
                     Icon(
                         Icons.Default.Close,
