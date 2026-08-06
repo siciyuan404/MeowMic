@@ -583,4 +583,247 @@ object LauncherRepository {
                 false
             }
         }
+
+    // ════════════════════════════════════════════════════════════════
+    // 远程显示器(screen)端点
+    // ════════════════════════════════════════════════════════════════
+
+    /** 屏幕分辨率 */
+    data class ScreenInfo(val width: Int, val height: Int)
+
+    /** 获取屏幕分辨率 */
+    suspend fun fetchScreenInfo(serverAddr: String, pubkey: String): ScreenInfo? =
+        withContext(Dispatchers.IO) {
+            val url = "${httpBaseUrl(serverAddr)}/screen/info?pubkey=${encodeParam(pubkey)}"
+            try {
+                val conn = (URL(url).openConnection() as HttpURLConnection).apply {
+                    connectTimeout = CONNECT_TIMEOUT_MS
+                    readTimeout = READ_TIMEOUT_MS
+                }
+                try {
+                    if (conn.responseCode == 200) {
+                        val body = conn.inputStream.bufferedReader().use { it.readText() }
+                        val json = JSONObject(body)
+                        ScreenInfo(json.optInt("width"), json.optInt("height"))
+                    } else null
+                } finally {
+                    conn.disconnect()
+                }
+            } catch (e: Exception) {
+                Log.d(TAG, "fetchScreenInfo 失败: ${e.message}")
+                null
+            }
+        }
+
+    /**
+     * 抓取一帧屏幕画面(PNG)。
+     * @param quality 0-100(占位,目前 PNG 不使用)
+     * @param scale 0.25 / 0.5 / 1.0
+     */
+    suspend fun fetchScreenCapture(
+        serverAddr: String,
+        pubkey: String,
+        quality: Int = 70,
+        scale: Float = 0.5f,
+    ): ByteArray? =
+        withContext(Dispatchers.IO) {
+            val url = "${httpBaseUrl(serverAddr)}/screen/capture?quality=$quality&scale=$scale&pubkey=${encodeParam(pubkey)}"
+            try {
+                val conn = (URL(url).openConnection() as HttpURLConnection).apply {
+                    connectTimeout = CONNECT_TIMEOUT_MS
+                    readTimeout = SCREEN_READ_TIMEOUT_MS
+                }
+                try {
+                    if (conn.responseCode == 200) {
+                        conn.inputStream.use { it.readBytes() }
+                    } else null
+                } finally {
+                    conn.disconnect()
+                }
+            } catch (e: Exception) {
+                Log.d(TAG, "fetchScreenCapture 失败: ${e.message}")
+                null
+            }
+        }
+
+    // ════════════════════════════════════════════════════════════════
+    // 文件传输(file)端点
+    // ════════════════════════════════════════════════════════════════
+
+    /** 文件条目(用于文件传输页列表) */
+    data class FileEntry(
+        val name: String,
+        val path: String,
+        val isDir: Boolean,
+        val size: Long,
+        val modified: Long,
+        val readonly: Boolean,
+    )
+
+    /** 目录浏览结果(用于文件传输页) */
+    data class FileListing(
+        val current: String,
+        val parent: String?,
+        val items: List<FileEntry>,
+    )
+
+    /** 列出目录下所有文件 */
+    suspend fun listFiles(serverAddr: String, path: String, pubkey: String): FileListing? =
+        withContext(Dispatchers.IO) {
+            val url = "${httpBaseUrl(serverAddr)}/file/list?path=${encodeParam(path)}&pubkey=${encodeParam(pubkey)}"
+            try {
+                val conn = (URL(url).openConnection() as HttpURLConnection).apply {
+                    connectTimeout = CONNECT_TIMEOUT_MS
+                    readTimeout = READ_TIMEOUT_MS
+                }
+                try {
+                    if (conn.responseCode == 200) {
+                        val body = conn.inputStream.bufferedReader().use { it.readText() }
+                        val json = JSONObject(body)
+                        val arr = json.optJSONArray("items") ?: return@withContext FileListing(
+                            json.optString("current"),
+                            json.optString("parent").takeIf { it.isNotBlank() },
+                            emptyList(),
+                        )
+                        val items = (0 until arr.length()).mapNotNull { i ->
+                            val obj = arr.optJSONObject(i) ?: return@mapNotNull null
+                            FileEntry(
+                                name = obj.optString("name"),
+                                path = obj.optString("path"),
+                                isDir = obj.optBoolean("is_dir"),
+                                size = obj.optLong("size"),
+                                modified = obj.optLong("modified"),
+                                readonly = obj.optBoolean("readonly"),
+                            )
+                        }
+                        FileListing(
+                            json.optString("current"),
+                            json.optString("parent").takeIf { it.isNotBlank() },
+                            items,
+                        )
+                    } else null
+                } finally {
+                    conn.disconnect()
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "listFiles 失败: ${e.message}")
+                null
+            }
+        }
+
+    /** 下载文件字节流 */
+    suspend fun downloadFile(serverAddr: String, path: String, pubkey: String): ByteArray? =
+        withContext(Dispatchers.IO) {
+            val url = "${httpBaseUrl(serverAddr)}/file/download?path=${encodeParam(path)}&pubkey=${encodeParam(pubkey)}"
+            try {
+                val conn = (URL(url).openConnection() as HttpURLConnection).apply {
+                    connectTimeout = CONNECT_TIMEOUT_MS
+                    readTimeout = FILE_READ_TIMEOUT_MS
+                }
+                try {
+                    if (conn.responseCode == 200) {
+                        conn.inputStream.use { it.readBytes() }
+                    } else null
+                } finally {
+                    conn.disconnect()
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "downloadFile 失败: ${e.message}")
+                null
+            }
+        }
+
+    /** 上传文件字节流到 PC 指定路径 */
+    suspend fun uploadFile(serverAddr: String, path: String, data: ByteArray, pubkey: String): Boolean =
+        withContext(Dispatchers.IO) {
+            val url = "${httpBaseUrl(serverAddr)}/file/upload?path=${encodeParam(path)}&pubkey=${encodeParam(pubkey)}"
+            try {
+                val conn = (URL(url).openConnection() as HttpURLConnection).apply {
+                    connectTimeout = CONNECT_TIMEOUT_MS
+                    readTimeout = FILE_READ_TIMEOUT_MS
+                    requestMethod = "POST"
+                    doOutput = true
+                    useCaches = false
+                    setFixedLengthStreamingMode(data.size)
+                }
+                try {
+                    conn.outputStream.use { it.write(data) }
+                    conn.responseCode == 200
+                } finally {
+                    conn.disconnect()
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "uploadFile 失败: ${e.message}")
+                false
+            }
+        }
+
+    /** 新建目录 */
+    suspend fun mkdir(serverAddr: String, path: String, pubkey: String): Boolean =
+        withContext(Dispatchers.IO) {
+            val url = "${httpBaseUrl(serverAddr)}/file/mkdir?path=${encodeParam(path)}&pubkey=${encodeParam(pubkey)}"
+            try {
+                val conn = (URL(url).openConnection() as HttpURLConnection).apply {
+                    connectTimeout = CONNECT_TIMEOUT_MS
+                    readTimeout = READ_TIMEOUT_MS
+                    requestMethod = "POST"
+                    setFixedLengthStreamingMode(0)
+                }
+                try {
+                    conn.responseCode == 200
+                } finally {
+                    conn.disconnect()
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "mkdir 失败: ${e.message}")
+                false
+            }
+        }
+
+    /** 删除文件或目录 */
+    suspend fun deleteFile(serverAddr: String, path: String, pubkey: String): Boolean =
+        withContext(Dispatchers.IO) {
+            val url = "${httpBaseUrl(serverAddr)}/file/delete?path=${encodeParam(path)}&pubkey=${encodeParam(pubkey)}"
+            try {
+                val conn = (URL(url).openConnection() as HttpURLConnection).apply {
+                    connectTimeout = CONNECT_TIMEOUT_MS
+                    readTimeout = READ_TIMEOUT_MS
+                    requestMethod = "POST"
+                    setFixedLengthStreamingMode(0)
+                }
+                try {
+                    conn.responseCode == 200
+                } finally {
+                    conn.disconnect()
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "deleteFile 失败: ${e.message}")
+                false
+            }
+        }
+
+    /** 重命名/移动 */
+    suspend fun renameFile(serverAddr: String, from: String, to: String, pubkey: String): Boolean =
+        withContext(Dispatchers.IO) {
+            val url = "${httpBaseUrl(serverAddr)}/file/rename?from=${encodeParam(from)}&to=${encodeParam(to)}&pubkey=${encodeParam(pubkey)}"
+            try {
+                val conn = (URL(url).openConnection() as HttpURLConnection).apply {
+                    connectTimeout = CONNECT_TIMEOUT_MS
+                    readTimeout = READ_TIMEOUT_MS
+                    requestMethod = "POST"
+                    setFixedLengthStreamingMode(0)
+                }
+                try {
+                    conn.responseCode == 200
+                } finally {
+                    conn.disconnect()
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "renameFile 失败: ${e.message}")
+                false
+            }
+        }
+
+    private const val SCREEN_READ_TIMEOUT_MS = 8000
+    private const val FILE_READ_TIMEOUT_MS = 30000
 }

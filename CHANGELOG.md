@@ -26,6 +26,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - 代码内版本号与发布 tag 对齐：Android versionName 0.1.0 → 0.23.0, versionCode 1 → 23
 - Rust workspace / Tauri console 版本号 0.1.0 → 0.23.0
 
+## [0.27.0] - 2026-08-06
+
+### Added
+- **快捷启动页面 UI 同步设计稿**（Android）
+  - 可折叠连接栏 `ConnBar`：默认收起，点击展开显示 IP 地址、流量统计（T/A）、横竖屏标签
+  - 顶部操作栏 `ActionBar`：页面切换组（触控/快捷启动/语音/键盘/显示器/文件 6 按钮）+ 上下文开关 + 断开按钮
+  - 编辑工具栏 `EditToolbar`：编辑/添加/锁定 + `RotateRight` 翻转按钮切换横竖屏
+  - 共享页面切换组件 `PageSwitcher`（SharedTopBar.kt），各页面复用
+  - 分页网格竖屏 5×6 / 横屏 8×3 自适应
+- **远程显示器页**（Android `MonitorScreen.kt` + PC `screen.rs`）
+  - 周期拉取 `/screen/capture` PNG 显示，支持缩放比例 25%/50%/100% 与帧率 2/5/10fps 调整
+  - PC 端 GDI BitBlt 屏幕抓取 + PNG 编码，提供 `/screen/capture` 和 `/screen/info` 端点
+  - 底部状态栏显示分辨率/缩放/帧数/延迟
+- **文件传输页**（Android `FilesScreen.kt` + PC `files.rs`）
+  - 目录浏览/上传/下载/新建目录/删除/重命名
+  - 面包屑路径栏 + 上级目录导航
+  - 文件图标按扩展名区分，显示大小/修改时间/只读属性
+  - PC 端提供 `/file/list` `/file/download` `/file/upload` `/file/mkdir` `/file/delete` `/file/rename` 端点
+- `MainActivity` 注册 `monitor` 和 `files` 两个新路由
+
+### Fixed
+- PC 端 `screen.rs` 编译错误：`GetSystemMetrics` 从 `Win32::Graphics::Gdi` 改为从 `Win32::UI::WindowsAndMessaging` 导入
+
+### Changed
+- Android versionCode 24 → 27, versionName 0.24.0 → 0.27.0
+- Rust workspace 版本 0.24.0 → 0.27.0
+
 ## [0.24.0] - 2026-08-06
 
 ### Added

@@ -26,6 +26,8 @@ mod audio_play;
 mod stats;
 mod apps;
 mod windows;
+mod screen;
+mod files;
 
 #[derive(Parser, Debug)]
 #[command(name = "meowmic-server", version, about = "MeowMic 服务端 - 极低延迟手机外设")]
@@ -532,7 +534,8 @@ async fn run_serverinfo_server(
 
             // 解析请求体(POST /add_app 需要)
             // 找到 \r\n\r\n 分隔头部和 body,并根据 Content-Length 读取完整 body
-            let body_str: String = if method == "POST" {
+            // 保留原始字节(body_bytes,用于 /file/upload)和字符串(body_str,用于其他端点)
+            let body_bytes: Vec<u8> = if method == "POST" {
                 let header_end = req.find("\r\n\r\n").map(|p| p + 4);
                 let mut body_so_far: Vec<u8> = if let Some(start) = header_end {
                     buf[start..n].to_vec()
@@ -560,10 +563,11 @@ async fn run_serverinfo_server(
                         Err(_) => break,
                     }
                 }
-                String::from_utf8_lossy(&body_so_far).to_string()
+                body_so_far
             } else {
-                String::new()
+                Vec::new()
             };
+            let body_str = String::from_utf8_lossy(&body_bytes).to_string();
 
             // (status, content_type, body)
             let (status, content_type, body): (&str, &str, Vec<u8>) = if method == "GET" && path == "/serverinfo" {
@@ -785,6 +789,155 @@ async fn run_serverinfo_server(
                         Err(_) => ("400 Bad Request", "application/json", br#"{"error":"invalid hwnd"}"#.to_vec()),
                     }
                 }
+            } else if method == "GET" && path == "/screen/info" {
+                // 远程显示器:返回屏幕分辨率
+                if !check_paired(&pairing, &active_clients, query).await {
+                    ("403 Forbidden", "application/json", br#"{"error":"not paired"}"#.to_vec())
+                } else {
+                    let (w, h) = screen::screen_resolution();
+                    let body = format!(r#"{{"width":{},"height":{}}}"#, w, h);
+                    ("200 OK", "application/json", body.into_bytes())
+                }
+            } else if method == "GET" && path == "/screen/capture" {
+                // 远程显示器:抓取屏幕 PNG 字节
+                if !check_paired(&pairing, &active_clients, query).await {
+                    ("403 Forbidden", "application/json", br#"{"error":"not paired"}"#.to_vec())
+                } else {
+                    let quality = extract_query_param(query, "quality")
+                        .and_then(|s| s.parse::<u8>().ok())
+                        .unwrap_or(70);
+                    let scale = extract_query_param(query, "scale")
+                        .and_then(|s| s.parse::<f32>().ok())
+                        .unwrap_or(0.5);
+                    match screen::capture_screen_png(quality, scale) {
+                        Some(png) => ("200 OK", "image/png", png),
+                        None => ("500 Internal Server Error", "application/json", br#"{"error":"capture failed"}"#.to_vec()),
+                    }
+                }
+            } else if method == "GET" && path == "/file/list" {
+                // 文件传输页:列出目录下所有文件(含大小、修改时间、权限)
+                if !check_paired(&pairing, &active_clients, query).await {
+                    ("403 Forbidden", "application/json", br#"{"error":"not paired"}"#.to_vec())
+                } else {
+                    let raw_path = extract_query_param(query, "path").unwrap_or_default();
+                    let decoded = url_decode(&raw_path);
+                    match files::list_files(&decoded) {
+                        Ok((current, parent, items)) => {
+                            let parent_json = parent
+                                .map(|p| format!("\"{}\"", p.replace('\\', "\\\\").replace('"', "\\\"")))
+                                .unwrap_or_else(|| "null".to_string());
+                            let items_json = serde_json::to_string(&items).unwrap_or_else(|_| "[]".into());
+                            let body = format!(
+                                r#"{{"current":"{}","parent":{},"items":{}}}"#,
+                                current.replace('\\', "\\\\").replace('"', "\\\""),
+                                parent_json,
+                                items_json,
+                            );
+                            ("200 OK", "application/json", body.into_bytes())
+                        }
+                        Err(e) => {
+                            let body = format!(r#"{{"error":"{}"}}"#, e);
+                            ("400 Bad Request", "application/json", body.into_bytes())
+                        }
+                    }
+                }
+            } else if method == "GET" && path == "/file/download" {
+                // 文件传输页:下载文件
+                if !check_paired(&pairing, &active_clients, query).await {
+                    ("403 Forbidden", "application/json", br#"{"error":"not paired"}"#.to_vec())
+                } else {
+                    let raw_path = extract_query_param(query, "path").unwrap_or_default();
+                    let decoded = url_decode(&raw_path);
+                    if decoded.is_empty() {
+                        ("400 Bad Request", "application/json", br#"{"error":"path required"}"#.to_vec())
+                    } else {
+                        match files::read_file(&decoded) {
+                            Ok(data) => ("200 OK", "application/octet-stream", data),
+                            Err(e) => {
+                                let body = format!(r#"{{"error":"{}"}}"#, e);
+                                ("400 Bad Request", "application/json", body.into_bytes())
+                            }
+                        }
+                    }
+                }
+            } else if method == "POST" && path == "/file/upload" {
+                // 文件传输页:上传文件(写入 PC 指定路径)
+                if !check_paired(&pairing, &active_clients, query).await {
+                    ("403 Forbidden", "application/json", br#"{"error":"not paired"}"#.to_vec())
+                } else {
+                    let raw_path = extract_query_param(query, "path").unwrap_or_default();
+                    let decoded = url_decode(&raw_path);
+                    if decoded.is_empty() {
+                        ("400 Bad Request", "application/json", br#"{"error":"path required"}"#.to_vec())
+                    } else {
+                        match files::write_file(&decoded, &body_bytes) {
+                            Ok(()) => ("200 OK", "application/json", br#"{"ok":true}"#.to_vec()),
+                            Err(e) => {
+                                let body = format!(r#"{{"error":"{}"}}"#, e);
+                                ("400 Bad Request", "application/json", body.into_bytes())
+                            }
+                        }
+                    }
+                }
+            } else if method == "POST" && path == "/file/mkdir" {
+                // 文件传输页:新建目录
+                if !check_paired(&pairing, &active_clients, query).await {
+                    ("403 Forbidden", "application/json", br#"{"error":"not paired"}"#.to_vec())
+                } else {
+                    let raw_path = extract_query_param(query, "path").unwrap_or_default();
+                    let decoded = url_decode(&raw_path);
+                    if decoded.is_empty() {
+                        ("400 Bad Request", "application/json", br#"{"error":"path required"}"#.to_vec())
+                    } else {
+                        match files::mkdir(&decoded) {
+                            Ok(()) => ("200 OK", "application/json", br#"{"ok":true}"#.to_vec()),
+                            Err(e) => {
+                                let body = format!(r#"{{"error":"{}"}}"#, e);
+                                ("400 Bad Request", "application/json", body.into_bytes())
+                            }
+                        }
+                    }
+                }
+            } else if method == "POST" && path == "/file/delete" {
+                // 文件传输页:删除文件或目录(递归)
+                if !check_paired(&pairing, &active_clients, query).await {
+                    ("403 Forbidden", "application/json", br#"{"error":"not paired"}"#.to_vec())
+                } else {
+                    let raw_path = extract_query_param(query, "path").unwrap_or_default();
+                    let decoded = url_decode(&raw_path);
+                    if decoded.is_empty() {
+                        ("400 Bad Request", "application/json", br#"{"error":"path required"}"#.to_vec())
+                    } else {
+                        match files::delete(&decoded) {
+                            Ok(()) => ("200 OK", "application/json", br#"{"ok":true}"#.to_vec()),
+                            Err(e) => {
+                                let body = format!(r#"{{"error":"{}"}}"#, e);
+                                ("400 Bad Request", "application/json", body.into_bytes())
+                            }
+                        }
+                    }
+                }
+            } else if method == "POST" && path == "/file/rename" {
+                // 文件传输页:重命名/移动
+                if !check_paired(&pairing, &active_clients, query).await {
+                    ("403 Forbidden", "application/json", br#"{"error":"not paired"}"#.to_vec())
+                } else {
+                    let from_raw = extract_query_param(query, "from").unwrap_or_default();
+                    let to_raw = extract_query_param(query, "to").unwrap_or_default();
+                    let from = url_decode(&from_raw);
+                    let to = url_decode(&to_raw);
+                    if from.is_empty() || to.is_empty() {
+                        ("400 Bad Request", "application/json", br#"{"error":"from and to required"}"#.to_vec())
+                    } else {
+                        match files::rename(&from, &to) {
+                            Ok(()) => ("200 OK", "application/json", br#"{"ok":true}"#.to_vec()),
+                            Err(e) => {
+                                let body = format!(r#"{{"error":"{}"}}"#, e);
+                                ("400 Bad Request", "application/json", body.into_bytes())
+                            }
+                        }
+                    }
+                }
             } else {
                 (
                     "404 Not Found",
@@ -935,17 +1088,26 @@ async fn run_pairing_server(pairing: Option<Arc<PairingManager>>, addr: SocketAd
                 }
             } else if method == "POST" && path == "/pairing/unpair" {
                 let pm = pairing.as_ref().unwrap();
-                // 解析 pubkey=<b64>，并进行 URL 解码(处理 +/= 等特殊字符)
-                let pubkey = extract_query_param(query, "pubkey").map(|v| url_decode(&v));
+                // 解析 pubkey=<b64>
+                let pubkey = query
+                    .split('&')
+                    .find_map(|kv| {
+                        let (k, v) = kv.split_once('=')?;
+                        if k == "pubkey" {
+                            Some(v.to_string())
+                        } else {
+                            None
+                        }
+                    });
                 match pubkey {
-                    Some(pk) if !pk.is_empty() => match pm.unpair_client(&pk).await {
+                    Some(pk) => match pm.unpair_client(&pk).await {
                         Ok(()) => ("200 OK", r#"{"ok":true}"#.to_string()),
                         Err(e) => {
                             let body = format!(r#"{{"ok":false,"error":"{}"}}"#, e);
                             ("500 Internal Server Error", body)
                         }
                     },
-                    _ => {
+                    None => {
                         let body = r#"{"error":"missing pubkey param"}"#.to_string();
                         ("400 Bad Request", body)
                     }

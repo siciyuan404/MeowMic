@@ -1,6 +1,7 @@
 package com.meowmic.client.ui
 
 import android.graphics.Bitmap
+import org.json.JSONObject
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
@@ -26,6 +27,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Color
@@ -85,16 +87,20 @@ private fun pageSize(landscape: Boolean) = gridColumns(landscape) * gridRows(lan
 fun LauncherScreen(
     vm: MeowMicViewModel,
     onBack: () -> Unit,
+    onDisconnect: () -> Unit = {},
+    onNavigate: (String) -> Unit = {},
 ) {
     val connectionState by vm.connectionState.collectAsState()
     val appListState by vm.appListState.collectAsState()
     val quickAppIds by vm.quickAppIds.collectAsState()
     val launchFeedback by vm.launchFeedback.collectAsState()
+    val stats by vm.stats.collectAsState()
 
     var editMode by remember { mutableStateOf(false) }
     var showAddDialog by remember { mutableStateOf(false) }
     var locked by remember { mutableStateOf(false) }
     var landscape by remember { mutableStateOf(false) }
+    var connExpanded by remember { mutableStateOf(false) }
 
     // 进入页面时拉取应用库(仅一次,且需已连接)
     LaunchedEffect(connectionState) {
@@ -123,6 +129,15 @@ fun LauncherScreen(
 
     val addr = (connectionState as? ConnectionState.Connected)?.serverAddr ?: ""
 
+    // 统计数据(用于连接栏展开详情)
+    var touchSent = 0L
+    var audioSent = 0L
+    try {
+        val json = JSONObject(stats)
+        touchSent = json.optLong("touch_sent", 0)
+        audioSent = json.optLong("audio_sent", 0)
+    } catch (_: Exception) { }
+
     // 分页 pagerState(提升到此处,PageIndicator 与 PagerGrid 共享)
     // 横竖屏切换时 pageSize 变化,pageCount 随之重组
     val currentPageSize = pageSize(landscape)
@@ -135,15 +150,30 @@ fun LauncherScreen(
             modifier = Modifier.fillMaxSize().padding(12.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            // 1. 顶部状态栏(横屏时隐藏,腾出垂直空间)
-            if (!landscape) StatusBar(addr)
+            // 1. 可折叠连接栏(默认收起,点击展开详情)
+            ConnBar(
+                addr = addr,
+                expanded = connExpanded,
+                onToggle = { connExpanded = !connExpanded },
+                touchSent = touchSent,
+                audioSent = audioSent,
+                landscape = landscape,
+            )
 
-            // 2. 顶部操作栏(无标题,全部按钮排列)
-            TopBar(
-                editMode = editMode,
-                locked = locked,
+            // 2. 顶部操作栏:页面切换组 + 上下文开关组 + 断开按钮
+            ActionBar(
                 landscape = landscape,
                 onBack = onBack,
+                onNavigate = onNavigate,
+                onDisconnect = onDisconnect,
+                onRefresh = { vm.loadAppList() },
+            )
+
+            // 3. 快捷启动编辑工具栏(编辑/添加/锁定/翻转)
+            EditToolbar(
+                locked = locked,
+                editMode = editMode,
+                landscape = landscape,
                 onToggleEdit = { editMode = !editMode },
                 onAdd = { showAddDialog = true },
                 onToggleLock = {
@@ -153,7 +183,7 @@ fun LauncherScreen(
                 onToggleLandscape = { landscape = !landscape },
             )
 
-            // 3. 分页网格
+            // 4. 分页网格
             Box(modifier = Modifier.weight(1f)) {
                 when (appListState) {
                     is AppListState.Loading -> {
@@ -194,12 +224,12 @@ fun LauncherScreen(
                 }
             }
 
-            // 4. 页面指示器(多页时显示)
+            // 5. 页面指示器(多页时显示)
             if (pageCount > 1) {
                 PageIndicator(pagerState = pagerState, pageCount = pageCount)
             }
 
-            // 5. 底部任务栏:运行中应用窗口 + 服务开关(借鉴 Windows 任务栏)
+            // 6. 底部任务栏:运行中应用窗口 + 服务开关(借鉴 Windows 任务栏)
             Taskbar(vm = vm)
         }
 
@@ -222,193 +252,284 @@ fun LauncherScreen(
     }
 }
 
-/** 顶部状态栏:已连接信息 + 快捷启动模式标签 */
+/**
+ * 可折叠连接栏(默认收起,点击展开详情)
+ *
+ * 对齐设计稿 mm-conn-bar:紧凑行(绿点+已连接+箭头),展开后显示地址/统计/方向标签
+ */
 @Composable
-private fun StatusBar(addr: String) {
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(12.dp),
-        colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
-        ),
+internal fun ConnBar(
+    addr: String,
+    expanded: Boolean,
+    onToggle: () -> Unit,
+    touchSent: Long,
+    audioSent: Long,
+    landscape: Boolean,
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(8.dp))
+            .background(MaterialTheme.colorScheme.surface)
+            .border(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f), RoundedCornerShape(8.dp)),
     ) {
+        // 紧凑行:绿点 + 已连接 + 箭头
         Row(
-            modifier = Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 6.dp),
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable(onClick = onToggle)
+                .padding(horizontal = 10.dp, vertical = 4.dp),
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            Icon(
-                Icons.Default.Mouse,
-                contentDescription = null,
-                modifier = Modifier.size(16.dp),
-                tint = MaterialTheme.colorScheme.primary,
+            Box(
+                modifier = Modifier
+                    .size(8.dp)
+                    .background(MaterialTheme.colorScheme.primary, CircleShape),
             )
-            Column(modifier = Modifier.weight(1f)) {
+            Spacer(Modifier.width(6.dp))
+            Text(
+                "已连接",
+                fontSize = 11.sp,
+                fontWeight = FontWeight.Medium,
+                color = MaterialTheme.colorScheme.onSurface,
+            )
+            Spacer(Modifier.weight(1f))
+            Icon(
+                Icons.Default.KeyboardArrowDown,
+                contentDescription = null,
+                modifier = Modifier
+                    .size(14.dp)
+                    .then(if (expanded) Modifier.graphicsLayer { scaleY = -1f } else Modifier),
+                tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
+            )
+        }
+        // 展开详情
+        if (expanded) {
+            Column(modifier = Modifier.padding(start = 10.dp, end = 10.dp, bottom = 6.dp)) {
                 Text(
-                    if (addr.isNotBlank()) "已连接 · $addr" else "未连接",
+                    addr.ifBlank { "未连接" },
                     fontSize = 11.sp,
                     fontWeight = FontWeight.Medium,
                     color = MaterialTheme.colorScheme.onSurface,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
                 )
-                Text(
-                    "快捷启动模式",
-                    fontSize = 10.sp,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-            Surface(
-                shape = RoundedCornerShape(6.dp),
-                color = MaterialTheme.colorScheme.primary.copy(alpha = 0.12f),
-            ) {
-                Text(
-                    "竖屏",
-                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
-                    fontSize = 10.sp,
-                    color = MaterialTheme.colorScheme.primary,
-                )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        "T:$touchSent  A:$audioSent  快捷启动",
+                        fontSize = 10.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Spacer(Modifier.width(6.dp))
+                    Box(
+                        modifier = Modifier
+                            .background(MaterialTheme.colorScheme.primaryContainer, RoundedCornerShape(4.dp))
+                            .padding(horizontal = 4.dp),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Text(
+                            if (landscape) "横屏" else "竖屏",
+                            fontSize = 9.sp,
+                            color = MaterialTheme.colorScheme.primary,
+                            fontWeight = FontWeight.Medium,
+                        )
+                    }
+                }
             }
         }
     }
 }
 
-/** 顶部操作栏:返回 / 编辑 / 添加 / 锁定 / 切换横屏(无标题,全部按钮) */
+/**
+ * 顶部操作栏:页面切换组 + 上下文开关组 + 断开按钮
+ *
+ * 对齐设计稿 mm-actionbar:
+ * - 左侧:返回 + 分隔线 + 触控/快捷启动/语音/键盘/显示器/文件 6 个页面按钮
+ * - 弹性间距
+ * - 右侧上下文(快捷启动页 = 刷新)+ 分隔线 + 断开(红色)
+ */
 @Composable
-private fun TopBar(
-    editMode: Boolean,
-    locked: Boolean,
+private fun ActionBar(
     landscape: Boolean,
     onBack: () -> Unit,
+    onNavigate: (String) -> Unit,
+    onDisconnect: () -> Unit,
+    onRefresh: () -> Unit,
+) {
+    val btnSize = if (landscape) 22.dp else 24.dp
+    val icSize = if (landscape) 12.dp else 14.dp
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(3.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        // ── 左侧:页面切换组(复用共享组件) ──
+        PageSwitcher(
+            currentView = "launcher",
+            onBack = onBack,
+            onNavigate = onNavigate,
+            btnSize = btnSize,
+            iconSize = icSize,
+        )
+
+        Spacer(Modifier.weight(1f))
+
+        // ── 右侧上下文:快捷启动页 = 刷新 ──
+        IconButtonSmall(
+            icon = Icons.Default.Refresh,
+            contentDescription = "刷新应用库",
+            onClick = onRefresh,
+            buttonSize = btnSize,
+            iconSize = icSize,
+        )
+        ActionBarDivider()
+        // 断开连接(红色)
+        IconButtonSmall(
+            icon = Icons.Default.Logout,
+            contentDescription = "断开连接",
+            onClick = onDisconnect,
+            isDanger = true,
+            buttonSize = btnSize,
+            iconSize = icSize,
+        )
+    }
+}
+
+/**
+ * 快捷启动编辑工具栏:编辑/添加/锁定/翻转
+ *
+ * 设计稿 mm-style-toggle 风格的小尺寸图标按钮组,横向排列
+ */
+@Composable
+private fun EditToolbar(
+    locked: Boolean,
+    editMode: Boolean,
+    landscape: Boolean,
     onToggleEdit: () -> Unit,
     onAdd: () -> Unit,
     onToggleLock: () -> Unit,
     onToggleLandscape: () -> Unit,
 ) {
+    val btnSize = if (landscape) 22.dp else 24.dp
+    val icSize = if (landscape) 12.dp else 14.dp
     Row(
         modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(3.dp),
         verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(6.dp),
     ) {
-        // 返回按钮:secondary 风格(overlay 背景 + 边框)
-        Box(
-            modifier = Modifier
-                .size(28.dp)
-                .background(
-                    MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f),
-                    RoundedCornerShape(8.dp),
-                )
-                .border(
-                    1.dp,
-                    MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f),
-                    RoundedCornerShape(8.dp),
-                )
-                .clickable(onClick = onBack),
-            contentAlignment = Alignment.Center,
-        ) {
-            Icon(
-                Icons.Default.ArrowBack,
-                contentDescription = "返回",
-                modifier = Modifier.size(16.dp),
-                tint = MaterialTheme.colorScheme.onSurface,
-            )
-        }
-        // 中间弹性间距(原"快捷启动"文字位置,现空出)
-        Spacer(Modifier.weight(1f))
-        // 编辑按钮:ghost 风格(透明背景,激活时主色),锁定时禁用
-        Box(
-            modifier = Modifier
-                .size(28.dp)
-                .alpha(if (locked) 0.35f else 1f)
-                .clickable(enabled = !locked, onClick = onToggleEdit),
-            contentAlignment = Alignment.Center,
-        ) {
-            Icon(
-                if (editMode) Icons.Default.Check else Icons.Default.Edit,
-                contentDescription = "编辑",
-                modifier = Modifier.size(18.dp),
-                tint = if (editMode) MaterialTheme.colorScheme.primary
-                else MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
+        // 编辑按钮:ghost 风格,激活时主色,锁定时禁用
+        ToggleButtonSmall(
+            icon = if (editMode) Icons.Default.Check else Icons.Default.Edit,
+            contentDescription = "编辑",
+            isOn = editMode,
+            onClick = onToggleEdit,
+            tintOff = if (locked) MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.35f)
+            else MaterialTheme.colorScheme.onSurfaceVariant,
+            buttonSize = btnSize,
+            iconSize = icSize,
+        )
         // 添加按钮:ghost 风格,锁定时禁用
-        Box(
-            modifier = Modifier
-                .size(28.dp)
-                .alpha(if (locked) 0.35f else 1f)
-                .clickable(enabled = !locked, onClick = onAdd),
-            contentAlignment = Alignment.Center,
-        ) {
-            Icon(
-                Icons.Default.Add,
-                contentDescription = "添加",
-                modifier = Modifier.size(18.dp),
-                tint = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
-        // 锁定按钮:ghost 风格,激活时主色高亮
-        LockButton(locked = locked, onClick = onToggleLock)
-        // 切换横屏按钮:ghost 风格,激活时主色高亮
-        LandscapeButton(landscape = landscape, onClick = onToggleLandscape)
-    }
-}
-
-/** 锁定按钮:锁定/解锁切换,锁定时品牌色高亮 */
-@Composable
-private fun LockButton(locked: Boolean, onClick: () -> Unit) {
-    val backgroundColor by animateColorAsState(
-        targetValue = if (locked) MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)
-        else Color.Transparent,
-        label = "lockBg",
-    )
-    val iconTint by animateColorAsState(
-        targetValue = if (locked) MaterialTheme.colorScheme.primary
-        else MaterialTheme.colorScheme.onSurfaceVariant,
-        label = "lockTint",
-    )
-    Box(
-        modifier = Modifier
-            .size(28.dp)
-            .background(backgroundColor, RoundedCornerShape(8.dp))
-            .clickable(onClick = onClick),
-        contentAlignment = Alignment.Center,
-    ) {
-        Icon(
-            if (locked) Icons.Default.Lock else Icons.Default.LockOpen,
+        IconButtonSmall(
+            icon = Icons.Default.Add,
+            contentDescription = "添加",
+            onClick = onAdd,
+            buttonSize = btnSize,
+            iconSize = icSize,
+        )
+        Spacer(Modifier.width(2.dp))
+        // 锁定按钮:激活时品牌色高亮
+        ToggleButtonSmall(
+            icon = if (locked) Icons.Default.Lock else Icons.Default.LockOpen,
             contentDescription = if (locked) "解锁" else "锁定",
-            modifier = Modifier.size(18.dp),
-            tint = iconTint,
+            isOn = locked,
+            onClick = onToggleLock,
+            buttonSize = btnSize,
+            iconSize = icSize,
+        )
+        Spacer(Modifier.weight(1f))
+        // 翻转按钮:单一 RotateCw 图标,横屏时品牌色高亮(对齐设计稿 rotate-cw)
+        ToggleButtonSmall(
+            icon = Icons.Default.RotateRight,
+            contentDescription = if (landscape) "切回竖屏" else "切换横屏",
+            isOn = landscape,
+            onClick = onToggleLandscape,
+            buttonSize = btnSize,
+            iconSize = icSize,
         )
     }
 }
 
-/** 切换横屏按钮:横屏时品牌色高亮 */
+/** 小尺寸图标按钮(对齐设计稿顶栏圆角方块,尺寸按方向自适应) */
 @Composable
-private fun LandscapeButton(landscape: Boolean, onClick: () -> Unit) {
-    val backgroundColor by animateColorAsState(
-        targetValue = if (landscape) MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)
-        else Color.Transparent,
-        label = "landscapeBg",
-    )
-    val iconTint by animateColorAsState(
-        targetValue = if (landscape) MaterialTheme.colorScheme.primary
-        else MaterialTheme.colorScheme.onSurfaceVariant,
-        label = "landscapeTint",
-    )
+internal fun IconButtonSmall(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    contentDescription: String,
+    onClick: () -> Unit,
+    isDanger: Boolean = false,
+    buttonSize: androidx.compose.ui.unit.Dp = 24.dp,
+    iconSize: androidx.compose.ui.unit.Dp = 14.dp,
+) {
+    val tint = if (isDanger) MaterialTheme.colorScheme.error
+    else MaterialTheme.colorScheme.onSurfaceVariant
     Box(
         modifier = Modifier
-            .size(28.dp)
-            .background(backgroundColor, RoundedCornerShape(8.dp))
+            .size(buttonSize)
+            .background(
+                MaterialTheme.colorScheme.surfaceVariant,
+                RoundedCornerShape(6.dp),
+            )
+            .border(
+                1.dp,
+                MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f),
+                RoundedCornerShape(6.dp),
+            )
             .clickable(onClick = onClick),
         contentAlignment = Alignment.Center,
     ) {
-        Icon(
-            if (landscape) Icons.Default.ScreenRotation else Icons.Default.StayCurrentPortrait,
-            contentDescription = if (landscape) "切回竖屏" else "切换横屏",
-            modifier = Modifier.size(18.dp),
-            tint = iconTint,
-        )
+        Icon(icon, contentDescription, Modifier.size(iconSize), tint = tint)
     }
+}
+
+/** 带激活态的小图标按钮(用于顶栏开关组) */
+@Composable
+internal fun ToggleButtonSmall(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    contentDescription: String,
+    isOn: Boolean,
+    onClick: () -> Unit,
+    tintOff: Color = MaterialTheme.colorScheme.onSurfaceVariant,
+    tintOn: Color = MaterialTheme.colorScheme.primary,
+    buttonSize: androidx.compose.ui.unit.Dp = 24.dp,
+    iconSize: androidx.compose.ui.unit.Dp = 14.dp,
+) {
+    Box(
+        modifier = Modifier
+            .size(buttonSize)
+            .background(
+                if (isOn) MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)
+                else MaterialTheme.colorScheme.surfaceVariant,
+                RoundedCornerShape(6.dp),
+            )
+            .border(
+                1.dp,
+                MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f),
+                RoundedCornerShape(6.dp),
+            )
+            .clickable(onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) {
+        Icon(icon, contentDescription, Modifier.size(iconSize), tint = if (isOn) tintOn else tintOff)
+    }
+}
+
+/** 操作栏分隔线(1dp 宽 20dp 高,左右 2dp 间距) */
+@Composable
+internal fun ActionBarDivider() {
+    Box(
+        modifier = Modifier
+            .padding(horizontal = 2.dp)
+            .width(1.dp)
+            .height(20.dp)
+            .background(MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)),
+    )
 }
 
 /** 空状态:已弃用,统一用 PagerGrid 显示空位"添加"格子 */
