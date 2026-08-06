@@ -646,6 +646,55 @@ object LauncherRepository {
             }
         }
 
+    /**
+     * 拉取一帧 H.264 NALU(P2:NVENC/AMF/QuickSync 硬件编码)。
+     *
+     * 端点 GET /screen/h264?fps=<n>&bitrate=<n>&pubkey=<b64> 返回:
+     * - 200 OK + application/octet-stream:Annex-B 字节流(可能含 SPS/PPS/IDR 或 P 帧)
+     * - 204 No Content:无变化帧,客户端保持上一帧
+     * - 403:未配对
+     *
+     * 客户端轮询频率由调用方控制(无需依赖 fps 参数对齐),fps/bitrate 仅用于告知 PC 端编码目标。
+     *
+     * @param frameRate 目标帧率(如 30),PC 端据此设定编码器
+     * @param bitrate   平均码率(如 4_000_000 = 4Mbps)
+     * @return 非空 NALU 字节流;无变化(204)或失败返回 null(调用方保持上一帧)
+     */
+    suspend fun fetchScreenH264(
+        serverAddr: String,
+        pubkey: String,
+        frameRate: Int = 30,
+        bitrate: Int = 4_000_000,
+    ): ByteArray? =
+        withContext(Dispatchers.IO) {
+            val url = "${httpBaseUrl(serverAddr)}/screen/h264?fps=$frameRate&bitrate=$bitrate&pubkey=${encodeParam(pubkey)}"
+            try {
+                val conn = (URL(url).openConnection() as HttpURLConnection).apply {
+                    connectTimeout = CONNECT_TIMEOUT_MS
+                    // 单帧 H.264 编码在 30fps 下应在 ~33ms 内完成,留足余量
+                    readTimeout = SCREEN_READ_TIMEOUT_MS
+                    requestMethod = "GET"
+                    useCaches = false
+                    instanceFollowRedirects = false
+                }
+                try {
+                    when (conn.responseCode) {
+                        200 -> conn.inputStream.use { it.readBytes() }
+                        204 -> null // 无变化帧,客户端保持上一帧
+                        else -> {
+                            Log.d(TAG, "fetchScreenH264 HTTP ${conn.responseCode}")
+                            null
+                        }
+                    }
+                } finally {
+                    conn.disconnect()
+                }
+            } catch (e: Exception) {
+                Log.d(TAG, "fetchScreenH264 失败: ${e.message}")
+                null
+            }
+        }
+
     // ════════════════════════════════════════════════════════════════
     // 文件传输(file)端点
     // ════════════════════════════════════════════════════════════════

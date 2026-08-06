@@ -5,7 +5,37 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.23.0] - 2026-08-06
+## [0.28.0] - 2026-08-06
+
+### Added
+- **P1: DXGI Desktop Duplication 屏幕抓取**(PC `screen.rs`)
+  - 从 GDI BitBlt 迁移到 DXGI Desktop Duplication API,大幅提升抓帧性能与画质
+  - 直接获取 GPU 纹理,避免 GDI CPU 拷贝,降低延迟与 CPU 占用
+  - 自动重建输出(显示器配置变化/会话切换时重试 AcquireNextFrame)
+  - 保留 `capture_screen_png()` 兼容旧端点
+- **P2: NVENC/AMF/QuickSync 硬件编码**(PC `encoder.rs` 新增)
+  - 基于 Media Foundation H.264 MFT,优先硬件编码器,失败回退软件
+  - `MFT_ENUM_FLAG_HARDWARE | MFT_ENUM_FLAG_SYNCMFT` 枚举 NVENC/AMF/QuickSync
+  - 输入 BGRA → H.264 Annex-B NALU(SPS/PPS/IDR 或 P 帧)
+  - 新增端点 `GET /screen/h264?fps=<n>&bitrate=<n>&pubkey=<b64>`
+    - 200 OK + `application/octet-stream`:NALU 字节流
+    - 204 No Content:画面无变化(客户端保持上一帧)
+  - `Cargo.toml` 新增 `Win32_System_Com` feature(支持 `CoTaskMemFree`)
+- **Android MediaCodec 硬解 H.264**(Android `MonitorScreen.kt` + `LauncherRepository.kt`)
+  - `LauncherRepository.fetchScreenH264()`:拉取 `/screen/h264` NALU 字节流
+  - `H264Decoder` 内部类:`MediaCodec.createDecoderByType(AVC)` + `ImageReader(YUV_420_888)` Surface 输出
+  - YUV_420_888 → NV21 → `YuvImage.compressToJpeg` → `Bitmap`(native 加速)
+  - 后台 `HandlerThread` 处理 ImageReader 回调,避免阻塞 UI 主线程
+  - 设置面板:帧率选择 15/30/60 fps,码率固定 4Mbps
+  - `DisposableEffect` 兜底释放 MediaCodec / ImageReader / HandlerThread
+- 快捷启动排列方式切换(`GridCols.AUTO/COLS_5/COLS_6/COLS_7` + 下拉菜单)
+- 各页面补齐 6 按钮页面切换组(`Touchpad/Launcher/Voice/Keyboard/Monitor/Files`)
+
+### Changed
+- Android versionCode 27 → 28, versionName 0.27.0 → 0.28.0
+- Rust workspace 版本 0.27.0 → 0.28.0
+
+## [0.27.0] - 2026-08-06
 
 ### Added
 - 触控板 UI 横屏/竖屏 v2 改版（Android）

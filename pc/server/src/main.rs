@@ -27,6 +27,7 @@ mod stats;
 mod apps;
 mod windows;
 mod screen;
+mod encoder;
 mod files;
 
 #[derive(Parser, Debug)]
@@ -812,6 +813,23 @@ async fn run_serverinfo_server(
                     match screen::capture_screen_png(quality, scale) {
                         Some(png) => ("200 OK", "image/png", png),
                         None => ("500 Internal Server Error", "application/json", br#"{"error":"capture failed"}"#.to_vec()),
+                    }
+                }
+            } else if method == "GET" && path == "/screen/h264" {
+                // 远程显示器(P2):抓取屏幕并编码 H.264 NALU(NVENC/AMF/QuickSync 硬件编码)
+                // 客户端用 MediaCodec 硬解,逐帧轮询
+                if !check_paired(&pairing, &active_clients, query).await {
+                    ("403 Forbidden", "application/json", br#"{"error":"not paired"}"#.to_vec())
+                } else {
+                    let frame_rate = extract_query_param(query, "fps")
+                        .and_then(|s| s.parse::<u32>().ok())
+                        .unwrap_or(30);
+                    let bitrate = extract_query_param(query, "bitrate")
+                        .and_then(|s| s.parse::<u32>().ok())
+                        .unwrap_or(4_000_000);
+                    match screen::capture_screen_h264(frame_rate, bitrate) {
+                        Some(nalu) => ("200 OK", "application/octet-stream", nalu),
+                        None => ("204 No Content", "application/octet-stream", Vec::new()),
                     }
                 }
             } else if method == "GET" && path == "/file/list" {

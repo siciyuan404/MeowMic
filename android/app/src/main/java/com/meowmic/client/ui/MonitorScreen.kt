@@ -1,12 +1,22 @@
 package com.meowmic.client.ui
 
+import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.graphics.ImageFormat
+import android.graphics.Rect
+import android.graphics.YuvImage
+import android.media.Image
+import android.media.ImageReader
+import android.media.MediaCodec
+import android.media.MediaCodecInfo
+import android.media.MediaFormat
+import android.os.Handler
+import android.os.HandlerThread
+import android.os.Looper
+import android.util.Log
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
@@ -21,26 +31,22 @@ import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.meowmic.client.ConnectionState
 import com.meowmic.client.LauncherRepository
 import com.meowmic.client.MeowMicViewModel
-import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
-import kotlinx.coroutines.launch
+import java.io.ByteArrayOutputStream
 
 /**
  * 远程显示器页面
  *
- * 数据流:
- * - 进入页面后开启画面开关 → 周期拉取 /screen/capture PNG 显示
- * - 设置浮层:缩放比例(0.25/0.5/1.0)、帧率间隔
- * - 关闭开关停止拉取
- *
- * 当前实现为低帧率(2-5fps)JPEG/PNG 轮询,后续可升级为视频流。
+ * P2 实现:NVENC/AMF/QuickSync 硬件编码 + Android MediaCodec 硬解
+ * - 拉取 H.264 NALU 字节流(GET /screen/h264)
+ * - MediaCodec 硬件解码 → ImageReader(YUV_420_888) → NV21 → JPEG → Bitmap
+ * - 高帧率(30fps)显示,大幅降低带宽与 CPU 占用
  */
 @Composable
 fun MonitorScreen(
@@ -56,28 +62,26 @@ fun MonitorScreen(
 
     // 远程画面开关
     var monitorEnabled by remember { mutableStateOf(false) }
-    // 缩放比例(0.25 = 1/4 分辨率,0.5 = 半分辨率,1.0 = 原始)
-    var scale by remember { mutableStateOf(0.5f) }
-    // 帧率间隔(ms)
-    var intervalMs by remember { mutableStateOf(200L) }
+    // 目标帧率(也作为轮询间隔依据)
+    var frameRate by remember { mutableStateOf(30) }
     // 设置浮层开关
     var showSettings by remember { mutableStateOf(false) }
     // 连接栏展开
     var connExpanded by remember { mutableStateOf(false) }
 
-    // 当前帧 bitmap
+    // 当前帧 bitmap(MediaCodec 解码输出)
     var currentFrame by remember { mutableStateOf<ImageBitmap?>(null) }
-    // 屏幕分辨率(供 UI 显示)
+    // 屏幕分辨率(供 UI 显示 & decoder 初始化)
     var screenInfo by remember { mutableStateOf<LauncherRepository.ScreenInfo?>(null) }
     // 拉取统计
     var frameCount by remember { mutableStateOf(0L) }
     var lastFetchMs by remember { mutableStateOf(0L) }
     var fetchError by remember { mutableStateOf<String?>(null) }
+    var decoderStatus by remember { mutableStateOf<String?>(null) }
 
-    // 拉取协程
-    var captureJob by remember { mutableStateOf<Job?>(null) }
+    // H.264 解码器实例(随 monitorEnabled / addr 生命周期管理)
+    var h264Decoder by remember { mutableStateOf<H264Decoder?>(null) }
 
-    val scope = rememberCoroutineScope()
     val (touchSent, audioSent) = parseStats(stats)
 
     // 进入页面拉取屏幕分辨率
@@ -90,30 +94,74 @@ fun MonitorScreen(
         }
     }
 
-    // 启动/停止画面拉取
-    LaunchedEffect(monitorEnabled, addr, scale, intervalMs) {
-        if (!monitorEnabled || addr.isBlank()) return@LaunchedEffect
+    // 创建 / 销毁 H.264 解码器
+    LaunchedEffect(monitorEnabled, addr) {
+        if (!monitorEnabled || addr.isBlank()) {
+            h264Decoder?.release()
+            h264Decoder = null
+            currentFrame = null
+            decoderStatus = null
+            return@LaunchedEffect
+        }
+        val pk = vm.clientPubkeyB64()
+        if (pk.isBlank()) {
+            decoderStatus = "未配对,无法拉流"
+            return@LaunchedEffect
+        }
+
+        // 用屏幕分辨率初始化 decoder;无分辨率信息则回退 1920x1080
+        val w = screenInfo?.width ?: 1920
+        val h = screenInfo?.height ?: 1080
+        if (screenInfo == null) {
+            // 二次尝试拉取一次
+            LauncherRepository.fetchScreenInfo(addr, pk)?.let { screenInfo = it }
+        }
+        val actualW = screenInfo?.width ?: w
+        val actualH = screenInfo?.height ?: h
+
+        decoderStatus = "初始化解码器 ${actualW}x${actualH}..."
+        val decoder = H264Decoder(actualW, actualH) { bmp ->
+            if (bmp != null) {
+                currentFrame = bmp.asImageBitmap()
+                frameCount++
+                fetchError = null
+            }
+        }
+        h264Decoder = decoder
+        decoderStatus = "解码器就绪"
+    }
+
+    // 拉取 H.264 NALU 循环
+    LaunchedEffect(h264Decoder, addr, frameRate) {
+        val decoder = h264Decoder ?: return@LaunchedEffect
+        if (addr.isBlank()) return@LaunchedEffect
         val pk = vm.clientPubkeyB64()
         if (pk.isBlank()) return@LaunchedEffect
 
+        val intervalMs = (1000L / frameRate).coerceAtLeast(16L)
+        val bitrate = 4_000_000 // 固定 4Mbps,PC 端首次创建 encoder 时生效
+
         while (isActive) {
             val start = System.currentTimeMillis()
-            val png = LauncherRepository.fetchScreenCapture(addr, pk, quality = 70, scale = scale)
+            val nalu = LauncherRepository.fetchScreenH264(addr, pk, frameRate, bitrate)
             val cost = System.currentTimeMillis() - start
-            if (png != null) {
-                val bmp = BitmapFactory.decodeByteArray(png, 0, png.size)
-                if (bmp != null) {
-                    currentFrame = bmp.asImageBitmap()
-                    frameCount++
-                    lastFetchMs = cost
-                    fetchError = null
+            lastFetchMs = cost
+            if (nalu != null && nalu.isNotEmpty()) {
+                val fed = decoder.feed(nalu)
+                if (!fed) {
+                    fetchError = "解码器队列满,丢帧"
                 }
-            } else {
-                fetchError = "拉取失败"
             }
             // 间隔(减去本次耗时,保证目标帧率)
-            val wait = (intervalMs - cost).coerceAtLeast(50L)
+            val wait = (intervalMs - cost).coerceAtLeast(2L)
             delay(wait)
+        }
+    }
+
+    // 退出页面释放 decoder
+    DisposableEffect(Unit) {
+        onDispose {
+            h264Decoder?.release()
         }
     }
 
@@ -171,7 +219,7 @@ fun MonitorScreen(
                             color = Color.White,
                         )
                         Text(
-                            fetchError ?: "正在连接远程画面...",
+                            decoderStatus ?: fetchError ?: "正在连接远程画面...",
                             color = Color.White.copy(alpha = 0.8f),
                             fontSize = 11.sp,
                         )
@@ -207,7 +255,7 @@ fun MonitorScreen(
             // 4. 底部状态栏:分辨率 / 帧数 / 延迟
             MonitorStatusBar(
                 screenInfo = screenInfo,
-                scale = scale,
+                frameRate = frameRate,
                 frameCount = frameCount,
                 lastFetchMs = lastFetchMs,
                 fetchError = fetchError,
@@ -218,10 +266,8 @@ fun MonitorScreen(
     // 设置浮层
     if (showSettings) {
         MonitorSettingsDialog(
-            scale = scale,
-            onScaleChange = { scale = it },
-            intervalMs = intervalMs,
-            onIntervalChange = { intervalMs = it },
+            frameRate = frameRate,
+            onFrameRateChange = { frameRate = it },
             onDismiss = { showSettings = false },
         )
     }
@@ -287,12 +333,11 @@ private fun MonitorActionBar(
 @Composable
 private fun MonitorStatusBar(
     screenInfo: LauncherRepository.ScreenInfo?,
-    scale: Float,
+    frameRate: Int,
     frameCount: Long,
     lastFetchMs: Long,
     fetchError: String?,
 ) {
-    val fps = if (lastFetchMs > 0) (1000.0 / lastFetchMs).toInt() else 0
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -307,15 +352,15 @@ private fun MonitorStatusBar(
             label = if (screenInfo != null) "${screenInfo.width}×${screenInfo.height}" else "—",
         )
         StatusChip(
-            icon = Icons.Default.AspectRatio,
-            label = "缩放 ${(scale * 100).toInt()}%",
+            icon = Icons.Default.Speed,
+            label = "目标 ${frameRate}fps",
         )
         StatusChip(
             icon = Icons.Default.Image,
             label = "帧 $frameCount",
         )
         StatusChip(
-            icon = Icons.Default.Speed,
+            icon = Icons.Default.Bolt,
             label = "${lastFetchMs}ms",
         )
         if (fetchError != null) {
@@ -337,13 +382,11 @@ private fun StatusChip(icon: androidx.compose.ui.graphics.vector.ImageVector, la
     }
 }
 
-/** 画面设置浮层:缩放比例 + 帧率间隔 */
+/** 画面设置浮层:帧率选择 */
 @Composable
 private fun MonitorSettingsDialog(
-    scale: Float,
-    onScaleChange: (Float) -> Unit,
-    intervalMs: Long,
-    onIntervalChange: (Long) -> Unit,
+    frameRate: Int,
+    onFrameRateChange: (Int) -> Unit,
     onDismiss: () -> Unit,
 ) {
     AlertDialog(
@@ -351,31 +394,257 @@ private fun MonitorSettingsDialog(
         title = { Text("画面设置") },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                Text("缩放比例", fontSize = 12.sp, fontWeight = FontWeight.Medium)
+                Text("目标帧率", fontSize = 12.sp, fontWeight = FontWeight.Medium)
                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    listOf(0.25f to "25%", 0.5f to "50%", 1.0f to "100%").forEach { (v, label) ->
+                    listOf(15 to "15fps", 30 to "30fps", 60 to "60fps").forEach { (v, label) ->
                         FilterChip(
-                            selected = scale == v,
-                            onClick = { onScaleChange(v) },
+                            selected = frameRate == v,
+                            onClick = { onFrameRateChange(v) },
                             label = { Text(label, fontSize = 11.sp) },
                         )
                     }
                 }
-
-                Text("刷新间隔", fontSize = 12.sp, fontWeight = FontWeight.Medium)
-                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    listOf(100L to "10fps", 200L to "5fps", 500L to "2fps").forEach { (ms, label) ->
-                        FilterChip(
-                            selected = intervalMs == ms,
-                            onClick = { onIntervalChange(ms) },
-                            label = { Text(label, fontSize = 11.sp) },
-                        )
-                    }
-                }
+                Text(
+                    "提示:码率固定 4Mbps;修改帧率后立即生效,无需重新连接。",
+                    fontSize = 10.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+                )
             }
         },
         confirmButton = {
             TextButton(onClick = onDismiss) { Text("完成") }
         },
     )
+}
+
+// ════════════════════════════════════════════════════════════════
+// H.264 硬解码器封装
+// ════════════════════════════════════════════════════════════════
+
+private const val TAG_DEC = "H264Decoder"
+
+/**
+ * H.264 硬解码器(MediaCodec + ImageReader)
+ *
+ * 流程:
+ * - 创建 AVC decoder,输出绑定到 ImageReader(YUV_420_888) 的 Surface
+ * - [feed] 把 Annex-B NALU 字节流喂入 decoder 输入队列
+ * - ImageReader 回调 acquireLatestImage → 转 Bitmap → onFrame 回调
+ *
+ * @param onFrame 解码出一帧时回调(在 ImageReader 监听线程触发);bmp=null 表示跳过此帧
+ */
+private class H264Decoder(
+    width: Int,
+    height: Int,
+    private val onFrame: (Bitmap?) -> Unit,
+) {
+    private val codec: MediaCodec = MediaCodec.createDecoderByType(MediaFormat.MIMETYPE_VIDEO_AVC)
+    private val mainHandler = Handler(Looper.getMainLooper())
+    // ImageReader 回调放在后台 HandlerThread,避免 JPEG 编解码阻塞 UI 主线程
+    private val handlerThread = HandlerThread("H264DecoderCallback").apply { start() }
+    private val callbackHandler = Handler(handlerThread.looper)
+    private val imageReader: ImageReader =
+        ImageReader.newInstance(width, height, ImageFormat.YUV_420_888, 3)
+    @Volatile private var released = false
+
+    init {
+        imageReader.setOnImageAvailableListener({ reader ->
+            if (released) return@setOnImageAvailableListener
+            val image = try {
+                reader.acquireLatestImage()
+            } catch (e: Exception) {
+                Log.w(TAG_DEC, "acquireLatestImage 失败: ${e.message}")
+                null
+            } ?: return@setOnImageAvailableListener
+            try {
+                val bmp = imageToBitmap(image)
+                if (bmp != null) {
+                    // 回调切到主线程(Compose state 必须主线程更新)
+                    mainHandler.post { onFrame(bmp) }
+                }
+            } catch (e: Exception) {
+                Log.w(TAG_DEC, "imageToBitmap 失败: ${e.message}")
+            } finally {
+                image.close()
+            }
+        }, callbackHandler)
+
+        // 配置 MediaCodec:width/height 仅作 hint,实际以 SPS/PPS 为准
+        val format = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, width, height).apply {
+            setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Flexible)
+            setInteger(MediaFormat.KEY_FRAME_RATE, 30)
+            setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, width * height * 3 / 2)
+        }
+        try {
+            codec.configure(format, imageReader.surface, null, 0)
+            codec.start()
+            Log.i(TAG_DEC, "H.264 解码器启动 ${width}x${height}")
+        } catch (e: Exception) {
+            Log.e(TAG_DEC, "解码器启动失败: ${e.message}")
+            throw e
+        }
+    }
+
+    /**
+     * 喂入一帧 Annex-B NALU 字节流(可能含 SPS/PPS/IDR 或 P 帧,可一次多 NALU)。
+     * @return true 成功入队;false 输入队列满,调用方应丢帧
+     */
+    fun feed(nalu: ByteArray): Boolean {
+        if (released) return false
+        return try {
+            val idx = codec.dequeueInputBuffer(5_000) // 5ms 等待
+            if (idx < 0) return false
+            val buf = codec.getInputBuffer(idx) ?: return false
+            buf.clear()
+            if (nalu.size > buf.capacity()) {
+                // 超出 buffer,截断(不应发生,但兜底)
+                Log.w(TAG_DEC, "NALU 超大 ${nalu.size} > ${buf.capacity()},截断")
+                buf.put(nalu, 0, buf.capacity())
+                codec.queueInputBuffer(idx, 0, buf.capacity(), System.nanoTime() / 1000, 0)
+            } else {
+                buf.put(nalu)
+                codec.queueInputBuffer(idx, 0, nalu.size, System.nanoTime() / 1000, 0)
+            }
+            // 顺带 drain 输出(避免输出队列堆积)
+            drainOutput()
+            true
+        } catch (e: Exception) {
+            Log.w(TAG_DEC, "feed 失败: ${e.message}")
+            false
+        }
+    }
+
+    /** 尝试取输出缓冲,渲染到 ImageReader 的 Surface */
+    private fun drainOutput() {
+        if (released) return
+        val info = MediaCodec.BufferInfo()
+        while (true) {
+            val idx = codec.dequeueOutputBuffer(info, 0) // 非阻塞
+            when {
+                idx >= 0 -> {
+                    // true = 渲染到 Surface(ImageReader)
+                    codec.releaseOutputBuffer(idx, true)
+                }
+                idx == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> {
+                    val newFormat = codec.outputFormat
+                    Log.i(TAG_DEC, "输出格式变化: $newFormat")
+                }
+                else -> break // INFO_TRY_AGAIN_LATER 或无可用 buffer
+            }
+        }
+    }
+
+    /** 释放解码器资源 */
+    fun release() {
+        if (released) return
+        released = true
+        try {
+            codec.stop()
+        } catch (_: Exception) {
+            // stop 可能抛 IllegalState,忽略
+        }
+        try {
+            codec.release()
+        } catch (_: Exception) {}
+        try {
+            imageReader.close()
+        } catch (_: Exception) {}
+        try {
+            handlerThread.quitSafely()
+        } catch (_: Exception) {}
+        Log.i(TAG_DEC, "H.264 解码器释放")
+    }
+}
+
+/**
+ * Image(YUV_420_888) → Bitmap 转换
+ *
+ * 实现步骤:
+ * 1. 按 planes[0/1/2] 提取 Y / U / V 字节,处理 rowStride / pixelStride
+ * 2. 拼成 NV21(VUVU...交替)
+ * 3. YuvImage + JPEG 压缩 → BitmapFactory 解码为 Bitmap
+ *
+ * 注:用 JPEG 中转比手写 per-pixel YUV→RGB 快几十倍(YuvImage 内部是 native)。
+ */
+private fun imageToBitmap(image: Image): Bitmap? {
+    if (image.format != ImageFormat.YUV_420_888) return null
+    val w = image.width
+    val h = image.height
+
+    val yPlane = image.planes[0]
+    val uPlane = image.planes[1]
+    val vPlane = image.planes[2]
+
+    val yRowStride = yPlane.rowStride
+    val uvRowStride = uPlane.rowStride
+    val uvPixelStride = uPlane.pixelStride
+
+    val yBuf = yPlane.buffer
+    val uBuf = uPlane.buffer
+    val vBuf = vPlane.buffer
+
+    val ySize = w * h
+    val chromaW = (w + 1) / 2
+    val chromaH = (h + 1) / 2
+    val chromaSize = chromaW * chromaH
+    // NV21: Y(w*h) + VU interleave(w*h/2)
+    val nv21 = ByteArray(ySize + chromaSize * 2)
+
+    // 1. Copy Y(处理 rowStride)
+    if (yRowStride == w) {
+        yBuf.get(nv21, 0, ySize)
+    } else {
+        var dstPos = 0
+        for (row in 0 until h) {
+            yBuf.position(row * yRowStride)
+            yBuf.get(nv21, dstPos, w)
+            dstPos += w
+        }
+    }
+
+    // 2. Interleave VU(处理 rowStride / pixelStride)
+    if (uvPixelStride == 1) {
+        // Planar 布局:U 和 V 各自连续
+        val u = ByteArray(chromaSize)
+        val v = ByteArray(chromaSize)
+        if (uvRowStride == chromaW) {
+            uBuf.get(u)
+            vBuf.get(v)
+        } else {
+            for (row in 0 until chromaH) {
+                uBuf.position(row * uvRowStride)
+                uBuf.get(u, row * chromaW, chromaW)
+                vBuf.position(row * uvRowStride)
+                vBuf.get(v, row * chromaW, chromaW)
+            }
+        }
+        var vuPos = ySize
+        for (i in 0 until chromaSize) {
+            nv21[vuPos++] = v[i]
+            nv21[vuPos++] = u[i]
+        }
+    } else {
+        // Semi-planar(如 NV12):UV 已交替,需要重排为 NV21(VU)
+        // 直接按 pixelStride 抽取
+        var vuPos = ySize
+        for (row in 0 until chromaH) {
+            for (col in 0 until chromaW) {
+                val uvIdx = row * uvRowStride + col * uvPixelStride
+                if (uvIdx + 1 < vBuf.limit()) {
+                    nv21[vuPos++] = vBuf.get(uvIdx)
+                    nv21[vuPos++] = uBuf.get(uvIdx)
+                } else {
+                    nv21[vuPos++] = 0
+                    nv21[vuPos++] = 0
+                }
+            }
+        }
+    }
+
+    // 3. YuvImage → JPEG → Bitmap
+    val yuvImage = YuvImage(nv21, ImageFormat.NV21, w, h, null)
+    val out = ByteArrayOutputStream(w * h / 4)
+    yuvImage.compressToJpeg(Rect(0, 0, w, h), 85, out)
+    val jpegBytes = out.toByteArray()
+    return BitmapFactory.decodeByteArray(jpegBytes, 0, jpegBytes.size)
 }

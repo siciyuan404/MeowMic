@@ -126,6 +126,28 @@ mod dxgi_capturer {
             }
         }
 
+        /// 抓取屏幕并编码 H.264 NALU(P2:NVENC/AMF/QuickSync 硬件编码)
+        /// 仅在画面有变化时返回 NALU(无变化时返回 None,客户端保持上一帧)
+        fn capture_h264(&mut self, frame_rate: u32, bitrate: u32) -> Option<Vec<u8>> {
+            if self.needs_rebuild {
+                self.rebuild();
+                if self.needs_rebuild {
+                    return None;
+                }
+            }
+
+            match unsafe { self.acquire_frame() } {
+                Some(frame) => crate::encoder::encode_frame(
+                    &frame.pixels,
+                    frame.width,
+                    frame.height,
+                    frame_rate,
+                    bitrate,
+                ),
+                None => None,
+            }
+        }
+
         /// AcquireNextFrame 获取新帧(200ms timeout)
         unsafe fn acquire_frame(&mut self) -> Option<AcquiredFrame> {
             let mut frame_info = DXGI_OUTDUPL_FRAME_INFO::default();
@@ -299,6 +321,20 @@ mod dxgi_capturer {
         guard.as_mut()?.capture_png(quality, scale)
     }
 
+    /// 抓取屏幕并编码 H.264 NALU(P2:硬件编码)
+    /// - frame_rate: 目标帧率(如 30)
+    /// - bitrate: 平均码率(如 4_000_000 = 4Mbps)
+    /// 返回: H.264 Annex-B NALU 字节(包含 SPS/PPS/IDR 或 P 帧)
+    pub fn capture_screen_h264(frame_rate: u32, bitrate: u32) -> Option<Vec<u8>> {
+        let mutex = CAPTURER.get_or_init(|| Mutex::new(None));
+        let mut guard = mutex.lock().ok()?;
+        if guard.is_none() {
+            *guard = ScreenCapturer::new();
+        }
+        let capturer = guard.as_mut()?;
+        capturer.capture_h264(frame_rate, bitrate)
+    }
+
     pub fn screen_resolution() -> (u32, u32) {
         use windows::Win32::UI::WindowsAndMessaging::{
             GetSystemMetrics, SM_CXSCREEN, SM_CYSCREEN,
@@ -312,10 +348,15 @@ mod dxgi_capturer {
 }
 
 #[cfg(windows)]
-pub use dxgi_capturer::{capture_screen_png, screen_resolution};
+pub use dxgi_capturer::{capture_screen_h264, capture_screen_png, screen_resolution};
 
 #[cfg(not(windows))]
 pub fn capture_screen_png(_quality: u8, _scale: f32) -> Option<Vec<u8>> {
+    None
+}
+
+#[cfg(not(windows))]
+pub fn capture_screen_h264(_frame_rate: u32, _bitrate: u32) -> Option<Vec<u8>> {
     None
 }
 
