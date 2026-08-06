@@ -426,6 +426,7 @@ fun TouchpadScreen(
     vm: MeowMicViewModel,
     onDisconnect: () -> Unit,
     onOpenLauncher: () -> Unit = {},
+    onNavigate: (String) -> Unit = {},
 ) {
     val connectionState by vm.connectionState.collectAsState()
     val stats by vm.stats.collectAsState()
@@ -627,7 +628,7 @@ fun TouchpadScreen(
             IconButtonSmall(
                 icon = Icons.Default.GridView,
                 contentDescription = "快捷启动",
-                onClick = onOpenLauncher,
+                onClick = { onNavigate("launcher") },
                 buttonSize = btnSize,
                 iconSize = icSize,
             )
@@ -644,6 +645,22 @@ fun TouchpadScreen(
                 contentDescription = "键盘",
                 isOn = currentView == "keyboard",
                 onClick = { currentView = "keyboard" },
+                buttonSize = btnSize,
+                iconSize = icSize,
+            )
+            ToggleButtonSmall(
+                icon = Icons.Default.Monitor,
+                contentDescription = "显示器",
+                isOn = false,
+                onClick = { onNavigate("monitor") },
+                buttonSize = btnSize,
+                iconSize = icSize,
+            )
+            ToggleButtonSmall(
+                icon = Icons.Default.Folder,
+                contentDescription = "文件",
+                isOn = false,
+                onClick = { onNavigate("files") },
                 buttonSize = btnSize,
                 iconSize = icSize,
             )

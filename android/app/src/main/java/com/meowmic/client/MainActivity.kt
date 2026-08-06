@@ -70,6 +70,7 @@ class MainActivity : ComponentActivity() {
                                         launchSingleTop = true
                                     }
                                 },
+                                onNavigate = { view -> navigateTo(view) },
                             )
                         }
                         composable("launcher") {

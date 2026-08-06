@@ -67,11 +67,21 @@ private val GRID_COLUMNS_PORTRAIT = 5
 private val GRID_ROWS_PORTRAIT = 6
 private val GRID_COLUMNS_LANDSCAPE = 8
 private val GRID_ROWS_LANDSCAPE = 3
-private fun gridColumns(landscape: Boolean) =
-    if (landscape) GRID_COLUMNS_LANDSCAPE else GRID_COLUMNS_PORTRAIT
+
+/** 排列方式:自适应(按方向默认) / 固定列数(5/6/7) */
+enum class GridCols(val label: String, val cols: Int?) {
+    AUTO("自适应", null),
+    COLS_5("5 列", 5),
+    COLS_6("6 列", 6),
+    COLS_7("7 列", 7),
+}
+
+private fun gridColumns(landscape: Boolean, gridCols: GridCols = GridCols.AUTO): Int =
+    gridCols.cols ?: if (landscape) GRID_COLUMNS_LANDSCAPE else GRID_COLUMNS_PORTRAIT
 private fun gridRows(landscape: Boolean) =
     if (landscape) GRID_ROWS_LANDSCAPE else GRID_ROWS_PORTRAIT
-private fun pageSize(landscape: Boolean) = gridColumns(landscape) * gridRows(landscape)
+private fun pageSize(landscape: Boolean, gridCols: GridCols = GridCols.AUTO) =
+    gridColumns(landscape, gridCols) * gridRows(landscape)
 
 /**
  * 快捷启动页面(借鉴 Sunshine/Moonlight 的 applist + launch 形态)
@@ -101,6 +111,7 @@ fun LauncherScreen(
     var locked by remember { mutableStateOf(false) }
     var landscape by remember { mutableStateOf(false) }
     var connExpanded by remember { mutableStateOf(false) }
+    var gridCols by remember { mutableStateOf(GridCols.AUTO) }
 
     // 进入页面时拉取应用库(仅一次,且需已连接)
     LaunchedEffect(connectionState) {
@@ -140,7 +151,7 @@ fun LauncherScreen(
 
     // 分页 pagerState(提升到此处,PageIndicator 与 PagerGrid 共享)
     // 横竖屏切换时 pageSize 变化,pageCount 随之重组
-    val currentPageSize = pageSize(landscape)
+    val currentPageSize = pageSize(landscape, gridCols)
     val pageCount = if (quickAppIds.isEmpty()) 1 else
         (quickAppIds.size + currentPageSize - 1) / currentPageSize
     val pagerState = rememberPagerState(pageCount = { pageCount })
@@ -174,6 +185,7 @@ fun LauncherScreen(
                 locked = locked,
                 editMode = editMode,
                 landscape = landscape,
+                gridCols = gridCols,
                 onToggleEdit = { editMode = !editMode },
                 onAdd = { showAddDialog = true },
                 onToggleLock = {
@@ -181,6 +193,7 @@ fun LauncherScreen(
                     locked = !locked
                 },
                 onToggleLandscape = { landscape = !landscape },
+                onGridColsChange = { gridCols = it },
             )
 
             // 4. 分页网格
@@ -215,6 +228,7 @@ fun LauncherScreen(
                             editMode = editMode,
                             locked = locked,
                             landscape = landscape,
+                            gridCols = gridCols,
                             onLaunch = { id -> vm.launchApp(id) },
                             onRemove = { id -> vm.removeQuickApp(id) },
                             onAdd = { showAddDialog = true },
@@ -403,18 +417,60 @@ private fun EditToolbar(
     locked: Boolean,
     editMode: Boolean,
     landscape: Boolean,
+    gridCols: GridCols,
     onToggleEdit: () -> Unit,
     onAdd: () -> Unit,
     onToggleLock: () -> Unit,
     onToggleLandscape: () -> Unit,
+    onGridColsChange: (GridCols) -> Unit,
 ) {
     val btnSize = if (landscape) 22.dp else 24.dp
     val icSize = if (landscape) 12.dp else 14.dp
+    var showColsMenu by remember { mutableStateOf(false) }
     Row(
         modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.spacedBy(3.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
+        // ── 左侧:翻转 + 列数下拉(对齐设计稿 mm-actionbar 右侧布局) ──
+        // 翻转按钮:RotateCw 图标,横屏时品牌色高亮
+        ToggleButtonSmall(
+            icon = Icons.Default.RotateRight,
+            contentDescription = if (landscape) "切回竖屏" else "切换横屏",
+            isOn = landscape,
+            onClick = onToggleLandscape,
+            buttonSize = btnSize,
+            iconSize = icSize,
+        )
+        // 列数下拉:GridView 图标 + DropdownMenu(自适应/5/6/7列)
+        Box {
+            IconButtonSmall(
+                icon = Icons.Default.GridView,
+                contentDescription = "列数",
+                onClick = { showColsMenu = !showColsMenu },
+                buttonSize = btnSize,
+                iconSize = icSize,
+            )
+            DropdownMenu(
+                expanded = showColsMenu,
+                onDismissRequest = { showColsMenu = false },
+            ) {
+                GridCols.values().forEach { col ->
+                    DropdownMenuItem(
+                        text = { Text(col.label) },
+                        onClick = {
+                            onGridColsChange(col)
+                            showColsMenu = false
+                        },
+                        trailingIcon = if (gridCols == col) {
+                            { Icon(Icons.Default.Check, null, Modifier.size(14.dp)) }
+                        } else null,
+                    )
+                }
+            }
+        }
+        ActionBarDivider()
+        // ── 右侧:编辑/添加/锁定 ──
         // 编辑按钮:ghost 风格,激活时主色,锁定时禁用
         ToggleButtonSmall(
             icon = if (editMode) Icons.Default.Check else Icons.Default.Edit,
@@ -445,15 +501,6 @@ private fun EditToolbar(
             iconSize = icSize,
         )
         Spacer(Modifier.weight(1f))
-        // 翻转按钮:单一 RotateCw 图标,横屏时品牌色高亮(对齐设计稿 rotate-cw)
-        ToggleButtonSmall(
-            icon = Icons.Default.RotateRight,
-            contentDescription = if (landscape) "切回竖屏" else "切换横屏",
-            isOn = landscape,
-            onClick = onToggleLandscape,
-            buttonSize = btnSize,
-            iconSize = icSize,
-        )
     }
 }
 
@@ -471,14 +518,15 @@ private fun PagerGrid(
     editMode: Boolean,
     locked: Boolean,
     landscape: Boolean,
+    gridCols: GridCols = GridCols.AUTO,
     onLaunch: (String) -> Unit,
     onRemove: (String) -> Unit,
     onAdd: () -> Unit,
     onMove: (from: Int, to: Int) -> Unit,
 ) {
-    val columns = gridColumns(landscape)
+    val columns = gridColumns(landscape, gridCols)
     val rows = gridRows(landscape)
-    val currentPageSize = pageSize(landscape)
+    val currentPageSize = pageSize(landscape, gridCols)
 
     // 拖动排序状态
     var draggingIndex by remember { mutableStateOf<Int?>(null) }

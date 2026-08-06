@@ -1,112 +1,327 @@
 //! 屏幕抓取(远程显示器功能)
 //!
-//! 使用 GDI BitBlt 抓取主显示器整屏画面,编码为 PNG 返回。
-//! 适用于低帧率远程查看(每 100~200ms 轮询一帧);后续可升级为
-//! DXGI Desktop Duplication + H.264 编码以支持高帧率视频流。
+//! P1 迁移:使用 DXGI Desktop Duplication 替代 GDI BitBlt
 //!
-//! 端点(挂在 base_port+4 的 serverinfo 服务上,复用配对鉴权):
-//! - GET /screen/capture?pubkey=<b64>&quality=<0-100>&scale=<0.25|0.5|1>  返回 PNG 字节
-//! - GET /screen/info?pubkey=<b64>  返回屏幕分辨率 JSON
+//! 优势:
+//! - 零拷贝:直接从 GPU 表面获取,不经 GDI 内存
+//! - 变化检测:AcquireNextFrame 只在有变化时返回,静止画面零开销
+//! - 帧缓存:画面无变化时返回上一帧,避免空响应
+//! - 为后续 H.264 硬件编码 + RTP 传输打基础
 
 #[cfg(windows)]
-pub fn capture_screen_png(quality: u8, scale: f32) -> Option<Vec<u8>> {
-    use windows::Win32::Foundation::HWND;
-    use windows::Win32::Graphics::Gdi::{
-        BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, DeleteDC, DeleteObject,
-        GetDIBits, ReleaseDC, SelectObject, GetDC,
-        BITMAPINFO, BITMAPINFOHEADER, DIB_RGB_COLORS, SRCCOPY, BI_RGB,
+mod dxgi_capturer {
+    use std::sync::{Mutex, OnceLock};
+
+    use windows::core::Interface;
+    use windows::Win32::Foundation::HMODULE;
+    use windows::Win32::Graphics::Direct3D::{
+        D3D_DRIVER_TYPE_HARDWARE, D3D_FEATURE_LEVEL_11_0,
     };
-    use windows::Win32::UI::WindowsAndMessaging::{GetSystemMetrics, SM_CXSCREEN, SM_CYSCREEN};
+    use windows::Win32::Graphics::Direct3D11::{
+        D3D11CreateDevice, ID3D11Device, ID3D11DeviceContext, ID3D11Texture2D,
+        D3D11_CREATE_DEVICE_BGRA_SUPPORT, D3D11_MAPPED_SUBRESOURCE, D3D11_MAP_READ,
+        D3D11_SDK_VERSION, D3D11_TEXTURE2D_DESC, D3D11_USAGE_STAGING,
+    };
+    use windows::Win32::Graphics::Dxgi::{
+        IDXGIAdapter, IDXGIDevice, IDXGIOutput, IDXGIOutput1,
+        IDXGIOutputDuplication, IDXGIResource, DXGI_OUTDUPL_FRAME_INFO,
+    };
+    use windows::Win32::Graphics::Dxgi::Common::DXGI_SAMPLE_DESC;
 
-    // 限制参数范围
-    let _q = quality.min(100);
-    let s = scale.clamp(0.1, 1.0);
+    // DXGI 错误码(AccessLost = duplication 失效,需重建)
+    const DXGI_ERROR_ACCESS_LOST: i32 = 0x887A0026u32 as i32;
 
-    unsafe {
-        // 获取屏幕 DC(GetDC(null) = 整个屏幕)
-        let hwnd = HWND(std::ptr::null_mut());
-        let screen_dc = GetDC(hwnd);
-        if screen_dc.is_invalid() {
-            return None;
-        }
-
-        let screen_w = GetSystemMetrics(SM_CXSCREEN);
-        let screen_h = GetSystemMetrics(SM_CYSCREEN);
-        if screen_w <= 0 || screen_h <= 0 {
-            let _ = ReleaseDC(hwnd, screen_dc);
-            return None;
-        }
-
-        // 目标尺寸(按比例缩放)
-        let dst_w = ((screen_w as f32) * s).max(1.0) as i32;
-        let dst_h = ((screen_h as f32) * s).max(1.0) as i32;
-
-        // 创建兼容 DC + 位图
-        let mem_dc = CreateCompatibleDC(screen_dc);
-        if mem_dc.is_invalid() {
-            let _ = ReleaseDC(hwnd, screen_dc);
-            return None;
-        }
-        let bmp = CreateCompatibleBitmap(screen_dc, dst_w, dst_h);
-        if bmp.is_invalid() {
-            let _ = DeleteDC(mem_dc);
-            let _ = ReleaseDC(hwnd, screen_dc);
-            return None;
-        }
-        let old_bmp = SelectObject(mem_dc, bmp);
-
-        // BitBlt 拷贝屏幕到内存位图(SRCCOPY)
-        let _ = BitBlt(mem_dc, 0, 0, dst_w, dst_h, screen_dc, 0, 0, SRCCOPY);
-
-        // 准备 BITMAPINFO 以读取像素(BGRA 32 位,top-down)
-        let mut bi: BITMAPINFO = std::mem::zeroed();
-        bi.bmiHeader.biSize = std::mem::size_of::<BITMAPINFOHEADER>() as u32;
-        bi.bmiHeader.biWidth = dst_w;
-        bi.bmiHeader.biHeight = -dst_h; // 负值 = top-down
-        bi.bmiHeader.biPlanes = 1;
-        bi.bmiHeader.biBitCount = 32;
-        bi.bmiHeader.biCompression = BI_RGB.0;
-
-        let pixel_count = (dst_w as usize) * (dst_h as usize);
-        let mut pixels: Vec<u8> = vec![0u8; pixel_count * 4];
-
-        let got = GetDIBits(
-            mem_dc,
-            bmp,
-            0,
-            dst_h as u32,
-            Some(pixels.as_mut_ptr() as *mut _),
-            &mut bi,
-            DIB_RGB_COLORS,
-        );
-        if got == 0 {
-            let _ = SelectObject(mem_dc, old_bmp);
-            let _ = DeleteObject(bmp);
-            let _ = DeleteDC(mem_dc);
-            let _ = ReleaseDC(hwnd, screen_dc);
-            return None;
-        }
-
-        // 清理 GDI 资源
-        let _ = SelectObject(mem_dc, old_bmp);
-        let _ = DeleteObject(bmp);
-        let _ = DeleteDC(mem_dc);
-        let _ = ReleaseDC(hwnd, screen_dc);
-
-        // 转换 BGRA -> RGBA(image crate 需要 RGBA)
-        let mut rgba: Vec<u8> = vec![0u8; pixel_count * 4];
-        for i in 0..pixel_count {
-            let b = pixels[i * 4];
-            let g = pixels[i * 4 + 1];
-            let r = pixels[i * 4 + 2];
-            rgba[i * 4] = r;
-            rgba[i * 4 + 1] = g;
-            rgba[i * 4 + 2] = b;
-            rgba[i * 4 + 3] = 255; // 不透明
-        }
-
-        encode_png(&rgba, dst_w as u32, dst_h as u32).ok()
+    /// 采集到的一帧(BGRA 像素)
+    struct AcquiredFrame {
+        pixels: Vec<u8>,
+        width: u32,
+        height: u32,
     }
+
+    /// DXGI Desktop Duplication 屏幕采集器(持久化 D3D11 设备 + duplication)
+    struct ScreenCapturer {
+        device: ID3D11Device,
+        context: ID3D11DeviceContext,
+        duplication: IDXGIOutputDuplication,
+        /// 上一帧 PNG 缓存(画面无变化时返回)
+        last_png: Option<Vec<u8>>,
+        /// 标记 duplication 失效(如分辨率变化/锁屏),需重建
+        needs_rebuild: bool,
+    }
+
+    // COM 接口在 windows crate 中已实现 Send/Sync,此处显式声明以防编译器警告
+    unsafe impl Send for ScreenCapturer {}
+
+    impl ScreenCapturer {
+        /// 初始化 D3D11 设备 + DXGI Desktop Duplication
+        fn new() -> Option<Self> {
+            unsafe {
+                let mut device: Option<ID3D11Device> = None;
+                let mut context: Option<ID3D11DeviceContext> = None;
+                let mut feature_level = D3D_FEATURE_LEVEL_11_0;
+
+                // 创建 D3D11 设备(需要 BGRA 支持,DXGI Desktop Duplication 要求)
+                D3D11CreateDevice(
+                    None,
+                    D3D_DRIVER_TYPE_HARDWARE,
+                    HMODULE::default(),
+                    D3D11_CREATE_DEVICE_BGRA_SUPPORT,
+                    Some(&[D3D_FEATURE_LEVEL_11_0]),
+                    D3D11_SDK_VERSION,
+                    Some(&mut device),
+                    Some(&mut feature_level),
+                    Some(&mut context),
+                )
+                .ok()?;
+
+                let device = device?;
+                let context = context?;
+                let duplication = Self::create_duplication(&device)?;
+
+                Some(Self {
+                    device,
+                    context,
+                    duplication,
+                    last_png: None,
+                    needs_rebuild: false,
+                })
+            }
+        }
+
+        /// 创建 IDXGIOutputDuplication(获取第一个输出)
+        unsafe fn create_duplication(device: &ID3D11Device) -> Option<IDXGIOutputDuplication> {
+            let dxgi_device: IDXGIDevice = device.cast().ok()?;
+            let adapter: IDXGIAdapter = dxgi_device.GetParent().ok()?;
+            let output: IDXGIOutput = adapter.EnumOutputs(0).ok()?;
+            let output1: IDXGIOutput1 = output.cast().ok()?;
+            Some(output1.DuplicateOutput(&dxgi_device).ok()?)
+        }
+
+        /// 重建 duplication(ACCESS_LOST 后调用)
+        fn rebuild(&mut self) {
+            if let Some(dup) = unsafe { Self::create_duplication(&self.device) } {
+                self.duplication = dup;
+                self.needs_rebuild = false;
+            }
+        }
+
+        /// 抓取屏幕并编码 PNG
+        fn capture_png(&mut self, quality: u8, scale: f32) -> Option<Vec<u8>> {
+            if self.needs_rebuild {
+                self.rebuild();
+                if self.needs_rebuild {
+                    return self.last_png.clone();
+                }
+            }
+
+            match unsafe { self.acquire_frame() } {
+                Some(frame) => {
+                    let png = unsafe { self.encode_frame(&frame, quality, scale) };
+                    if let Some(ref png) = png {
+                        self.last_png = Some(png.clone());
+                    }
+                    png
+                }
+                None => self.last_png.clone(),
+            }
+        }
+
+        /// AcquireNextFrame 获取新帧(200ms timeout)
+        unsafe fn acquire_frame(&mut self) -> Option<AcquiredFrame> {
+            let mut frame_info = DXGI_OUTDUPL_FRAME_INFO::default();
+            let mut resource: Option<IDXGIResource> = None;
+
+            let result = self
+                .duplication
+                .AcquireNextFrame(200, &mut frame_info, &mut resource);
+
+            match result {
+                Ok(()) => {
+                    // LastPresentTime == 0 表示没有新画面(如只有鼠标移动)
+                    if frame_info.LastPresentTime == 0 {
+                        let _ = self.duplication.ReleaseFrame();
+                        return None;
+                    }
+
+                    let resource = resource?;
+                    let texture: ID3D11Texture2D = resource.cast().ok()?;
+                    let mut desc = D3D11_TEXTURE2D_DESC::default();
+                    texture.GetDesc(&mut desc);
+
+                    // 创建 staging texture(CPU 可读)
+                    let mut staging_desc = D3D11_TEXTURE2D_DESC::default();
+                    staging_desc.Width = desc.Width;
+                    staging_desc.Height = desc.Height;
+                    staging_desc.MipLevels = 1;
+                    staging_desc.ArraySize = 1;
+                    staging_desc.Format = desc.Format;
+                    staging_desc.SampleDesc = DXGI_SAMPLE_DESC {
+                        Count: 1,
+                        Quality: 0,
+                    };
+                    staging_desc.Usage = D3D11_USAGE_STAGING;
+                    staging_desc.CPUAccessFlags = 0x10000; // D3D11_CPU_ACCESS_READ
+
+                    let mut staging: Option<ID3D11Texture2D> = None;
+                    if self
+                        .device
+                        .CreateTexture2D(&staging_desc, None, Some(&mut staging))
+                        .is_err()
+                    {
+                        let _ = self.duplication.ReleaseFrame();
+                        return None;
+                    }
+                    let staging = staging?;
+
+                    // GPU → staging texture
+                    self.context.CopyResource(&staging, &texture);
+
+                    // staging → CPU 内存
+                    let mut mapped = D3D11_MAPPED_SUBRESOURCE::default();
+                    let _ = self
+                        .context
+                        .Map(&staging, 0, D3D11_MAP_READ, 0, Some(&mut mapped));
+
+                    if mapped.pData.is_null() {
+                        let _ = self.duplication.ReleaseFrame();
+                        return None;
+                    }
+
+                    let width = desc.Width;
+                    let height = desc.Height;
+                    let row_pitch = mapped.RowPitch as usize;
+                    let mut pixels = vec![0u8; (width as usize) * (height as usize) * 4];
+
+                    let src = mapped.pData as *const u8;
+                    for y in 0..height as usize {
+                        let src_row = src.add(y * row_pitch);
+                        let dst_offset = y * width as usize * 4;
+                        std::ptr::copy_nonoverlapping(
+                            src_row,
+                            pixels[dst_offset..].as_mut_ptr(),
+                            width as usize * 4,
+                        );
+                    }
+
+                    self.context.Unmap(&staging, 0);
+                    let _ = self.duplication.ReleaseFrame();
+
+                    Some(AcquiredFrame {
+                        pixels,
+                        width,
+                        height,
+                    })
+                }
+                Err(e) => {
+                    let code = e.code().0;
+                    if code == DXGI_ERROR_ACCESS_LOST {
+                        self.needs_rebuild = true;
+                    }
+                    None
+                }
+            }
+        }
+
+        /// BGRA → RGBA + 缩放(最近邻)+ PNG 编码
+        unsafe fn encode_frame(
+            &self,
+            frame: &AcquiredFrame,
+            _quality: u8,
+            scale: f32,
+        ) -> Option<Vec<u8>> {
+            let s = scale.clamp(0.1, 1.0);
+            let dst_w = ((frame.width as f32) * s).max(1.0) as u32;
+            let dst_h = ((frame.height as f32) * s).max(1.0) as u32;
+
+            // BGRA → RGBA + 缩放(一步完成)
+            let rgba = if s < 1.0 {
+                resize_nearest_bgra_to_rgba(
+                    &frame.pixels,
+                    frame.width,
+                    frame.height,
+                    dst_w,
+                    dst_h,
+                )
+            } else {
+                bgra_to_rgba(&frame.pixels)
+            };
+
+            super::encode_png(&rgba, dst_w, dst_h).ok()
+        }
+    }
+
+    /// BGRA → RGBA 转换
+    fn bgra_to_rgba(bgra: &[u8]) -> Vec<u8> {
+        let mut rgba = bgra.to_vec();
+        let count = rgba.len() / 4;
+        for i in 0..count {
+            let b = rgba[i * 4];
+            rgba[i * 4] = rgba[i * 4 + 2]; // R
+            rgba[i * 4 + 2] = b; // B
+            rgba[i * 4 + 3] = 255; // A
+        }
+        rgba
+    }
+
+    /// 最近邻缩放 BGRA → RGBA
+    fn resize_nearest_bgra_to_rgba(
+        src: &[u8],
+        sw: u32,
+        sh: u32,
+        dw: u32,
+        dh: u32,
+    ) -> Vec<u8> {
+        let mut out = vec![0u8; (dw as usize) * (dh as usize) * 4];
+        for y in 0..dh as usize {
+            for x in 0..dw as usize {
+                let sx = (x * sw as usize) / dw as usize;
+                let sy = (y * sh as usize) / dh as usize;
+                let si = (sy * sw as usize + sx) * 4;
+                let di = (y * dw as usize + x) * 4;
+                out[di] = src[si + 2]; // R
+                out[di + 1] = src[si + 1]; // G
+                out[di + 2] = src[si]; // B
+                out[di + 3] = 255; // A
+            }
+        }
+        out
+    }
+
+    // ── 全局 ScreenCapturer 单例 ──
+    static CAPTURER: OnceLock<Mutex<Option<ScreenCapturer>>> = OnceLock::new();
+
+    pub fn capture_screen_png(quality: u8, scale: f32) -> Option<Vec<u8>> {
+        let mutex = CAPTURER.get_or_init(|| Mutex::new(None));
+        let mut guard = mutex.lock().ok()?;
+        if guard.is_none() {
+            *guard = ScreenCapturer::new();
+        }
+        guard.as_mut()?.capture_png(quality, scale)
+    }
+
+    pub fn screen_resolution() -> (u32, u32) {
+        use windows::Win32::UI::WindowsAndMessaging::{
+            GetSystemMetrics, SM_CXSCREEN, SM_CYSCREEN,
+        };
+        unsafe {
+            let w = GetSystemMetrics(SM_CXSCREEN).max(0) as u32;
+            let h = GetSystemMetrics(SM_CYSCREEN).max(0) as u32;
+            (w, h)
+        }
+    }
+}
+
+#[cfg(windows)]
+pub use dxgi_capturer::{capture_screen_png, screen_resolution};
+
+#[cfg(not(windows))]
+pub fn capture_screen_png(_quality: u8, _scale: f32) -> Option<Vec<u8>> {
+    None
+}
+
+#[cfg(not(windows))]
+pub fn screen_resolution() -> (u32, u32) {
+    (0, 0)
 }
 
 #[cfg(windows)]
@@ -119,25 +334,4 @@ fn encode_png(rgba: &[u8], w: u32, h: u32) -> Result<Vec<u8>, Box<dyn std::error
     let enc = PngEncoder::new_with_quality(&mut buf, CompressionType::Fast, FilterType::Sub);
     enc.write_image(rgba, w, h, image::ExtendedColorType::Rgba8)?;
     Ok(buf.into_inner())
-}
-
-#[cfg(not(windows))]
-pub fn capture_screen_png(_quality: u8, _scale: f32) -> Option<Vec<u8>> {
-    None
-}
-
-/// 屏幕分辨率(供客户端 UI 显示)
-#[cfg(windows)]
-pub fn screen_resolution() -> (u32, u32) {
-    use windows::Win32::UI::WindowsAndMessaging::{GetSystemMetrics, SM_CXSCREEN, SM_CYSCREEN};
-    unsafe {
-        let w = GetSystemMetrics(SM_CXSCREEN).max(0) as u32;
-        let h = GetSystemMetrics(SM_CYSCREEN).max(0) as u32;
-        (w, h)
-    }
-}
-
-#[cfg(not(windows))]
-pub fn screen_resolution() -> (u32, u32) {
-    (0, 0)
 }
