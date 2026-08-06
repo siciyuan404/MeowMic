@@ -138,3 +138,87 @@ internal fun formatModified(modified: Long): String {
     val sdf = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", java.util.Locale.getDefault())
     return sdf.format(java.util.Date(modified * 1000))
 }
+
+
+/** 小尺寸图标按钮(对齐设计稿顶栏圆角方块,尺寸按方向自适应)
+ *
+ * 统一定义在 SharedTopBar.kt,供 LauncherScreen / TouchpadScreen / MonitorScreen / FilesScreen 复用。
+ * 默认 buttonSize=28dp / iconSize=16dp(沿用 TouchpadScreen 原有默认值)。
+ */
+@Composable
+internal fun IconButtonSmall(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    contentDescription: String,
+    onClick: () -> Unit,
+    isDanger: Boolean = false,
+    buttonSize: androidx.compose.ui.unit.Dp = 28.dp,
+    iconSize: androidx.compose.ui.unit.Dp = 16.dp,
+) {
+    val tint = if (isDanger) MaterialTheme.colorScheme.error
+    else MaterialTheme.colorScheme.onSurfaceVariant
+    Box(
+        modifier = Modifier
+            .size(buttonSize)
+            .background(
+                MaterialTheme.colorScheme.surfaceVariant,
+                RoundedCornerShape(6.dp),
+            )
+            .border(
+                1.dp,
+                MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f),
+                RoundedCornerShape(6.dp),
+            )
+            .clickable(onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) {
+        Icon(icon, contentDescription, Modifier.size(iconSize), tint = tint)
+    }
+}
+
+/** 带激活态的小图标按钮(用于顶栏开关组)
+ *
+ * 激活时:主色 12% 背景 + 主色图标;未激活时:surfaceVariant 背景 + onSurfaceVariant 图标
+ * 与 IconButtonSmall 等宽,便于顶栏对齐。
+ */
+@Composable
+internal fun ToggleButtonSmall(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    contentDescription: String,
+    isOn: Boolean,
+    onClick: () -> Unit,
+    tintOff: Color = MaterialTheme.colorScheme.onSurfaceVariant,
+    tintOn: Color = MaterialTheme.colorScheme.primary,
+    buttonSize: androidx.compose.ui.unit.Dp = 28.dp,
+    iconSize: androidx.compose.ui.unit.Dp = 16.dp,
+) {
+    Box(
+        modifier = Modifier
+            .size(buttonSize)
+            .background(
+                if (isOn) MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)
+                else MaterialTheme.colorScheme.surfaceVariant,
+                RoundedCornerShape(6.dp),
+            )
+            .border(
+                1.dp,
+                MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f),
+                RoundedCornerShape(6.dp),
+            )
+            .clickable(onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) {
+        Icon(icon, contentDescription, Modifier.size(iconSize), tint = if (isOn) tintOn else tintOff)
+    }
+}
+
+/** 操作栏分隔线(1dp 宽 20dp 高,左右 2dp 间距) */
+@Composable
+internal fun ActionBarDivider() {
+    Box(
+        modifier = Modifier
+            .padding(horizontal = 2.dp)
+            .width(1.dp)
+            .height(20.dp)
+            .background(MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)),
+    )
+}

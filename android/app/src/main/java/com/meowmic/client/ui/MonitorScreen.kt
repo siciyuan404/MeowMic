@@ -25,6 +25,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.meowmic.client.ConnectionState
+import com.meowmic.client.LauncherRepository
 import com.meowmic.client.MeowMicViewModel
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay

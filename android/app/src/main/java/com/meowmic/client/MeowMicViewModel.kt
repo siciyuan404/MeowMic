@@ -381,7 +381,7 @@ class MeowMicViewModel : ViewModel() {
     }
 
     /** 读取本客户端公钥(供 serverinfo pair_status 查询);失败返回空串 */
-    private fun clientPubkeyB64(): String {
+    fun clientPubkeyB64(): String {
         return try {
             if (NativeBridge.isLoaded()) NativeBridge.nativeGetClientPubkeyB64() else ""
         } catch (e: UnsatisfiedLinkError) {
