@@ -84,6 +84,9 @@ fun MonitorScreen(
     // Surface 引用(SurfaceView 就绪后传入 MediaCodec)
     var videoSurface by remember { mutableStateOf<Surface?>(null) }
 
+    // 防止视频推流重复启动:同一 Surface 只启动一次
+    var streamStartedForSurface by remember { mutableStateOf<Surface?>(null) }
+
     val (touchSent, audioSent) = parseStats(stats)
 
     // 进入页面拉取屏幕分辨率
@@ -96,7 +99,7 @@ fun MonitorScreen(
         }
     }
 
-    // 创建 / 销毁 MediaCodec 解码器(随 Surface 生命周期)
+    // 合并的视频生命周期:创建解码器 + 启动推流(参考 Moonlight 的 surfaceChanged → conn.start 模式)
     LaunchedEffect(videoSurface, monitorEnabled) {
         if (!monitorEnabled || videoSurface == null) {
             mediaCodec?.stop()
@@ -105,21 +108,30 @@ fun MonitorScreen(
             hasFirstFrame = false
             decoderStatus = null
             fetchError = null
+            streamStartedForSurface = null
             return@LaunchedEffect
         }
 
-        // 已有错误不再重复创建,避免 Surface 失效导致 nativeWindowConnect -22
+        // 已有错误或已对该 Surface 启动过推流,不再重复
         if (fetchError != null) {
-            Log.d(TAG_DEC, "已有错误,跳过解码器创建: $fetchError")
+            Log.d(TAG_DEC, "已有错误,跳过: $fetchError")
+            return@LaunchedEffect
+        }
+        if (streamStartedForSurface == videoSurface) {
+            Log.d(TAG_DEC, "该 Surface 已启动推流,跳过")
             return@LaunchedEffect
         }
 
         val w = screenInfo?.width ?: 1920
         val h = screenInfo?.height ?: 1080
+        val fps = frameRate
+        val bitrate = 4_000_000
 
+        // 1. 创建 MediaCodec
         decoderStatus = "初始化解码器 ${w}x${h}..."
+        val codec: MediaCodec
         try {
-            val codec = MediaCodec.createDecoderByType(MediaFormat.MIMETYPE_VIDEO_AVC)
+            codec = MediaCodec.createDecoderByType(MediaFormat.MIMETYPE_VIDEO_AVC)
             val format = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, w, h).apply {
                 setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Flexible)
                 setInteger(MediaFormat.KEY_FRAME_RATE, 30)
@@ -135,23 +147,13 @@ fun MonitorScreen(
             Log.e(TAG_DEC, "解码器启动失败: ${e.message}")
             decoderStatus = "解码器失败: ${e.message}"
             fetchError = decoderStatus
+            return@LaunchedEffect
         }
-    }
 
-    // 启动 / 停止视频推流 + NALU 拉取循环
-    LaunchedEffect(mediaCodec, addr, monitorEnabled) {
-        val codec = mediaCodec ?: return@LaunchedEffect
-        if (addr.isBlank() || !monitorEnabled) return@LaunchedEffect
-
-        val w = screenInfo?.width ?: 1920
-        val h = screenInfo?.height ?: 1080
-        val fps = frameRate
-        val bitrate = 4_000_000
-
-        // 检查 TCP 控制连接是否存活(后台事件循环在断开时清空 Rust state)
+        // 2. 检查连接
         try {
             if (!NativeBridge.nativeIsConnected()) {
-                Log.w(TAG_DEC, "TCP 控制连接已断开,停止视频推流")
+                Log.w(TAG_DEC, "TCP 控制连接已断开")
                 fetchError = "连接已断开,请重新连接"
                 return@LaunchedEffect
             }
@@ -159,7 +161,7 @@ fun MonitorScreen(
             Log.w(TAG_DEC, "nativeIsConnected 异常: ${e.message}")
         }
 
-        // 请求服务端开始推流(捕获 Throwable 包括 UnsatisfiedLinkError,避免 native 异常闪退)
+        // 3. 请求服务端开始推流
         val started = try {
             NativeBridge.nativeStartVideo(w, h, fps, bitrate)
         } catch (e: Throwable) {
@@ -172,9 +174,12 @@ fun MonitorScreen(
             return@LaunchedEffect
         }
 
-        // NALU 拉取循环:从 Rust 队列取完整 NALU → 喂入 MediaCodec
+        streamStartedForSurface = videoSurface
+        Log.i(TAG_DEC, "视频推流已启动 ${w}x${h}@${fps}fps")
+
+        // 4. NALU 拉取 + 渲染循环
         while (isActive) {
-            // 每轮检查连接状态,断开时退出循环
+            // 每轮检查连接状态
             try {
                 if (!NativeBridge.nativeIsConnected()) {
                     Log.w(TAG_DEC, "TCP 控制连接在推流中意外断开")
@@ -182,7 +187,7 @@ fun MonitorScreen(
                     break
                 }
             } catch (e: Throwable) {
-                // 忽略 nativeIsConnected 异常,继续轮询
+                // 忽略,继续轮询
             }
 
             val nalu = try {
@@ -203,7 +208,6 @@ fun MonitorScreen(
                             codec.queueInputBuffer(idx, 0, nalu.size, System.nanoTime() / 1000, 0)
                         }
                     }
-                    // drain output (Surface 自动渲染,无需手动操作)
                     val info = MediaCodec.BufferInfo()
                     while (true) {
                         val outIdx = codec.dequeueOutputBuffer(info, 0)
@@ -226,7 +230,7 @@ fun MonitorScreen(
                     Log.w(TAG_DEC, "解码 feed 失败: ${e.message}")
                 }
             } else {
-                delay(5) // 无帧时短暂等待,避免 CPU 空转
+                delay(5)
             }
         }
     }

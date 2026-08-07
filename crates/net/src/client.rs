@@ -169,6 +169,21 @@ impl Client {
         };
         stream.set_nodelay(true)?;
 
+        // TCP keepalive:通过 socket2 设置 SO_KEEPALIVE,防止 NAT/路由闲置断开
+        // Android 8.0 默认 keepalive=2h, 显式设为 15s(参考 Sunshine 10s Ping 超时)
+        {
+            use std::os::windows::io::{AsRawSocket, FromRawSocket};
+            let raw = stream.as_raw_socket();
+            // safety: raw 来自活着的 TcpStream
+            let sock = unsafe { socket2::Socket::from_raw_socket(raw) };
+            let keepalive = socket2::TcpKeepalive::new()
+                .with_time(std::time::Duration::from_secs(15))
+                .with_interval(std::time::Duration::from_secs(5));
+            let _ = sock.set_tcp_keepalive(&keepalive);
+            // 不 drop Socket(会 close raw fd),让 TcpStream 继续持有
+            std::mem::forget(sock);
+        }
+
         // 分离读写半部:read_half 独占给后台接收 task,write_half 用 Mutex 保护
         // 避免之前的死锁:run_control_recv 持有 Mutex 在 read 上挂起,send_control 永远拿不到锁
         let (read_half, write_half) = stream.into_split();
@@ -217,6 +232,23 @@ impl Client {
         let sync_for_loop = sync.clone();
         tokio::spawn(async move {
             run_sync_loop(stream_for_sync, sync_for_loop).await;
+        });
+
+        // 启动应用层心跳:每 10 秒发送一次 Ping,参考 Sunshine 10s Ping 超时
+        // 防止 NAT/路由器因闲置丢弃 TCP 连接状态表
+        let heartbeat_write = control_write.clone();
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+                let mut frame = Vec::with_capacity(32);
+                if encode_control(&ControlMessage::Ping, &mut frame).is_err() {
+                    break;
+                }
+                let mut stream = heartbeat_write.lock().await;
+                if stream.write_all(&frame).await.is_err() {
+                    break;
+                }
+            }
         });
 
         Ok(client)

@@ -191,6 +191,19 @@ impl Server {
         loop {
             match tcp.accept().await {
                 Ok((stream, peer)) => {
+                    // TCP keepalive:通过 socket2 + AsRawSocket,防止 NAT/路由闲置断开
+                    {
+                        use std::os::windows::io::{AsRawSocket, FromRawSocket};
+                        let raw = stream.as_raw_socket();
+                        // safety: raw 来自活着的 TcpStream
+                        let sock = unsafe { socket2::Socket::from_raw_socket(raw) };
+                        let keepalive = socket2::TcpKeepalive::new()
+                            .with_time(std::time::Duration::from_secs(15))
+                            .with_interval(std::time::Duration::from_secs(5));
+                        let _ = sock.set_tcp_keepalive(&keepalive);
+                        // 不 drop Socket(会 close raw fd),让 TcpStream 继续持有
+                        std::mem::forget(sock);
+                    }
                     let sync = sync.clone();
                     let event_tx = event_tx.clone();
                     let pairing = pairing.clone();
@@ -281,10 +294,25 @@ async fn handle_control_conn(
     let mut pending_nonce: Option<u64> = None;
     // 本连接成功完成 HelloPaired 后的客户端公钥 base64(用于 ClientDisconnected 时从 active_clients 移除)
     let mut conn_pubkey_b64: Option<String> = None;
+    // 不活跃超时:参考 Sunshine 10s Ping 超时,客户端每 10s 发心跳,服务端 35s 无消息则断开
+    const IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(35);
 
     loop {
         let mut tmp = [0u8; 4096];
-        let n = stream.read(&mut tmp).await?;
+        let idle_sleep = tokio::time::sleep(IDLE_TIMEOUT);
+        tokio::pin!(idle_sleep);
+
+        let read_result = tokio::select! {
+            r = stream.read(&mut tmp) => r,
+            () = &mut idle_sleep => {
+                tracing::warn!("客户端不活跃超时({}s),断开: {}", IDLE_TIMEOUT.as_secs(), peer);
+                return Err(NetError::Io(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    format!("客户端 {}s 未发送消息", IDLE_TIMEOUT.as_secs()),
+                )));
+            }
+        };
+        let n = read_result?;
         if n == 0 {
             // 对端关闭:清理 active_clients 公钥登记
             if let Some(ref pk) = conn_pubkey_b64 {
