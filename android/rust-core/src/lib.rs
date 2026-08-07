@@ -20,7 +20,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use base64::Engine;
 use jni::objects::{JClass, JPrimitiveArray, JString, JShortArray};
-use jni::sys::{jboolean, jfloat, jint, jshortArray, jstring, JNI_FALSE, JNI_TRUE};
+use jni::sys::{jboolean, jbyteArray, jfloat, jint, jshortArray, jstring, JNI_FALSE, JNI_TRUE};
 use jni::JNIEnv;
 use log::LevelFilter;
 use once_cell::sync::OnceCell;
