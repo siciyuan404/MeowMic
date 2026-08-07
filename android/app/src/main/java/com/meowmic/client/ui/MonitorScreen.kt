@@ -100,6 +100,8 @@ fun MonitorScreen(
     }
 
     // 合并的视频生命周期:创建解码器 + 启动推流(参考 Moonlight 的 surfaceChanged → conn.start 模式)
+    // 关键修复:所有失败分支统一走 cleanup 路径,确保 codec 已 start 后必 stop+release,
+    // 避免 Surface "already connected" 错误(参考 Moonlight tryConfigureDecoder 的 finally 模式)
     LaunchedEffect(videoSurface, monitorEnabled) {
         if (!monitorEnabled || videoSurface == null) {
             mediaCodec?.stop()
@@ -128,10 +130,11 @@ fun MonitorScreen(
         val bitrate = 4_000_000
 
         // 1. 创建 MediaCodec
+        // 注意:codec 一旦 configure 就占用 Surface,任何失败必须 release
         decoderStatus = "初始化解码器 ${w}x${h}..."
-        val codec: MediaCodec
+        var codecStarted = false
         try {
-            codec = MediaCodec.createDecoderByType(MediaFormat.MIMETYPE_VIDEO_AVC)
+            val codec = MediaCodec.createDecoderByType(MediaFormat.MIMETYPE_VIDEO_AVC)
             val format = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, w, h).apply {
                 setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Flexible)
                 setInteger(MediaFormat.KEY_FRAME_RATE, 30)
@@ -139,15 +142,36 @@ fun MonitorScreen(
             }
             codec.configure(format, videoSurface, null, 0)
             codec.start()
+            codecStarted = true
             mediaCodec = codec
             decoderStatus = "解码器就绪"
             fetchError = null
             Log.i(TAG_DEC, "H.264 解码器启动(Surface 直渲) ${w}x${h}")
         } catch (e: Exception) {
             Log.e(TAG_DEC, "解码器启动失败: ${e.message}")
+            // 失败立即释放,避免 codec 残留占用 Surface
+            try {
+                if (codecStarted) mediaCodec?.stop()
+            } catch (_: Exception) {}
+            try {
+                mediaCodec?.release()
+            } catch (_: Exception) {}
+            mediaCodec = null
             decoderStatus = "解码器失败: ${e.message}"
             fetchError = decoderStatus
             return@LaunchedEffect
+        }
+
+        // cleanup 闭包:codec 已 start 后,任何失败分支调用此函数释放资源
+        // (参考 Moonlight MediaCodecDecoderRenderer 的 release 模式)
+        fun releaseCodec() {
+            try {
+                if (codecStarted) mediaCodec?.stop()
+            } catch (_: Exception) {}
+            try {
+                mediaCodec?.release()
+            } catch (_: Exception) {}
+            mediaCodec = null
         }
 
         // 2. 检查连接
@@ -155,6 +179,7 @@ fun MonitorScreen(
             if (!NativeBridge.nativeIsConnected()) {
                 Log.w(TAG_DEC, "TCP 控制连接已断开")
                 fetchError = "连接已断开,请重新连接"
+                releaseCodec()
                 return@LaunchedEffect
             }
         } catch (e: Throwable) {
@@ -171,6 +196,7 @@ fun MonitorScreen(
         }
         if (!started) {
             fetchError = fetchError ?: "请求视频推流失败"
+            releaseCodec()
             return@LaunchedEffect
         }
 
@@ -178,60 +204,68 @@ fun MonitorScreen(
         Log.i(TAG_DEC, "视频推流已启动 ${w}x${h}@${fps}fps")
 
         // 4. NALU 拉取 + 渲染循环
-        while (isActive) {
-            // 每轮检查连接状态
-            try {
-                if (!NativeBridge.nativeIsConnected()) {
-                    Log.w(TAG_DEC, "TCP 控制连接在推流中意外断开")
-                    fetchError = "连接已断开"
-                    break
-                }
-            } catch (e: Throwable) {
-                // 忽略,继续轮询
-            }
-
-            val nalu = try {
-                NativeBridge.nativePollVideoFrame()
-            } catch (e: Throwable) {
-                Log.w(TAG_DEC, "nativePollVideoFrame 异常: ${e.message}")
-                delay(10)
-                continue
-            }
-            if (nalu != null && nalu.isNotEmpty()) {
+        // 关键修复:用 try/finally 保证循环退出(正常 break / 异常 / Coroutine 取消)时必释放 codec,
+        // 否则 Surface 残留占用会导致下次 configure "already connected" 错误
+        try {
+            while (isActive) {
+                // 每轮检查连接状态
                 try {
-                    val idx = codec.dequeueInputBuffer(5_000)
-                    if (idx >= 0) {
-                        val buf = codec.getInputBuffer(idx) ?: continue
-                        buf.clear()
-                        if (nalu.size <= buf.capacity()) {
-                            buf.put(nalu)
-                            codec.queueInputBuffer(idx, 0, nalu.size, System.nanoTime() / 1000, 0)
-                        }
+                    if (!NativeBridge.nativeIsConnected()) {
+                        Log.w(TAG_DEC, "TCP 控制连接在推流中意外断开")
+                        fetchError = "连接已断开"
+                        break
                     }
-                    val info = MediaCodec.BufferInfo()
-                    while (true) {
-                        val outIdx = codec.dequeueOutputBuffer(info, 0)
-                        when {
-                            outIdx >= 0 -> {
-                                codec.releaseOutputBuffer(outIdx, true)
-                                if (!hasFirstFrame) {
-                                    hasFirstFrame = true
-                                    decoderStatus = null
-                                }
-                                frameCount++
-                            }
-                            outIdx == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> {
-                                Log.i(TAG_DEC, "输出格式变化: ${codec.outputFormat}")
-                            }
-                            else -> break
-                        }
-                    }
-                } catch (e: Exception) {
-                    Log.w(TAG_DEC, "解码 feed 失败: ${e.message}")
+                } catch (e: Throwable) {
+                    // 忽略,继续轮询
                 }
-            } else {
-                delay(5)
+
+                val nalu = try {
+                    NativeBridge.nativePollVideoFrame()
+                } catch (e: Throwable) {
+                    Log.w(TAG_DEC, "nativePollVideoFrame 异常: ${e.message}")
+                    delay(10)
+                    continue
+                }
+                if (nalu != null && nalu.isNotEmpty()) {
+                    try {
+                        val idx = mediaCodec?.dequeueInputBuffer(5_000) ?: -1
+                        if (idx >= 0) {
+                            val buf = mediaCodec?.getInputBuffer(idx) ?: continue
+                            buf.clear()
+                            if (nalu.size <= buf.capacity()) {
+                                buf.put(nalu)
+                                mediaCodec?.queueInputBuffer(idx, 0, nalu.size, System.nanoTime() / 1000, 0)
+                            }
+                        }
+                        val info = MediaCodec.BufferInfo()
+                        while (true) {
+                            val outIdx = mediaCodec?.dequeueOutputBuffer(info, 0) ?: -1
+                            when {
+                                outIdx >= 0 -> {
+                                    mediaCodec?.releaseOutputBuffer(outIdx, true)
+                                    if (!hasFirstFrame) {
+                                        hasFirstFrame = true
+                                        decoderStatus = null
+                                    }
+                                    frameCount++
+                                }
+                                outIdx == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> {
+                                    Log.i(TAG_DEC, "输出格式变化: ${mediaCodec?.outputFormat}")
+                                }
+                                else -> break
+                            }
+                        }
+                    } catch (e: Exception) {
+                        Log.w(TAG_DEC, "解码 feed 失败: ${e.message}")
+                    }
+                } else {
+                    delay(5)
+                }
             }
+        } finally {
+            // 循环退出(任何原因):统一释放 codec,避免 Surface 泄漏
+            releaseCodec()
+            streamStartedForSurface = null
         }
     }
 
@@ -266,8 +300,13 @@ fun MonitorScreen(
     DisposableEffect(Unit) {
         onDispose {
             NativeBridge.nativeStopVideo()
-            mediaCodec?.stop()
-            mediaCodec?.release()
+            try {
+                mediaCodec?.stop()
+            } catch (_: Exception) {}
+            try {
+                mediaCodec?.release()
+            } catch (_: Exception) {}
+            mediaCodec = null
         }
     }
 
