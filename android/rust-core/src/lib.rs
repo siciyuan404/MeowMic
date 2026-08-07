@@ -16,7 +16,16 @@
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU16, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
+
+/// 安全获取 Mutex 锁:即使锁被中毒(其他线程持锁时 panic),也恢复数据而非 panic。
+/// 关键:JNI 函数中 panic 会触发 abort()→SIGABRT→进程死亡,
+/// 视频接收线程在持锁时若 panic(如大 NALU 分配失败)会中毒 frames Mutex,
+/// 随后 nativePollVideoFrame → poll_frame → frames.lock().unwrap() 再次 panic→abort。
+/// 使用此函数可避免级联 panic。
+fn lock_or_recover<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(|e| e.into_inner())
+}
 
 use base64::Engine;
 use jni::objects::{JClass, JPrimitiveArray, JString, JShortArray};
@@ -154,6 +163,81 @@ impl ReassemblyEntry {
     }
 }
 
+/// 处理单个视频 UDP 包:解码分片、重组、推入帧队列。
+/// 所有 unwrap 已替换为安全模式,防止 panic 中毒 Mutex。
+fn process_video_packet(
+    data: &[u8],
+    reassembler: &mut std::collections::HashMap<u16, ReassemblyEntry>,
+    last_frame_id: &mut u16,
+    frames: &Arc<Mutex<std::collections::VecDeque<Vec<u8>>>>,
+    stats: &Arc<Mutex<VideoStats>>,
+) {
+    if data.len() < meowmic_protocol::VIDEO_FRAGMENT_HEADER_LEN {
+        return;
+    }
+    let mut cur: &[u8] = data;
+    let frag = match meowmic_protocol::VideoFragment::decode(&mut cur) {
+        Ok(f) => f,
+        Err(_) => return,
+    };
+    if frag.magic != meowmic_protocol::VIDEO_MAGIC {
+        return;
+    }
+    let payload = cur.to_vec();
+
+    // 丢包检测: frame_id 跳跃时丢弃旧帧,等待下一个 keyframe
+    if frag.frame_id.wrapping_sub(*last_frame_id) > 1 && !frag.is_keyframe() {
+        let dropped = reassembler.len() as u32;
+        if let Ok(mut s) = stats.lock() {
+            s.lost_frames = s.lost_frames.saturating_add(dropped);
+        }
+        reassembler.clear();
+    }
+    *last_frame_id = frag.frame_id;
+
+    // 取或创建该帧的重组条目
+    let entry = reassembler.entry(frag.frame_id).or_insert_with(|| {
+        ReassemblyEntry::new(frag.frag_total, frag.is_keyframe())
+    });
+
+    if frag.is_fec() {
+        entry.fec = Some(payload);
+    } else if (frag.frag_idx as usize) < entry.parts.len() {
+        entry.parts[frag.frag_idx as usize] = Some(payload);
+    }
+
+    let action = entry.try_complete_or_recover();
+    match action {
+        ReassemblyAction::Complete | ReassemblyAction::Recovered => {
+            // 安全 remove:逻辑上一定存在(刚 or_insert_with),但用 if let 防御
+            let Some(e) = reassembler.remove(&frag.frame_id) else {
+                return;
+            };
+            let mut nalu = Vec::with_capacity(e.parts.len() * 1400);
+            for part in &e.parts {
+                if let Some(p) = part {
+                    nalu.extend_from_slice(p);
+                }
+            }
+            let mut q = lock_or_recover(frames);
+            if q.len() >= 5 {
+                q.pop_front();
+            }
+            q.push_back(nalu);
+            if let Ok(mut s) = stats.lock() {
+                s.received_frames = s.received_frames.saturating_add(1);
+                if matches!(action, ReassemblyAction::Recovered) {
+                    s.recovered_frames = s.recovered_frames.saturating_add(1);
+                }
+            }
+            if matches!(action, ReassemblyAction::Recovered) {
+                log::debug!("frame_id={} FEC 恢复成功", frag.frame_id);
+            }
+        }
+        ReassemblyAction::Pending => {}
+    }
+}
+
 impl VideoReceiver {
     /// 启动视频接收循环
     fn start(client: Arc<Client>) -> Self {
@@ -173,84 +257,25 @@ impl VideoReceiver {
                 std::collections::HashMap::new();
             let mut last_frame_id: u16 = 0;
 
-            log::info!("视频接收循环启动: listen on {}, peer={}", video_sock.local_addr().unwrap(), video_peer);
+            let local_addr = video_sock.local_addr().map(|a| a.to_string()).unwrap_or_else(|_| "?".to_string());
+            log::info!("视频接收循环启动: listen on {}, peer={}", local_addr, video_peer);
 
             loop {
                 match video_sock.recv_from(&mut buf).await {
                     Ok((n, _peer)) => {
-                        if n < meowmic_protocol::VIDEO_FRAGMENT_HEADER_LEN {
-                            continue;
-                        }
-                        let mut cur: &[u8] = &buf[..n];
-                        let frag = match meowmic_protocol::VideoFragment::decode(&mut cur) {
-                            Ok(f) => f,
-                            Err(_) => continue,
-                        };
-                        if frag.magic != meowmic_protocol::VIDEO_MAGIC {
-                            continue;
-                        }
-                        let payload = cur.to_vec();
-
-                        // 丢包检测: frame_id 跳跃时丢弃旧帧,等待下一个 keyframe
-                        if frag.frame_id.wrapping_sub(last_frame_id) > 1 && !frag.is_keyframe() {
-                            // 丢失了帧,清空旧的重组缓冲
-                            let dropped = reassembler.len() as u32;
-                            if let Ok(mut s) = stats_clone.lock() {
-                                s.lost_frames = s.lost_frames.saturating_add(dropped);
-                            }
-                            reassembler.clear();
-                        }
-                        last_frame_id = frag.frame_id;
-
-                        // 取或创建该帧的重组条目
-                        let entry = reassembler.entry(frag.frame_id).or_insert_with(|| {
-                            ReassemblyEntry::new(frag.frag_total, frag.is_keyframe())
-                        });
-
-                        if frag.is_fec() {
-                            // FEC 包:保存,尝试单包恢复
-                            entry.fec = Some(payload);
-                        } else if (frag.frag_idx as usize) < entry.parts.len() {
-                            // 原始分片
-                            entry.parts[frag.frag_idx as usize] = Some(payload);
-                        }
-
-                        // 尝试完成或恢复
-                        let action = entry.try_complete_or_recover();
-                        match action {
-                            ReassemblyAction::Complete => {
-                                let e = reassembler.remove(&frag.frame_id).unwrap();
-                                let mut nalu = Vec::with_capacity(e.parts.len() * 1400);
-                                for part in &e.parts {
-                                    nalu.extend_from_slice(part.as_ref().unwrap());
-                                }
-                                let mut q = frames_clone.lock().unwrap();
-                                if q.len() >= 5 {
-                                    q.pop_front(); // 丢弃最旧帧,限制队列长度
-                                }
-                                q.push_back(nalu);
-                                if let Ok(mut s) = stats_clone.lock() {
-                                    s.received_frames = s.received_frames.saturating_add(1);
-                                }
-                            }
-                            ReassemblyAction::Recovered => {
-                                let e = reassembler.remove(&frag.frame_id).unwrap();
-                                let mut nalu = Vec::with_capacity(e.parts.len() * 1400);
-                                for part in &e.parts {
-                                    nalu.extend_from_slice(part.as_ref().unwrap());
-                                }
-                                let mut q = frames_clone.lock().unwrap();
-                                if q.len() >= 5 {
-                                    q.pop_front();
-                                }
-                                q.push_back(nalu);
-                                if let Ok(mut s) = stats_clone.lock() {
-                                    s.received_frames = s.received_frames.saturating_add(1);
-                                    s.recovered_frames = s.recovered_frames.saturating_add(1);
-                                }
-                                log::debug!("frame_id={} FEC 恢复成功", frag.frame_id);
-                            }
-                            ReassemblyAction::Pending => {}
+                        // 包裹 catch_unwind:任何 panic(如大 NALU 分配失败)不应杀死 task
+                        // 或中毒 Mutex,否则 nativePollVideoFrame 会级联 panic→SIGABRT
+                        let panic_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                            process_video_packet(
+                                &buf[..n],
+                                &mut reassembler,
+                                &mut last_frame_id,
+                                &frames_clone,
+                                &stats_clone,
+                            );
+                        }));
+                        if let Err(p) = panic_result {
+                            log::error!("视频接收处理 panic: {:?}", p);
                         }
                     }
                     Err(e) => {
@@ -269,13 +294,13 @@ impl VideoReceiver {
 
     /// 取出一个完整 NALU (非阻塞)
     fn poll_frame(&self) -> Option<Vec<u8>> {
-        let mut q = self.frames.lock().unwrap();
+        let mut q = lock_or_recover(&self.frames);
         q.pop_front()
     }
 
     /// 取出并清零统计快照(供 Kotlin 周期性上报给服务端做自适应码率)
     fn poll_stats(&self) -> VideoStats {
-        let mut s = self.stats.lock().unwrap();
+        let mut s = lock_or_recover(&self.stats);
         let snapshot = *s;
         *s = VideoStats::default();
         snapshot
@@ -1398,7 +1423,7 @@ pub extern "system" fn Java_com_meowmic_client_NativeBridge_nativeStartVideo(
             };
             // 启动视频接收循环
             let rx = VideoReceiver::start(client);
-            let mut video_guard = video_rx().lock().unwrap();
+            let mut video_guard = lock_or_recover(video_rx());
             if let Some(old) = video_guard.as_mut() {
                 old.stop();
             }
@@ -1424,7 +1449,7 @@ pub extern "system" fn Java_com_meowmic_client_NativeBridge_nativePollVideoFrame
     env: JNIEnv,
     _class: JClass,
 ) -> jbyteArray {
-    let guard = video_rx().lock().unwrap();
+    let guard = lock_or_recover(video_rx());
     let Some(rx) = guard.as_ref() else {
         return std::ptr::null_mut();
     };
@@ -1460,7 +1485,7 @@ pub extern "system" fn Java_com_meowmic_client_NativeBridge_nativeStopVideo(
     drop(guard);
 
     // 停止接收循环
-    let mut video_guard = video_rx().lock().unwrap();
+    let mut video_guard = lock_or_recover(video_rx());
     if let Some(rx) = video_guard.as_mut() {
         rx.stop();
     }
@@ -1481,7 +1506,7 @@ pub extern "system" fn Java_com_meowmic_client_NativeBridge_nativePollVideoStats
     _class: JClass,
 ) -> jstring {
     let stats = {
-        let guard = video_rx().lock().unwrap();
+        let guard = lock_or_recover(video_rx());
         guard.as_ref().map(|rx| rx.poll_stats()).unwrap_or_default()
     };
     let json = format!(
