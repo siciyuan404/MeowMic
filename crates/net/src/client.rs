@@ -84,6 +84,8 @@ pub struct Client {
     /// 服务端 VideoStarted ACK 携带的 codec(255=未收到, 0=H.264, 1=HEVC)
     /// 由 run_control_recv 写入,nativeStartVideo 读取
     video_started_codec: Arc<std::sync::atomic::AtomicU8>,
+    /// TCP 控制连接是否存活(run_control_recv 退出时自动置 false)
+    is_connected: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl Client {
@@ -182,6 +184,7 @@ impl Client {
         let sync = ClockSynchronizer::new();
         let control_write = Arc::new(Mutex::new(write_half));
         let video_started_codec = Arc::new(std::sync::atomic::AtomicU8::new(255));
+        let is_connected = Arc::new(std::sync::atomic::AtomicBool::new(true));
         let client = Self {
             sync: sync.clone(),
             control_write: control_write.clone(),
@@ -193,16 +196,20 @@ impl Client {
             touch_seq: Arc::new(AtomicU16::new(0)),
             audio_seq: Arc::new(Mutex::new(0)),
             video_started_codec: video_started_codec.clone(),
+            is_connected: is_connected.clone(),
         };
 
         // 发送第一条消息(Hello 或 HelloPaired)
         client.send_control(first_msg).await?;
 
         // 启动控制消息接收循环(read_half 独占,无需 Mutex)
+        // run_control_recv 退出(TCP 断开/错误)后自动标记连接断开
         let sync_clone = sync.clone();
         let event_tx_clone = event_tx.clone();
+        let is_conn = is_connected.clone();
         tokio::spawn(async move {
             run_control_recv(read_half, sync_clone, event_tx_clone, video_started_codec).await;
+            is_conn.store(false, std::sync::atomic::Ordering::Relaxed);
         });
 
         // 启动时钟同步循环
@@ -382,6 +389,11 @@ impl Client {
     /// 重置 video_started_codec 为 255(未收到),用于重新开始推流前
     pub fn reset_video_started_codec(&self) {
         self.video_started_codec.store(255, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// 检查 TCP 控制连接是否存活(run_control_recv 退出后自动变为 false)
+    pub fn is_connected(&self) -> bool {
+        self.is_connected.load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// 请求服务端停止视频推流

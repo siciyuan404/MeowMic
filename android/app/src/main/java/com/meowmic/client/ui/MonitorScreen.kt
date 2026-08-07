@@ -104,6 +104,13 @@ fun MonitorScreen(
             mediaCodec = null
             hasFirstFrame = false
             decoderStatus = null
+            fetchError = null
+            return@LaunchedEffect
+        }
+
+        // 已有错误不再重复创建,避免 Surface 失效导致 nativeWindowConnect -22
+        if (fetchError != null) {
+            Log.d(TAG_DEC, "已有错误,跳过解码器创建: $fetchError")
             return@LaunchedEffect
         }
 
@@ -122,10 +129,12 @@ fun MonitorScreen(
             codec.start()
             mediaCodec = codec
             decoderStatus = "解码器就绪"
+            fetchError = null
             Log.i(TAG_DEC, "H.264 解码器启动(Surface 直渲) ${w}x${h}")
         } catch (e: Exception) {
             Log.e(TAG_DEC, "解码器启动失败: ${e.message}")
             decoderStatus = "解码器失败: ${e.message}"
+            fetchError = decoderStatus
         }
     }
 
@@ -138,6 +147,17 @@ fun MonitorScreen(
         val h = screenInfo?.height ?: 1080
         val fps = frameRate
         val bitrate = 4_000_000
+
+        // 检查 TCP 控制连接是否存活(后台事件循环在断开时清空 Rust state)
+        try {
+            if (!NativeBridge.nativeIsConnected()) {
+                Log.w(TAG_DEC, "TCP 控制连接已断开,停止视频推流")
+                fetchError = "连接已断开,请重新连接"
+                return@LaunchedEffect
+            }
+        } catch (e: Throwable) {
+            Log.w(TAG_DEC, "nativeIsConnected 异常: ${e.message}")
+        }
 
         // 请求服务端开始推流(捕获 Throwable 包括 UnsatisfiedLinkError,避免 native 异常闪退)
         val started = try {
@@ -154,6 +174,17 @@ fun MonitorScreen(
 
         // NALU 拉取循环:从 Rust 队列取完整 NALU → 喂入 MediaCodec
         while (isActive) {
+            // 每轮检查连接状态,断开时退出循环
+            try {
+                if (!NativeBridge.nativeIsConnected()) {
+                    Log.w(TAG_DEC, "TCP 控制连接在推流中意外断开")
+                    fetchError = "连接已断开"
+                    break
+                }
+            } catch (e: Throwable) {
+                // 忽略 nativeIsConnected 异常,继续轮询
+            }
+
             val nalu = try {
                 NativeBridge.nativePollVideoFrame()
             } catch (e: Throwable) {

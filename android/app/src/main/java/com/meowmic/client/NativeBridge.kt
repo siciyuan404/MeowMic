@@ -69,6 +69,11 @@ object NativeBridge {
     external fun nativeGetClientPubkeyB64(): String
 
     /**
+     * 检查 TCP 控制连接是否存活(由后台事件循环维护)
+     */
+    external fun nativeIsConnected(): Boolean
+
+    /**
      * 发送触摸事件
      * @param eventType 0x01=Down 0x02=Move 0x03=Up 0x04=Button 0x05=Scroll
      * @param dx 相对 X 位移(像素)

@@ -444,7 +444,21 @@ pub extern "system" fn Java_com_meowmic_client_NativeBridge_nativeConnect(
             // 启动后台事件消费
             rt.spawn(async move {
                 while let Some(ev) = event_rx.recv().await {
-                    log::debug!("client event: {:?}", ev);
+                    match ev {
+                        ClientEvent::Disconnected => {
+                            log::warn!("TCP 控制连接已断开(服务端主动关闭或网络异常)");
+                            let mut guard = state().lock().unwrap();
+                            *guard = None;
+                            break;
+                        }
+                        ClientEvent::Error(e) => {
+                            log::warn!("TCP 控制连接错误: {:?}", e);
+                            let mut guard = state().lock().unwrap();
+                            *guard = None;
+                            break;
+                        }
+                        _ => log::debug!("client event: {:?}", ev),
+                    }
                 }
             });
             let new_state = State {
@@ -614,7 +628,21 @@ fn reconnect_for_pairing(server_addr: String, client_name: String) -> jint {
             log::info!("回退:服务端直接放行(未启用配对)");
             rt.spawn(async move {
                 while let Some(ev) = event_rx.recv().await {
-                    log::debug!("client event: {:?}", ev);
+                    match ev {
+                        ClientEvent::Disconnected => {
+                            log::warn!("TCP 控制连接已断开(服务端主动关闭或网络异常)");
+                            let mut guard = state().lock().unwrap();
+                            *guard = None;
+                            break;
+                        }
+                        ClientEvent::Error(e) => {
+                            log::warn!("TCP 控制连接错误: {:?}", e);
+                            let mut guard = state().lock().unwrap();
+                            *guard = None;
+                            break;
+                        }
+                        _ => log::debug!("client event: {:?}", ev),
+                    }
                 }
             });
             let new_state = State {
@@ -623,6 +651,7 @@ fn reconnect_for_pairing(server_addr: String, client_name: String) -> jint {
                 encoder: Mutex::new(make_encoder(&AudioConfig::default())),
                 audio_cfg: AudioConfig::default(),
                 touch_seq: AtomicU16::new(0),
+
                 audio_seq: AtomicU16::new(0),
                 touch_sent: AtomicU64::new(0),
                 audio_sent: AtomicU64::new(0),
@@ -704,7 +733,22 @@ fn reconnect_paired(
     log::info!("HelloPaired 握手成功");
     rt.spawn(async move {
         while let Some(ev) = event_rx.recv().await {
-            log::debug!("client event: {:?}", ev);
+            match ev {
+                ClientEvent::Disconnected => {
+                    log::warn!("TCP 控制连接已断开(服务端主动关闭或网络异常)");
+                    // 清空全局 state,让 Kotlin 侧 nativeIsConnected() 感知到断开
+                    let mut guard = state().lock().unwrap();
+                    *guard = None;
+                    break;
+                }
+                ClientEvent::Error(e) => {
+                    log::warn!("TCP 控制连接错误: {:?}", e);
+                    let mut guard = state().lock().unwrap();
+                    *guard = None;
+                    break;
+                }
+                _ => log::debug!("client event: {:?}", ev),
+            }
         }
     });
     let new_state = State {
@@ -1030,7 +1074,21 @@ pub extern "system" fn Java_com_meowmic_client_NativeBridge_nativeConnectPaired(
             log::info!("HelloPaired 握手成功");
             rt.spawn(async move {
                 while let Some(ev) = event_rx.recv().await {
-                    log::debug!("client event: {:?}", ev);
+                    match ev {
+                        ClientEvent::Disconnected => {
+                            log::warn!("TCP 控制连接已断开(服务端主动关闭或网络异常)");
+                            let mut guard = state().lock().unwrap();
+                            *guard = None;
+                            break;
+                        }
+                        ClientEvent::Error(e) => {
+                            log::warn!("TCP 控制连接错误: {:?}", e);
+                            let mut guard = state().lock().unwrap();
+                            *guard = None;
+                            break;
+                        }
+                        _ => log::debug!("client event: {:?}", ev),
+                    }
                 }
             });
             let new_state = State {
@@ -1260,6 +1318,23 @@ pub extern "system" fn Java_com_meowmic_client_NativeBridge_nativeSendKey(
     }
 }
 
+/// Java: boolean nativeIsConnected()
+///
+/// 检查 TCP 控制连接是否存活。由后台事件循环在收到 Disconnected/Error 时清空 state。
+/// Kotlin 可在 MonitorScreen 的轮询循环中调用此函数,感知连接断开。
+#[no_mangle]
+pub extern "system" fn Java_com_meowmic_client_NativeBridge_nativeIsConnected(
+    _env: JNIEnv,
+    _class: JClass,
+) -> jboolean {
+    let guard = state().lock().unwrap();
+    if guard.is_some() {
+        JNI_TRUE
+    } else {
+        JNI_FALSE
+    }
+}
+
 /// Java: boolean nativeStartVideo(int width, int height, int fps, int bitrate)
 ///
 /// Kotlin 声明返回 Boolean,JNI ABI 对应 jboolean(u8),
@@ -1289,6 +1364,12 @@ pub extern "system" fn Java_com_meowmic_client_NativeBridge_nativeStartVideo(
         (s.client.clone(), s.rt.handle().clone())
     };
     // state() 锁已释放,安全 block_on
+
+    // 检查 TCP 控制连接是否存活(run_control_recv 退出后 is_connected 自动变 false)
+    if !client.is_connected() {
+        log::warn!("nativeStartVideo 失败: TCP 控制连接已断开");
+        return JNI_FALSE;
+    }
 
     // 重置 codec 标记,发送 StartVideo,等待 VideoStarted ACK(最多 500ms)
     client.reset_video_started_codec();
