@@ -157,8 +157,10 @@ class MeowMicViewModel : ViewModel() {
             "Win+D", "Ctrl+S", "Ctrl+X", "",
         )
 
-        // 快捷启动(用户从 PC 应用库挑选的应用 id 列表,JSON 数组持久化)
+        // 快捷启动(旧版:app_id 字符串数组;仅用于迁移读取)
         private const val KEY_QUICK_APPS = "quick_launch_ids"
+        // 快捷启动 v2(自由布局:QuickItem 对象数组,含 type/page/col/row)
+        private const val KEY_QUICK_ITEMS = "quick_launch_items"
 
         // 操作反馈音效开关
         private const val KEY_SOUND_FEEDBACK = "sound_feedback"
@@ -252,9 +254,10 @@ class MeowMicViewModel : ViewModel() {
     private val _appListState = MutableStateFlow<AppListState>(AppListState.Idle)
     val appListState: StateFlow<AppListState> = _appListState.asStateFlow()
 
-    // 用户已挑选的应用 id 列表(顺序即展示顺序,持久化于 SharedPreferences)
-    private val _quickAppIds = MutableStateFlow<List<String>>(emptyList())
-    val quickAppIds: StateFlow<List<String>> = _quickAppIds.asStateFlow()
+    // 用户已挑选的快捷启动格子(自由布局,持久化于 SharedPreferences)
+    // 旧版仅存 app_id 字符串数组(KEY_QUICK_APPS),新版存 QuickItem 对象数组(KEY_QUICK_ITEMS)
+    private val _quickItems = MutableStateFlow<List<QuickItem>>(emptyList())
+    val quickItems: StateFlow<List<QuickItem>> = _quickItems.asStateFlow()
 
     // 应用图标内存缓存(appId → Bitmap),避免列表滚动重复请求
     private val _iconCache = mutableMapOf<String, Bitmap>()
@@ -308,7 +311,7 @@ class MeowMicViewModel : ViewModel() {
         loadHistory()
         loadAudioPanel()
         loadManualPcs()
-        loadQuickApps()
+        loadQuickItems()
 
         // 设置配对状态文件目录(必须在 nativeConnect 之前)
         try {
@@ -1276,9 +1279,11 @@ class MeowMicViewModel : ViewModel() {
                 is AppListResult.Success -> {
                     val list = result.list
                     _appListState.value = AppListState.Loaded(list)
-                    // 拉取成功后预加载已选中应用的图标
-                    _quickAppIds.value.forEach { id ->
-                        if (id !in _iconCache) loadIconInternal(addr, pk, id)
+                    // 拉取成功后预加载已选中 APP 类型格子的图标
+                    _quickItems.value.forEach { item ->
+                        if (item.type == QuickItemType.APP && item.appId !in _iconCache) {
+                            loadIconInternal(addr, pk, item.appId)
+                        }
                     }
                 }
                 is AppListResult.Failure -> {
@@ -1364,21 +1369,74 @@ class MeowMicViewModel : ViewModel() {
         }
     }
 
-    /** 添加应用到快捷启动页(已存在则忽略) */
+    /** 添加 APP 类型格子(从 PC 应用库挑选)。自动放置到第一个空位;重复忽略。 */
     fun addQuickApp(appId: String) {
-        if (appId in _quickAppIds.value) return
-        _quickAppIds.value = _quickAppIds.value + appId
-        persistQuickApps()
+        if (_quickItems.value.any { it.type == QuickItemType.APP && it.appId == appId }) return
+        val (page, col, row) = findEmptySlot(0)
+        _quickItems.value = _quickItems.value + QuickItem(
+            id = genItemId(),
+            type = QuickItemType.APP,
+            name = findApp(appId)?.name ?: appId,
+            appId = appId,
+            page = page, col = col, row = row,
+        )
+        persistQuickItems()
         loadIcon(appId)
     }
 
     /**
-     * 添加自定义应用到 PC 端应用库,并加入快捷启动页。
-     * @param name 应用显示名(如 "Spotify")
-     * @param command 可执行文件路径(如 "C:\\Program Files\\Spotify\\Spotify.exe")
-     * @return 成功返回 true;失败返回 false(同时设置 launchFeedback 错误信息)
+     * 添加自定义应用(APP 类型,手动 exe 路径)到 PC 端应用库,并加入快捷启动页。
+     * 保留旧接口签名,内部委托给 [addCustomQuickItem]。
      */
     fun addCustomApp(name: String, command: String, onResult: (Boolean) -> Unit = {}) {
+        addCustomQuickItem(QuickItemType.APP, name, command, emptyList(), "", onResult)
+    }
+
+    /**
+     * 添加自定义快捷格子(SCRIPT/WEBSITE/OBSIDIAN 类型)。
+     * 根据 type 构造 PC 端 command/args,调用 /add_app 注册后加入快捷启动页。
+     *
+     * - SCRIPT:   target = 脚本路径(.bat/.cmd 自动包 cmd /c,.ps1 包 powershell -File)
+     * - WEBSITE:  target = URL,command = explorer.exe,args = [url]
+     * - OBSIDIAN: target = obsidian:// URI,command = explorer.exe,args = [uri]
+     * - APP:      target = exe 路径,command = target,args = []
+     */
+    fun addCustomQuickItem(
+        type: QuickItemType,
+        name: String,
+        target: String,
+        onResult: (Boolean) -> Unit = {},
+    ) {
+        val (command, args) = buildCommandForType(type, target)
+        addCustomQuickItem(type, name, command, args, "", onResult)
+    }
+
+    /** 根据 type 构造 PC 端 command/args */
+    private fun buildCommandForType(type: QuickItemType, target: String): Pair<String, List<String>> = when (type) {
+        QuickItemType.APP -> target to emptyList()
+        QuickItemType.SCRIPT -> {
+            val lower = target.lowercase()
+            when {
+                lower.endsWith(".bat") || lower.endsWith(".cmd") ->
+                    "cmd.exe" to listOf("/c", target)
+                lower.endsWith(".ps1") ->
+                    "powershell.exe" to listOf("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", target)
+                else -> target to emptyList()
+            }
+        }
+        QuickItemType.WEBSITE -> "explorer.exe" to listOf(target)
+        QuickItemType.OBSIDIAN -> "explorer.exe" to listOf(target)
+    }
+
+    /** 内部:调用 PC /add_app 注册自定义应用,成功后创建 QuickItem 放入第一个空位 */
+    private fun addCustomQuickItem(
+        type: QuickItemType,
+        name: String,
+        command: String,
+        args: List<String>,
+        workingDir: String,
+        onResult: (Boolean) -> Unit,
+    ) {
         val addr = (_connectionState.value as? ConnectionState.Connected)?.serverAddr
         if (addr == null) {
             _launchFeedback.value = "未连接到 PC"
@@ -1392,10 +1450,18 @@ class MeowMicViewModel : ViewModel() {
             return
         }
         viewModelScope.launch {
-            when (val result = LauncherRepository.addApp(addr, name, command, pk)) {
+            when (val result = LauncherRepository.addApp(addr, name, command, pk, args, workingDir)) {
                 is AddAppResult.Success -> {
                     loadAppList()
-                    addQuickApp(result.appId)
+                    val (page, col, row) = findEmptySlot(0)
+                    _quickItems.value = _quickItems.value + QuickItem(
+                        id = genItemId(),
+                        type = type,
+                        name = name,
+                        appId = result.appId,
+                        page = page, col = col, row = row,
+                    )
+                    persistQuickItems()
                     _launchFeedback.value = "已添加: $name"
                     onResult(true)
                 }
@@ -1428,20 +1494,37 @@ class MeowMicViewModel : ViewModel() {
         return LauncherRepository.listDir(addr, path, pk)
     }
 
-    /** 移除快捷启动页中的应用 */
-    fun removeQuickApp(appId: String) {
-        _quickAppIds.value = _quickAppIds.value - appId
-        persistQuickApps()
+    /** 移除快捷启动格子(按客户端侧 id) */
+    fun removeQuickItem(id: String) {
+        _quickItems.value = _quickItems.value.filter { it.id != id }
+        persistQuickItems()
     }
 
-    /** 调整顺序(用于拖拽排序) */
-    fun moveQuickApp(from: Int, to: Int) {
-        val list = _quickAppIds.value.toMutableList()
-        if (from !in list.indices || to !in list.indices) return
-        val item = list.removeAt(from)
-        list.add(to, item)
-        _quickAppIds.value = list
-        persistQuickApps()
+    /** 启动快捷启动格子(所有类型都走 PC /launch) */
+    fun launchQuickItem(item: QuickItem) {
+        launchApp(item.appId)
+    }
+
+    /**
+     * 移动格子到新位置(自由布局)。
+     * 若目标位置已有其他格子,与之交换位置(对齐设计稿自由排列)。
+     */
+    fun moveQuickItem(itemId: String, newPage: Int, newCol: Int, newRow: Int) {
+        val list = _quickItems.value.toMutableList()
+        val idx = list.indexOfFirst { it.id == itemId }
+        if (idx < 0) return
+        val moving = list[idx]
+        // 目标位置已有其他格子 → 交换
+        val targetIdx = list.indexOfFirst {
+            it.id != itemId && it.page == newPage && it.col == newCol && it.row == newRow
+        }
+        if (targetIdx >= 0) {
+            val target = list[targetIdx]
+            list[targetIdx] = target.copy(page = moving.page, col = moving.col, row = moving.row)
+        }
+        list[idx] = moving.copy(page = newPage, col = newCol, row = newRow)
+        _quickItems.value = list
+        persistQuickItems()
     }
 
     /** 查找应用详情(从已加载的 appListState) */
@@ -1449,24 +1532,105 @@ class MeowMicViewModel : ViewModel() {
         return (_appListState.value as? AppListState.Loaded)?.apps?.find { it.id == appId }
     }
 
-    /** 加载持久化的快捷启动 id 列表 */
-    private fun loadQuickApps() {
-        val prefs = context?.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE) ?: return
-        val json = prefs.getString(KEY_QUICK_APPS, null) ?: return
-        try {
-            val arr = JSONArray(json)
-            _quickAppIds.value = (0 until arr.length()).map { arr.optString(it) }.filter { it.isNotBlank() }
-        } catch (e: Exception) {
-            Log.w(TAG, "加载 quick_apps 失败: ${e.message}")
+    /** 自动布局用的默认网格(与设计稿一致:5 列 × 7 行) */
+    private val AUTO_GRID_COLS = 5
+    private val AUTO_GRID_ROWS = 7
+
+    /** 生成客户端侧唯一 id(用于持久化 + 拖拽定位) */
+    private fun genItemId(): String = "qi_" + java.util.UUID.randomUUID().toString().take(8)
+
+    /**
+     * 寻找第一个空位(从 startPage 开始扫描,页满自动翻页)。
+     * @return Triple(page, col, row),col/row 均为 1-based
+     */
+    private fun findEmptySlot(
+        startPage: Int,
+        cols: Int = AUTO_GRID_COLS,
+        rows: Int = AUTO_GRID_ROWS,
+    ): Triple<Int, Int, Int> {
+        val occupied = _quickItems.value.map { Triple(it.page, it.col, it.row) }.toSet()
+        var page = startPage
+        while (true) {
+            for (row in 1..rows) {
+                for (col in 1..cols) {
+                    val pos = Triple(page, col, row)
+                    if (pos !in occupied) return pos
+                }
+            }
+            page++
         }
     }
 
-    /** 持久化快捷启动 id 列表 */
-    private fun persistQuickApps() {
+    /** 加载持久化的快捷启动格子列表(含旧版 app_id 数组迁移) */
+    private fun loadQuickItems() {
+        val prefs = context?.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE) ?: return
+        // 先尝试新版格式(QuickItem 对象数组)
+        val newJson = prefs.getString(KEY_QUICK_ITEMS, null)
+        if (newJson != null) {
+            try {
+                val arr = JSONArray(newJson)
+                _quickItems.value = (0 until arr.length()).mapNotNull { i ->
+                    val o = arr.optJSONObject(i) ?: return@mapNotNull null
+                    val id = o.optString("id").ifBlank { return@mapNotNull null }
+                    val type = runCatching {
+                        QuickItemType.valueOf(o.optString("type", "APP"))
+                    }.getOrDefault(QuickItemType.APP)
+                    QuickItem(
+                        id = id,
+                        type = type,
+                        name = o.optString("name"),
+                        appId = o.optString("appId").ifBlank { o.optString("app_id") },
+                        page = o.optInt("page", 0),
+                        col = o.optInt("col", 1),
+                        row = o.optInt("row", 1),
+                    )
+                }
+                return
+            } catch (e: Exception) {
+                Log.w(TAG, "加载 quick_items 失败,尝试迁移旧格式: ${e.message}")
+            }
+        }
+        // 旧版迁移:app_id 字符串数组 → QuickItem(APP 类型,顺序填充 5×7 网格)
+        val oldJson = prefs.getString(KEY_QUICK_APPS, null) ?: return
+        try {
+            val arr = JSONArray(oldJson)
+            val ids = (0 until arr.length()).map { arr.optString(it) }.filter { it.isNotBlank() }
+            val perPage = AUTO_GRID_COLS * AUTO_GRID_ROWS
+            _quickItems.value = ids.mapIndexed { i, appId ->
+                val page = i / perPage
+                val indexInPage = i % perPage
+                QuickItem(
+                    id = "migrated_${i}_$appId",
+                    type = QuickItemType.APP,
+                    name = appId, // 应用库加载后由 UI 刷新显示名
+                    appId = appId,
+                    page = page,
+                    col = (indexInPage % AUTO_GRID_COLS) + 1,
+                    row = (indexInPage / AUTO_GRID_COLS) + 1,
+                )
+            }
+            persistQuickItems()
+        } catch (e: Exception) {
+            Log.w(TAG, "迁移旧版 quick_apps 失败: ${e.message}")
+        }
+    }
+
+    /** 持久化快捷启动格子列表 */
+    private fun persistQuickItems() {
         val prefs = context?.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE) ?: return
         val arr = JSONArray()
-        _quickAppIds.value.forEach { arr.put(it) }
-        prefs.edit().putString(KEY_QUICK_APPS, arr.toString()).apply()
+        _quickItems.value.forEach { item ->
+            arr.put(JSONObject().apply {
+                put("id", item.id)
+                put("type", item.type.name)
+                put("name", item.name)
+                put("appId", item.appId)
+                put("page", item.page)
+                put("col", item.col)
+                put("row", item.row)
+            })
+        }
+        prefs.edit().putString(KEY_QUICK_ITEMS, arr.toString()).apply()
     }
 
     // ============ 任务栏:运行中应用窗口管理 ============

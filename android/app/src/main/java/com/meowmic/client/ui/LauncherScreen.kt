@@ -57,16 +57,19 @@ import androidx.compose.ui.window.PopupProperties
 import com.meowmic.client.AppListState
 import com.meowmic.client.ConnectionState
 import com.meowmic.client.DirListing
+import com.meowmic.client.QuickItem
+import com.meowmic.client.QuickItemType
 import com.meowmic.client.MeowMicViewModel
 import com.meowmic.client.RunningApp
 import com.meowmic.client.WindowInfo
+import kotlinx.coroutines.launch
 import kotlin.math.abs
 
-// 网格规格:竖屏 5×6=30,横屏 8×3=24(横向更宽,行数减少)
+// 网格规格:竖屏 5×7=35,横屏 8×4=32(对齐设计稿 v2 自由布局)
 private val GRID_COLUMNS_PORTRAIT = 5
-private val GRID_ROWS_PORTRAIT = 6
+private val GRID_ROWS_PORTRAIT = 7
 private val GRID_COLUMNS_LANDSCAPE = 8
-private val GRID_ROWS_LANDSCAPE = 3
+private val GRID_ROWS_LANDSCAPE = 4
 
 /** 排列方式:自适应(按方向默认) / 固定列数(5/6/7) */
 enum class GridCols(val label: String, val cols: Int?) {
@@ -88,7 +91,7 @@ private fun pageSize(landscape: Boolean, gridCols: GridCols = GridCols.AUTO) =
  *
  * 数据流:
  * - PC 端 /applist 提供完整应用库 → [MeowMicViewModel.appListState]
- * - 用户挑选应用加入快捷启动页 → [MeowMicViewModel.quickAppIds](持久化)
+ * - 用户挑选应用加入快捷启动页 → [MeowMicViewModel.quickItems](持久化)
  * - 点击格子 → POST /launch 触发 PC 启动
  * - 应用图标从 PC /app_icon 拉取 → [MeowMicViewModel.iconCache]
  */
@@ -102,7 +105,7 @@ fun LauncherScreen(
 ) {
     val connectionState by vm.connectionState.collectAsState()
     val appListState by vm.appListState.collectAsState()
-    val quickAppIds by vm.quickAppIds.collectAsState()
+    val quickItems by vm.quickItems.collectAsState()
     val launchFeedback by vm.launchFeedback.collectAsState()
     val stats by vm.stats.collectAsState()
 
@@ -150,10 +153,9 @@ fun LauncherScreen(
     } catch (_: Exception) { }
 
     // 分页 pagerState(提升到此处,PageIndicator 与 PagerGrid 共享)
-    // 横竖屏切换时 pageSize 变化,pageCount 随之重组
-    val currentPageSize = pageSize(landscape, gridCols)
-    val pageCount = if (quickAppIds.isEmpty()) 1 else
-        (quickAppIds.size + currentPageSize - 1) / currentPageSize
+    // 自由布局:pageCount = 最大 item.page + 1(内容页)+ 1(末尾"新建页面"占位页)
+    val maxItemPage = quickItems.maxOfOrNull { it.page } ?: -1
+    val pageCount = maxOf(maxItemPage + 2, 2) // 至少 1 内容页 + 1 新建页
     val pagerState = rememberPagerState(pageCount = { pageCount })
 
     Box(modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
@@ -220,19 +222,19 @@ fun LauncherScreen(
                         }
                     }
                     else -> {
-                        // 无论是否有应用,都显示 PagerGrid(空位全部显示"添加"格子)
+                        // 自由布局:按 (page,col,row) 定位渲染,末页为"新建页面"占位
                         PagerGrid(
                             pagerState = pagerState,
-                            quickAppIds = quickAppIds,
+                            quickItems = quickItems,
                             vm = vm,
                             editMode = editMode,
                             locked = locked,
                             landscape = landscape,
                             gridCols = gridCols,
-                            onLaunch = { id -> vm.launchApp(id) },
-                            onRemove = { id -> vm.removeQuickApp(id) },
+                            onLaunch = { item -> vm.launchQuickItem(item) },
+                            onRemove = { id -> vm.removeQuickItem(id) },
                             onAdd = { showAddDialog = true },
-                            onMove = { from, to -> vm.moveQuickApp(from, to) },
+                            onMove = { itemId, page, col, row -> vm.moveQuickItem(itemId, page, col, row) },
                         )
                     }
                 }
@@ -254,13 +256,14 @@ fun LauncherScreen(
         )
     }
 
-    // 添加应用对话框
+    // 添加应用对话框(4 类型选择器:APP/SCRIPT/WEBSITE/OBSIDIAN)
     if (showAddDialog) {
         AddAppDialog(
             appListState = appListState,
-            quickAppIds = quickAppIds,
+            quickItems = quickItems,
             vm = vm,
-            onAdd = { id -> vm.addQuickApp(id) },
+            onAddApp = { id -> vm.addQuickApp(id) },
+            onAddCustom = { type, name, target -> vm.addCustomQuickItem(type, name, target) },
             onDismiss = { showAddDialog = false },
         )
     }
@@ -506,62 +509,108 @@ private fun EditToolbar(
 
 
 
-/** 空状态:已弃用,统一用 PagerGrid 显示空位"添加"格子 */
-
-/** 分页网格:HorizontalPager,竖屏 5×6 / 横屏 8×3,空位全部显示"添加" */
+/**
+ * 分页网格(自由布局 v2):HorizontalPager,每页按 (page,col,row) 定位渲染。
+ *
+ * - 内容页:遍历 rows×cols,找到该位置的 QuickItem 则渲染格子,否则渲染空位 AddCell
+ * - 末页:「拖到此处新建页面」虚线占位区(is-drop-target 高亮态)
+ * - 长按拖动:空位 is-drop-target 高亮;拖到边缘自动翻页;拖到末页占位区 → 新建页面
+ */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun PagerGrid(
     pagerState: androidx.compose.foundation.pager.PagerState,
-    quickAppIds: List<String>,
+    quickItems: List<QuickItem>,
     vm: MeowMicViewModel,
     editMode: Boolean,
     locked: Boolean,
     landscape: Boolean,
     gridCols: GridCols = GridCols.AUTO,
-    onLaunch: (String) -> Unit,
+    onLaunch: (QuickItem) -> Unit,
     onRemove: (String) -> Unit,
     onAdd: () -> Unit,
-    onMove: (from: Int, to: Int) -> Unit,
+    onMove: (itemId: String, page: Int, col: Int, row: Int) -> Unit,
 ) {
     val columns = gridColumns(landscape, gridCols)
     val rows = gridRows(landscape)
-    val currentPageSize = pageSize(landscape, gridCols)
 
-    // 拖动排序状态
-    var draggingIndex by remember { mutableStateOf<Int?>(null) }
-    // 每个 cell 的屏幕位置(用于拖动时命中检测)
-    val cellBounds = remember { mutableStateMapOf<Int, Rect>() }
-    // 网格区域在 root 中的原点(用于将局部坐标转为 root 坐标)
+    // 拖动状态:当前拖动的 item id
+    var draggingItemId by remember { mutableStateOf<String?>(null) }
+    // 当前拖动悬停的位置(page, col, row);page=-1 表示"新建页面"占位区
+    var dropTarget by remember { mutableStateOf<Triple<Int, Int, Int>?>(null) }
+    // 每个 cell 的屏幕位置,key = "page:col:row"(1-based col/row)
+    val cellBounds = remember { mutableStateMapOf<String, Rect>() }
+    // "新建页面"占位区的屏幕位置
+    var newPageBounds by remember { mutableStateOf<Rect?>(null) }
+    // 网格区域在 root 中的原点
     var gridOrigin by remember { mutableStateOf(Offset.Zero) }
+    // 边缘自动翻页:记录上次翻页时间,避免抖动
+    var lastEdgeScrollMs by remember { mutableStateOf(0L) }
+    val scope = androidx.compose.runtime.rememberCoroutineScope()
 
     Box(
         modifier = Modifier
             .fillMaxSize()
             .onGloballyPositioned { gridOrigin = it.positionInRoot() }
             // 长按拖动排序(锁定时禁用);长按前不消费事件,不影响 Pager 横向滑动
-            .pointerInput(locked, columns, rows) {
+            .pointerInput(locked) {
                 if (locked) return@pointerInput
                 detectDragGesturesAfterLongPress(
                     onDragStart = { offset ->
                         val globalPos = offset + gridOrigin
-                        val hit = cellBounds.entries.firstOrNull { it.value.contains(globalPos) }?.key
-                        if (hit != null && hit < quickAppIds.size) {
-                            draggingIndex = hit
+                        val hitKey = cellBounds.entries.firstOrNull { it.value.contains(globalPos) }?.key
+                        if (hitKey != null) {
+                            val parts = hitKey.split(":")
+                            val (hp, hc, hr) = Triple(parts[0].toInt(), parts[1].toInt(), parts[2].toInt())
+                            val item = quickItems.firstOrNull { it.page == hp && it.col == hc && it.row == hr }
+                            if (item != null) draggingItemId = item.id
                         }
                     },
                     onDrag = { change, _ ->
                         change.consume()
-                        val current = draggingIndex ?: return@detectDragGesturesAfterLongPress
+                        if (draggingItemId == null) return@detectDragGesturesAfterLongPress
                         val globalPos = change.position + gridOrigin
-                        val target = cellBounds.entries.firstOrNull { it.value.contains(globalPos) }?.key
-                        if (target != null && target != current && target < quickAppIds.size) {
-                            onMove(current, target)
-                            draggingIndex = target
+                        // 命中检测:优先匹配格子,其次匹配"新建页面"占位区
+                        val hitKey = cellBounds.entries.firstOrNull { it.value.contains(globalPos) }?.key
+                        dropTarget = if (hitKey != null) {
+                            val parts = hitKey.split(":")
+                            Triple(parts[0].toInt(), parts[1].toInt(), parts[2].toInt())
+                        } else if (newPageBounds?.contains(globalPos) == true) {
+                            Triple(-1, 1, 1) // page=-1 标记"新建页面"
+                        } else null
+                        // 边缘自动翻页(拖到左右边缘 12% 区域时翻页,500ms 防抖)
+                        val w = this.size.width.toFloat()
+                        val now = System.currentTimeMillis()
+                        if (now - lastEdgeScrollMs > 500) {
+                            val cur = pagerState.currentPage
+                            if (change.position.x > w * 0.88f && cur < pagerState.pageCount - 1) {
+                                lastEdgeScrollMs = now
+                                scope.launch { pagerState.animateScrollToPage(cur + 1) }
+                            } else if (change.position.x < w * 0.12f && cur > 0) {
+                                lastEdgeScrollMs = now
+                                scope.launch { pagerState.animateScrollToPage(cur - 1) }
+                            }
                         }
                     },
-                    onDragEnd = { draggingIndex = null },
-                    onDragCancel = { draggingIndex = null },
+                    onDragEnd = {
+                        val (page, col, row) = dropTarget ?: Triple(0, 0, 0)
+                        val id = draggingItemId
+                        if (id != null && page != 0) {
+                            if (page == -1) {
+                                // 拖到"新建页面"占位区 → 在新页面 (maxPage+1) 放置
+                                val newPageIdx = (quickItems.maxOfOrNull { it.page } ?: -1) + 1
+                                onMove(id, newPageIdx, 1, 1)
+                            } else {
+                                onMove(id, page, col, row)
+                            }
+                        }
+                        draggingItemId = null
+                        dropTarget = null
+                    },
+                    onDragCancel = {
+                        draggingItemId = null
+                        dropTarget = null
+                    },
                 )
             }
     ) {
@@ -570,43 +619,56 @@ private fun PagerGrid(
             modifier = Modifier.fillMaxSize(),
             pageSpacing = 8.dp,
         ) { pageIndex ->
-            val start = pageIndex * currentPageSize
-            val end = minOf(start + currentPageSize, quickAppIds.size)
-            val pageItems = quickAppIds.subList(start, end)
-
-            Column(
-                modifier = Modifier.fillMaxSize(),
-                verticalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                for (row in 0 until rows) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    ) {
-                        for (col in 0 until columns) {
-                            val indexInPage = row * columns + col
-                            val globalIndex = start + indexInPage
-                            Box(
-                                modifier = Modifier
-                                    .weight(1f)
-                                    .onGloballyPositioned { coords ->
-                                        cellBounds[globalIndex] = coords.boundsInRoot()
+            val isLastPage = pageIndex == pagerState.pageCount - 1
+            if (isLastPage) {
+                // 末页:"拖到此处新建页面"虚线占位区
+                NewPagePlaceholder(
+                    isDropTarget = dropTarget?.first == -1,
+                    onTap = onAdd,
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .onGloballyPositioned { newPageBounds = it.boundsInRoot() },
+                )
+            } else {
+                // 内容页:按 (page, col, row) 定位渲染
+                val pageItems = quickItems.filter { it.page == pageIndex }
+                Column(
+                    modifier = Modifier.fillMaxSize(),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    for (row in 1..rows) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            for (col in 1..columns) {
+                                val item = pageItems.firstOrNull { it.col == col && it.row == row }
+                                val posKey = "$pageIndex:$col:$row"
+                                Box(
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .onGloballyPositioned { coords ->
+                                            cellBounds[posKey] = coords.boundsInRoot()
+                                        }
+                                ) {
+                                    if (item != null) {
+                                        QuickItemCell(
+                                            item = item,
+                                            vm = vm,
+                                            editMode = editMode,
+                                            isDragging = draggingItemId == item.id,
+                                            isDropTarget = false,
+                                            onLaunch = onLaunch,
+                                            onRemove = onRemove,
+                                        )
+                                    } else {
+                                        // 空位:显示"添加",拖动悬停时 is-drop-target 高亮
+                                        AddCell(
+                                            onClick = onAdd,
+                                            locked = locked,
+                                            isDropTarget = dropTarget == Triple(pageIndex, col, row),
+                                        )
                                     }
-                            ) {
-                                val appId = pageItems.getOrNull(indexInPage)
-                                if (appId != null) {
-                                    QuickAppCell(
-                                        appId = appId,
-                                        name = vm.findApp(appId)?.name ?: appId,
-                                        vm = vm,
-                                        editMode = editMode,
-                                        isDragging = draggingIndex == globalIndex,
-                                        onLaunch = onLaunch,
-                                        onRemove = onRemove,
-                                    )
-                                } else {
-                                    // 所有空位都显示"添加"(对齐设计稿)
-                                    AddCell(onClick = onAdd, locked = locked)
                                 }
                             }
                         }
@@ -618,15 +680,26 @@ private fun PagerGrid(
 }
 
 /** 快捷启动格子:图标 + 名称,点击启动,长按拖动排序,编辑模式右上角 X 删除 */
+/**
+ * 快捷启动格子(自由布局 v2):图标 + 名称 + 类型徽标色点。
+ *
+ * 类型徽标(右上角小圆点,对齐设计稿):
+ * - APP:      无色点(默认)
+ * - SCRIPT:   品牌色(primary)小圆点
+ * - WEBSITE:  中性色(outline)小圆点
+ * - OBSIDIAN: 灰色(onSurfaceVariant)小圆点
+ *
+ * 非空格子带 draggable=true 语义(实际拖拽由 PagerGrid 的 pointerInput 统一处理)。
+ */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun QuickAppCell(
-    appId: String,
-    name: String,
+private fun QuickItemCell(
+    item: QuickItem,
     vm: MeowMicViewModel,
     editMode: Boolean,
     isDragging: Boolean,
-    onLaunch: (String) -> Unit,
+    isDropTarget: Boolean,
+    onLaunch: (QuickItem) -> Unit,
     onRemove: (String) -> Unit,
 ) {
     Column(
@@ -640,14 +713,19 @@ private fun QuickAppCell(
                     alpha = 0.85f
                 }
             }
-            .clickable { onLaunch(appId) }
+            .clickable { onLaunch(item) }
             .padding(start = 2.dp, end = 2.dp, top = 4.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(4.dp),
     ) {
         Box(contentAlignment = Alignment.Center) {
-            AppIconBox(appId = appId, vm = vm)
-            // 编辑模式:右上角 X 删除按钮
+            // 图标容器:APP 类型用 PC 真实图标;其他类型用类型对应图标
+            TypeIconBox(item = item, vm = vm)
+            // 类型徽标色点(右上角,仅非 APP 类型显示)
+            if (item.type != QuickItemType.APP) {
+                TypeBadgeDot(type = item.type)
+            }
+            // 编辑模式:右上角 X 删除按钮(覆盖在色点上方)
             if (editMode) {
                 Surface(
                     shape = CircleShape,
@@ -656,7 +734,7 @@ private fun QuickAppCell(
                         .align(Alignment.TopEnd)
                         .offset(x = 2.dp, y = (-2).dp)
                         .size(16.dp)
-                        .clickable { onRemove(appId) },
+                        .clickable { onRemove(item.id) },
                 ) {
                     Icon(
                         Icons.Default.Close,
@@ -668,7 +746,7 @@ private fun QuickAppCell(
             }
         }
         Text(
-            name,
+            item.name,
             fontSize = 10.sp,
             color = MaterialTheme.colorScheme.onSurface,
             maxLines = 1,
@@ -678,11 +756,22 @@ private fun QuickAppCell(
     }
 }
 
-/** 应用图标容器:56×56 圆角方块,显示 PC 真实图标或占位 */
+/**
+ * 类型图标容器:APP 用 PC 真实图标;SCRIPT/WEBSITE/OBSIDIAN 用对应 Material 图标。
+ *
+ * 图标颜色(对齐设计稿):
+ * - SCRIPT:   品牌色(primary)
+ * - WEBSITE:  蓝色(accent-blue 替代用 primary)
+ * - OBSIDIAN: 紫色(用 secondary)
+ */
 @Composable
-private fun AppIconBox(appId: String, vm: MeowMicViewModel) {
-    val v by vm.iconVersion.collectAsState() // 订阅图标更新
-    val bmp: Bitmap? = vm.iconCache[appId]
+private fun TypeIconBox(item: QuickItem, vm: MeowMicViewModel) {
+    val iconTint = when (item.type) {
+        QuickItemType.APP -> MaterialTheme.colorScheme.primary
+        QuickItemType.SCRIPT -> MaterialTheme.colorScheme.primary
+        QuickItemType.WEBSITE -> MaterialTheme.colorScheme.primary
+        QuickItemType.OBSIDIAN -> MaterialTheme.colorScheme.secondary
+    }
     Box(
         modifier = Modifier
             .size(56.dp)
@@ -694,25 +783,79 @@ private fun AppIconBox(appId: String, vm: MeowMicViewModel) {
             ),
         contentAlignment = Alignment.Center,
     ) {
-        if (bmp != null) {
-            // ContentScale.Fit 保持比例,不拉伸;图标填满容器(留少量内边距)
-            Image(
-                bitmap = bmp.asImageBitmap(),
-                contentDescription = appId,
-                contentScale = androidx.compose.ui.layout.ContentScale.Fit,
-                modifier = Modifier.size(44.dp),
-            )
-        } else {
-            // 未加载或加载失败:触发加载 + 占位图标
-            LaunchedEffect(appId) { vm.loadIcon(appId) }
-            Icon(
-                Icons.Default.Apps,
+        when (item.type) {
+            QuickItemType.APP -> AppIconContent(appId = item.appId, vm = vm)
+            QuickItemType.SCRIPT -> Icon(
+                Icons.Default.Terminal,
                 contentDescription = null,
-                modifier = Modifier.size(28.dp),
-                tint = MaterialTheme.colorScheme.primary.copy(alpha = 0.6f),
+                modifier = Modifier.size(24.dp),
+                tint = iconTint,
+            )
+            QuickItemType.WEBSITE -> Icon(
+                Icons.Default.Public,
+                contentDescription = null,
+                modifier = Modifier.size(24.dp),
+                tint = iconTint,
+            )
+            QuickItemType.OBSIDIAN -> Icon(
+                Icons.Default.MenuBook,
+                contentDescription = null,
+                modifier = Modifier.size(24.dp),
+                tint = iconTint,
             )
         }
     }
+}
+
+/** APP 类型图标内容:PC 真实图标或占位 */
+@Composable
+private fun AppIconContent(appId: String, vm: MeowMicViewModel) {
+    val v by vm.iconVersion.collectAsState() // 订阅图标更新
+    val bmp: Bitmap? = vm.iconCache[appId]
+    if (bmp != null) {
+        Image(
+            bitmap = bmp.asImageBitmap(),
+            contentDescription = appId,
+            contentScale = androidx.compose.ui.layout.ContentScale.Fit,
+            modifier = Modifier.size(44.dp),
+        )
+    } else {
+        LaunchedEffect(appId) { vm.loadIcon(appId) }
+        Icon(
+            Icons.Default.Apps,
+            contentDescription = null,
+            modifier = Modifier.size(28.dp),
+            tint = MaterialTheme.colorScheme.primary.copy(alpha = 0.6f),
+        )
+    }
+}
+
+/**
+ * 类型徽标色点(右上角,对齐设计稿 ::after 伪元素)
+ *
+ * - SCRIPT:   品牌色(primary),白边
+ * - WEBSITE:  中性色(outline),灰边
+ * - OBSIDIAN: 灰色(onSurfaceVariant),白边
+ */
+@Composable
+private fun BoxScope.TypeBadgeDot(type: QuickItemType) {
+    val (bg, border) = when (type) {
+        QuickItemType.SCRIPT ->
+            MaterialTheme.colorScheme.primary to MaterialTheme.colorScheme.surface
+        QuickItemType.WEBSITE ->
+            MaterialTheme.colorScheme.outline to MaterialTheme.colorScheme.outlineVariant
+        QuickItemType.OBSIDIAN ->
+            MaterialTheme.colorScheme.onSurfaceVariant to MaterialTheme.colorScheme.surface
+        else -> return
+    }
+    Box(
+        modifier = Modifier
+            .align(Alignment.TopEnd)
+            .offset(x = 2.dp, y = 3.dp)
+            .size(10.dp)
+            .background(bg, CircleShape)
+            .border(1.5.dp, border, CircleShape),
+    )
 }
 
 /** 虚线边框 modifier(对齐设计稿 dashed border,仅支持 RoundedCornerShape) */
@@ -739,9 +882,26 @@ private fun Modifier.dashedBorder(
     }
 )
 
-/** 空位"添加"格子(虚线边框 + 加号图标),锁定时禁用 */
+/**
+ * 空位"添加"格子(虚线边框 + 加号图标)。
+ * 拖动悬停时 is-drop-target 高亮(品牌色边框 + 品牌色淡背景)。
+ */
 @Composable
-private fun AddCell(onClick: () -> Unit, locked: Boolean = false) {
+private fun AddCell(
+    onClick: () -> Unit,
+    locked: Boolean = false,
+    isDropTarget: Boolean = false,
+) {
+    val borderColor by animateColorAsState(
+        targetValue = if (isDropTarget) MaterialTheme.colorScheme.primary
+        else MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.8f),
+        label = "addBorder",
+    )
+    val bgColor by animateColorAsState(
+        targetValue = if (isDropTarget) MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)
+        else Color.Transparent,
+        label = "addBg",
+    )
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -754,9 +914,10 @@ private fun AddCell(onClick: () -> Unit, locked: Boolean = false) {
         Box(
             modifier = Modifier
                 .size(48.dp)
+                .background(bgColor, RoundedCornerShape(12.dp))
                 .dashedBorder(
                     width = 1.dp,
-                    color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.8f),
+                    color = borderColor,
                     cornerRadius = 12.dp,
                 ),
             contentAlignment = Alignment.Center,
@@ -765,7 +926,8 @@ private fun AddCell(onClick: () -> Unit, locked: Boolean = false) {
                 Icons.Default.Add,
                 contentDescription = "添加",
                 modifier = Modifier.size(18.dp),
-                tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f),
+                tint = if (isDropTarget) MaterialTheme.colorScheme.primary
+                else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f),
             )
         }
         Text(
@@ -774,6 +936,70 @@ private fun AddCell(onClick: () -> Unit, locked: Boolean = false) {
             color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
             maxLines = 1,
         )
+    }
+}
+
+/**
+ * 末页「拖到此处新建页面」虚线占位区。
+ *
+ * - hover/拖入时品牌色高亮(is-drop-target 态)
+ * - 点击触发 onAdd(打开添加对话框,添加后自动出现新内容页)
+ */
+@Composable
+private fun NewPagePlaceholder(
+    isDropTarget: Boolean,
+    onTap: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val borderColor by animateColorAsState(
+        targetValue = if (isDropTarget) MaterialTheme.colorScheme.primary
+        else MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.8f),
+        label = "newPageBorder",
+    )
+    val bgColor by animateColorAsState(
+        targetValue = if (isDropTarget) MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)
+        else Color.Transparent,
+        label = "newPageBg",
+    )
+    val contentColor by animateColorAsState(
+        targetValue = if (isDropTarget) MaterialTheme.colorScheme.primary
+        else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
+        label = "newPageContent",
+    )
+    Box(
+        modifier = modifier
+            .clickable { onTap() }
+            .padding(16.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(bgColor, RoundedCornerShape(12.dp))
+                .dashedBorder(
+                    width = 2.dp,
+                    color = borderColor,
+                    cornerRadius = 12.dp,
+                    dashWidth = 8f,
+                    gapWidth = 5f,
+                )
+                .padding(vertical = 24.dp, horizontal = 16.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            Icon(
+                Icons.Default.Add,
+                contentDescription = null,
+                modifier = Modifier.size(24.dp),
+                tint = contentColor,
+            )
+            Text(
+                "拖到此处新建页面",
+                fontSize = 10.sp,
+                color = contentColor,
+                maxLines = 1,
+            )
+        }
     }
 }
 
@@ -1275,176 +1501,425 @@ private fun TaskServiceButton(
     }
 }
 
-/** 添加应用对话框:从 PC 应用库挑选 + 手动添加自定义应用 */
+/**
+ * 添加快捷启动对话框(4 类型选择器:APP/SCRIPT/WEBSITE/OBSIDIAN)
+ *
+ * 对齐设计稿 v2:
+ * - 顶部 4 个类型 Tab(APP=应用 / SCRIPT=脚本 / WEBSITE=网站 / OBSIDIAN=Obsidian)
+ * - APP 类型:从 PC 应用库挑选 + 手动添加 exe(走旧 addCustomApp 接口)
+ * - SCRIPT/WEBSITE/OBSIDIAN:名称 + target 输入框,提交时调用 addCustomQuickItem
+ * - 各类型独立表单,target 提示文案随类型变化
+ */
 @Composable
 private fun AddAppDialog(
     appListState: AppListState,
-    quickAppIds: List<String>,
+    quickItems: List<QuickItem>,
     vm: MeowMicViewModel,
-    onAdd: (String) -> Unit,
+    onAddApp: (String) -> Unit,
+    onAddCustom: (QuickItemType, String, String) -> Unit,
     onDismiss: () -> Unit,
 ) {
-    val apps = (appListState as? AppListState.Loaded)?.apps ?: emptyList()
-    val available = apps.filter { it.id !in quickAppIds }
-    var showManualForm by remember { mutableStateOf(false) }
+    // 当前选中的类型 Tab(默认 APP)
+    var selectedType by remember { mutableStateOf(QuickItemType.APP) }
+    // 手动表单状态(SCRIPT/WEBSITE/OBSIDIAN 共用;APP 类型有独立表单)
     var manualName by remember { mutableStateOf("") }
-    var manualPath by remember { mutableStateOf("") }
+    var manualTarget by remember { mutableStateOf("") }
     var submitting by remember { mutableStateOf(false) }
+    // APP 类型:是否显示手动添加表单(否则显示应用库列表)
+    var showAppManualForm by remember { mutableStateOf(false) }
     var showDirBrowser by remember { mutableStateOf(false) }
+
+    // 类型切换时清空表单(避免残留)
+    LaunchedEffect(selectedType) {
+        if (selectedType != QuickItemType.APP) {
+            manualName = ""
+            manualTarget = ""
+            showAppManualForm = false
+        }
+    }
+
+    val apps = (appListState as? AppListState.Loaded)?.apps ?: emptyList()
+    val addedAppIds = quickItems.filter { it.type == QuickItemType.APP }.map { it.appId }.toSet()
+    val availableApps = apps.filter { it.id !in addedAppIds }
 
     AlertDialog(
         onDismissRequest = { if (!submitting) onDismiss() },
         title = {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Text("添加应用", modifier = Modifier.weight(1f))
-                if (!showManualForm) {
-                    TextButton(onClick = { showManualForm = true }) {
-                        Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(14.dp))
-                        Spacer(Modifier.width(4.dp))
-                        Text("手动添加", fontSize = 11.sp)
-                    }
-                }
+                Text("添加快捷启动", modifier = Modifier.weight(1f), fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
             }
         },
         text = {
-            if (showManualForm) {
-                // 手动添加表单
-                Column(
+            Column(modifier = Modifier.fillMaxWidth()) {
+                // 类型 Tab 行(4 个,均分宽度)
+                Row(
                     modifier = Modifier.fillMaxWidth(),
-                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
                 ) {
-                    OutlinedTextField(
-                        value = manualName,
-                        onValueChange = { manualName = it },
-                        label = { Text("应用名称", fontSize = 12.sp) },
-                        singleLine = true,
-                        modifier = Modifier.fillMaxWidth(),
-                        textStyle = androidx.compose.ui.text.TextStyle(fontSize = 13.sp),
-                    )
-                    // exe 路径 + 浏览按钮
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.Bottom,
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    ) {
-                        OutlinedTextField(
-                            value = manualPath,
-                            onValueChange = { manualPath = it },
-                            label = { Text("exe 路径", fontSize = 12.sp) },
-                            singleLine = true,
+                    QuickItemType.values().forEach { type ->
+                        TypeTab(
+                            type = type,
+                            selected = selectedType == type,
+                            onClick = { selectedType = type },
                             modifier = Modifier.weight(1f),
-                            textStyle = androidx.compose.ui.text.TextStyle(fontSize = 13.sp),
-                            placeholder = { Text("C:\\Program Files\\App\\app.exe", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)) },
                         )
-                        Button(
-                            onClick = { showDirBrowser = true },
-                            modifier = Modifier.height(48.dp),
-                            contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 12.dp),
-                        ) {
-                            Icon(Icons.Default.Folder, contentDescription = "浏览", modifier = Modifier.size(16.dp))
-                            Spacer(Modifier.width(4.dp))
-                            Text("浏览", fontSize = 12.sp)
-                        }
-                    }
-                    Text(
-                        "支持 %APPDATA%、%LOCALAPPDATA% 等环境变量",
-                        fontSize = 10.sp,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
-                    )
-                    if (submitting) {
-                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            CircularProgressIndicator(modifier = Modifier.size(14.dp), strokeWidth = 2.dp)
-                            Text("添加中...", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        }
                     }
                 }
-            } else {
-                if (apps.isEmpty()) {
-                    Text(
-                        if (appListState is AppListState.Loading) "加载中..."
-                        else "应用库为空,可点击\"手动添加\"自定义",
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        fontSize = 13.sp,
-                    )
-                } else if (available.isEmpty()) {
-                    Text("已添加全部应用", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp)
-                } else {
-                    Column(
-                        modifier = Modifier.fillMaxWidth().heightIn(max = 320.dp).verticalScroll(rememberScrollState()),
-                        verticalArrangement = Arrangement.spacedBy(2.dp),
-                    ) {
-                        available.forEach { app ->
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .clickable { onAdd(app.id) }
-                                    .padding(vertical = 8.dp, horizontal = 4.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                            ) {
-                                Icon(
-                                    Icons.Default.Apps,
-                                    contentDescription = null,
-                                    modifier = Modifier.size(20.dp),
-                                    tint = MaterialTheme.colorScheme.primary,
+                Spacer(Modifier.height(10.dp))
+                when (selectedType) {
+                    QuickItemType.APP -> {
+                        if (showAppManualForm) {
+                            AppManualForm(
+                                name = manualName,
+                                onNameChange = { manualName = it },
+                                path = manualTarget,
+                                onPathChange = { manualTarget = it },
+                                onBrowse = { showDirBrowser = true },
+                                submitting = submitting,
+                            )
+                        } else {
+                            // 应用库列表
+                            if (apps.isEmpty()) {
+                                Text(
+                                    if (appListState is AppListState.Loading) "加载中..."
+                                    else "应用库为空,可点击\"手动添加\"自定义",
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    fontSize = 12.sp,
                                 )
-                                Text(app.name, fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurface)
-                                Spacer(Modifier.weight(1f))
-                                Icon(
-                                    Icons.Default.Add,
-                                    contentDescription = null,
-                                    modifier = Modifier.size(16.dp),
-                                    tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f),
-                                )
+                            } else if (availableApps.isEmpty()) {
+                                Text("已添加全部应用", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp)
+                            } else {
+                                Column(
+                                    modifier = Modifier.fillMaxWidth().heightIn(max = 280.dp).verticalScroll(rememberScrollState()),
+                                    verticalArrangement = Arrangement.spacedBy(2.dp),
+                                ) {
+                                    availableApps.forEach { app ->
+                                        Row(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .clickable {
+                                                    onAddApp(app.id)
+                                                    onDismiss()
+                                                }
+                                                .padding(vertical = 8.dp, horizontal = 4.dp),
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                        ) {
+                                            Icon(
+                                                Icons.Default.Apps,
+                                                contentDescription = null,
+                                                modifier = Modifier.size(20.dp),
+                                                tint = MaterialTheme.colorScheme.primary,
+                                            )
+                                            Text(app.name, fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurface)
+                                            Spacer(Modifier.weight(1f))
+                                            Icon(
+                                                Icons.Default.Add,
+                                                contentDescription = null,
+                                                modifier = Modifier.size(16.dp),
+                                                tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f),
+                                            )
+                                        }
+                                    }
+                                }
                             }
                         }
+                    }
+                    QuickItemType.SCRIPT, QuickItemType.WEBSITE, QuickItemType.OBSIDIAN -> {
+                        CustomTypeForm(
+                            type = selectedType,
+                            name = manualName,
+                            onNameChange = { manualName = it },
+                            target = manualTarget,
+                            onTargetChange = { manualTarget = it },
+                            onBrowse = { showDirBrowser = true },
+                            submitting = submitting,
+                        )
                     }
                 }
             }
         },
         confirmButton = {
-            if (showManualForm) {
-                Row {
-                    TextButton(onClick = { showManualForm = false }, enabled = !submitting) { Text("返回") }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                // APP 类型:列表态显示"手动添加"切换按钮
+                if (selectedType == QuickItemType.APP && !showAppManualForm) {
+                    TextButton(onClick = { showAppManualForm = true }) {
+                        Icon(Icons.Default.Edit, contentDescription = null, modifier = Modifier.size(14.dp))
+                        Spacer(Modifier.width(4.dp))
+                        Text("手动添加", fontSize = 11.sp)
+                    }
                     Spacer(Modifier.width(4.dp))
+                }
+                // APP 手动表单:显示"返回列表"按钮
+                if (selectedType == QuickItemType.APP && showAppManualForm) {
+                    TextButton(onClick = { showAppManualForm = false }, enabled = !submitting) {
+                        Text("返回列表")
+                    }
+                    Spacer(Modifier.width(4.dp))
+                }
+                TextButton(onClick = onDismiss, enabled = !submitting) { Text("取消") }
+                Spacer(Modifier.width(4.dp))
+                // 提交按钮:APP 列表态隐藏;APP 手动表单 + 其他类型显示
+                val showSubmit = selectedType != QuickItemType.APP || showAppManualForm
+                if (showSubmit) {
                     Button(
                         onClick = {
-                            if (manualName.isNotBlank() && manualPath.isNotBlank()) {
-                                submitting = true
-                                vm.addCustomApp(manualName.trim(), manualPath.trim()) { ok ->
+                            val name = manualName.trim()
+                            val target = manualTarget.trim()
+                            if (name.isBlank() || target.isBlank()) return@Button
+                            submitting = true
+                            if (selectedType == QuickItemType.APP) {
+                                // APP 手动添加:走旧 addCustomApp(注册到 PC 应用库)
+                                vm.addCustomApp(name, target) { ok ->
                                     submitting = false
-                                    if (ok) {
-                                        showManualForm = false
-                                        manualName = ""
-                                        manualPath = ""
-                                    }
+                                    if (ok) onDismiss()
                                 }
+                            } else {
+                                // 其他类型:调用 addCustomQuickItem(type, name, target)
+                                onAddCustom(selectedType, name, target)
+                                onDismiss()
                             }
                         },
-                        enabled = manualName.isNotBlank() && manualPath.isNotBlank() && !submitting,
+                        enabled = manualName.isNotBlank() && manualTarget.isNotBlank() && !submitting,
                     ) { Text("添加") }
                 }
-            } else {
-                TextButton(onClick = onDismiss) { Text("完成") }
             }
         },
     )
 
-    // 目录浏览器对话框
+    // 目录浏览器对话框(APP 手动 / SCRIPT 类型可用)
     if (showDirBrowser) {
         DirBrowserDialog(
             vm = vm,
             onPick = { path ->
-                manualPath = path
-                // 如果名称为空,用文件名(去 .exe)自动填充
+                manualTarget = path
+                // 名称为空时,用文件名自动填充
                 if (manualName.isBlank()) {
-                    manualName = path.substringAfterLast('\\').substringAfterLast('/')
-                        .removeSuffix(".exe").removeSuffix(".EXE")
+                    val fileName = path.substringAfterLast('\\').substringAfterLast('/')
+                    manualName = when (selectedType) {
+                        QuickItemType.APP -> fileName.removeSuffix(".exe").removeSuffix(".EXE")
+                        QuickItemType.SCRIPT -> fileName.substringBeforeLast('.')
+                        else -> fileName
+                    }
                 }
                 showDirBrowser = false
             },
             onDismiss = { showDirBrowser = false },
         )
+    }
+}
+
+/**
+ * 类型 Tab 按钮(4 个均分宽度,选中态品牌色高亮)
+ */
+@Composable
+private fun TypeTab(
+    type: QuickItemType,
+    selected: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val bg by animateColorAsState(
+        targetValue = if (selected) MaterialTheme.colorScheme.primary
+        else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+        label = "tabBg",
+    )
+    val fg = if (selected) MaterialTheme.colorScheme.onPrimary
+    else MaterialTheme.colorScheme.onSurfaceVariant
+    val icon = when (type) {
+        QuickItemType.APP -> Icons.Default.Apps
+        QuickItemType.SCRIPT -> Icons.Default.Terminal
+        QuickItemType.WEBSITE -> Icons.Default.Public
+        QuickItemType.OBSIDIAN -> Icons.Default.MenuBook
+    }
+    Column(
+        modifier = modifier
+            .clip(RoundedCornerShape(8.dp))
+            .background(bg)
+            .clickable(onClick = onClick)
+            .padding(vertical = 6.dp, horizontal = 4.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(2.dp),
+    ) {
+        Icon(icon, contentDescription = null, modifier = Modifier.size(16.dp), tint = fg)
+        Text(type.label, fontSize = 10.sp, color = fg, maxLines = 1)
+    }
+}
+
+/**
+ * APP 手动添加表单(名称 + exe 路径 + 浏览按钮)
+ */
+@Composable
+private fun AppManualForm(
+    name: String,
+    onNameChange: (String) -> Unit,
+    path: String,
+    onPathChange: (String) -> Unit,
+    onBrowse: () -> Unit,
+    submitting: Boolean,
+) {
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        OutlinedTextField(
+            value = name,
+            onValueChange = onNameChange,
+            label = { Text("应用名称", fontSize = 12.sp) },
+            singleLine = true,
+            modifier = Modifier.fillMaxWidth(),
+            textStyle = androidx.compose.ui.text.TextStyle(fontSize = 13.sp),
+        )
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.Bottom,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            OutlinedTextField(
+                value = path,
+                onValueChange = onPathChange,
+                label = { Text("exe 路径", fontSize = 12.sp) },
+                singleLine = true,
+                modifier = Modifier.weight(1f),
+                textStyle = androidx.compose.ui.text.TextStyle(fontSize = 13.sp),
+                placeholder = {
+                    Text(
+                        "C:\\Program Files\\App\\app.exe",
+                        fontSize = 11.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
+                    )
+                },
+            )
+            Button(
+                onClick = onBrowse,
+                modifier = Modifier.height(48.dp),
+                contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 12.dp),
+            ) {
+                Icon(Icons.Default.Folder, contentDescription = "浏览", modifier = Modifier.size(16.dp))
+                Spacer(Modifier.width(4.dp))
+                Text("浏览", fontSize = 12.sp)
+            }
+        }
+        Text(
+            "支持 %APPDATA%、%LOCALAPPDATA% 等环境变量",
+            fontSize = 10.sp,
+            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+        )
+        if (submitting) {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                CircularProgressIndicator(modifier = Modifier.size(14.dp), strokeWidth = 2.dp)
+                Text("添加中...", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        }
+    }
+}
+
+/**
+ * 自定义类型表单(SCRIPT/WEBSITE/OBSIDIAN):名称 + target 输入
+ *
+ * target 提示文案随类型变化:
+ * - SCRIPT:   脚本路径(.bat/.cmd/.ps1)
+ * - WEBSITE:  URL(https://...)
+ * - OBSIDIAN: obsidian:// URI
+ */
+@Composable
+private fun CustomTypeForm(
+    type: QuickItemType,
+    name: String,
+    onNameChange: (String) -> Unit,
+    target: String,
+    onTargetChange: (String) -> Unit,
+    onBrowse: () -> Unit,
+    submitting: Boolean,
+) {
+    val targetLabel = when (type) {
+        QuickItemType.SCRIPT -> "脚本路径"
+        QuickItemType.WEBSITE -> "网址 URL"
+        QuickItemType.OBSIDIAN -> "Obsidian URI"
+        else -> "目标"
+    }
+    val targetPlaceholder = when (type) {
+        QuickItemType.SCRIPT -> "C:\\scripts\\clean.bat"
+        QuickItemType.WEBSITE -> "https://github.com"
+        QuickItemType.OBSIDIAN -> "obsidian://open?vault=MyVault&file=Inbox"
+        else -> ""
+    }
+    val targetHint = when (type) {
+        QuickItemType.SCRIPT -> ".bat/.cmd 自动包 cmd /c;.ps1 自动包 powershell -File"
+        QuickItemType.WEBSITE -> "通过默认浏览器打开 URL"
+        QuickItemType.OBSIDIAN -> "通过 Obsidian 客户端打开 URI"
+        else -> ""
+    }
+    val showBrowse = type == QuickItemType.SCRIPT
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        OutlinedTextField(
+            value = name,
+            onValueChange = onNameChange,
+            label = { Text("名称", fontSize = 12.sp) },
+            singleLine = true,
+            modifier = Modifier.fillMaxWidth(),
+            textStyle = androidx.compose.ui.text.TextStyle(fontSize = 13.sp),
+            placeholder = {
+                Text(
+                    when (type) {
+                        QuickItemType.SCRIPT -> "清理脚本"
+                        QuickItemType.WEBSITE -> "GitHub"
+                        QuickItemType.OBSIDIAN -> "项目笔记"
+                        else -> ""
+                    },
+                    fontSize = 11.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
+                )
+            },
+        )
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.Bottom,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            OutlinedTextField(
+                value = target,
+                onValueChange = onTargetChange,
+                label = { Text(targetLabel, fontSize = 12.sp) },
+                singleLine = true,
+                modifier = Modifier.weight(1f),
+                textStyle = androidx.compose.ui.text.TextStyle(fontSize = 13.sp),
+                placeholder = {
+                    Text(
+                        targetPlaceholder,
+                        fontSize = 11.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
+                    )
+                },
+            )
+            if (showBrowse) {
+                Button(
+                    onClick = onBrowse,
+                    modifier = Modifier.height(48.dp),
+                    contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 12.dp),
+                ) {
+                    Icon(Icons.Default.Folder, contentDescription = "浏览", modifier = Modifier.size(16.dp))
+                    Spacer(Modifier.width(4.dp))
+                    Text("浏览", fontSize = 12.sp)
+                }
+            }
+        }
+        if (targetHint.isNotEmpty()) {
+            Text(
+                targetHint,
+                fontSize = 10.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+            )
+        }
+        if (submitting) {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                CircularProgressIndicator(modifier = Modifier.size(14.dp), strokeWidth = 2.dp)
+                Text("添加中...", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        }
     }
 }
 
