@@ -1,20 +1,14 @@
 package com.meowmic.client.ui
 
-import android.graphics.Bitmap
-import android.graphics.BitmapFactory
-import android.graphics.ImageFormat
-import android.graphics.Rect
-import android.graphics.YuvImage
-import android.media.Image
-import android.media.ImageReader
 import android.media.MediaCodec
 import android.media.MediaCodecInfo
 import android.media.MediaFormat
 import android.os.Handler
-import android.os.HandlerThread
 import android.os.Looper
 import android.util.Log
-import androidx.compose.foundation.Image
+import android.view.Surface
+import android.view.SurfaceHolder
+import android.view.SurfaceView
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -25,28 +19,26 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.ImageBitmap
-import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.viewinterop.AndroidView
 import com.meowmic.client.ConnectionState
 import com.meowmic.client.LauncherRepository
 import com.meowmic.client.MeowMicViewModel
+import com.meowmic.client.NativeBridge
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
-import java.io.ByteArrayOutputStream
 
 /**
  * 远程显示器页面
  *
- * P2 实现:NVENC/AMF/QuickSync 硬件编码 + Android MediaCodec 硬解
- * - 拉取 H.264 NALU 字节流(GET /screen/h264)
- * - MediaCodec 硬件解码 → ImageReader(YUV_420_888) → NV21 → JPEG → Bitmap
- * - 高帧率(30fps)显示,大幅降低带宽与 CPU 占用
+ * UDP push 模式(借鉴 Sunshine 架构):
+ * - PC 服务端持续采集 DXGI → H.264 硬件编码 → UDP 分片推送
+ * - Android 端 Rust 核心接收 UDP 分片 → 重组 → MediaCodec 硬解 → Surface 直渲
+ * - SurfaceView 零拷贝:解码输出直接渲染到屏幕,不经 CPU
  */
 @Composable
 fun MonitorScreen(
@@ -69,18 +61,19 @@ fun MonitorScreen(
     // 连接栏展开
     var connExpanded by remember { mutableStateOf(false) }
 
-    // 当前帧 bitmap(MediaCodec 解码输出)
-    var currentFrame by remember { mutableStateOf<ImageBitmap?>(null) }
-    // 屏幕分辨率(供 UI 显示 & decoder 初始化)
+    // 当前帧是否已收到首帧(用于 UI 状态切换)
+    var hasFirstFrame by remember { mutableStateOf(false) }
+    // 屏幕分辨率(供 UI 显示)
     var screenInfo by remember { mutableStateOf<LauncherRepository.ScreenInfo?>(null) }
     // 拉取统计
     var frameCount by remember { mutableStateOf(0L) }
-    var lastFetchMs by remember { mutableStateOf(0L) }
     var fetchError by remember { mutableStateOf<String?>(null) }
     var decoderStatus by remember { mutableStateOf<String?>(null) }
 
-    // H.264 解码器实例(随 monitorEnabled / addr 生命周期管理)
-    var h264Decoder by remember { mutableStateOf<H264Decoder?>(null) }
+    // MediaCodec 解码器实例
+    var mediaCodec by remember { mutableStateOf<MediaCodec?>(null) }
+    // Surface 引用(SurfaceView 就绪后传入 MediaCodec)
+    var videoSurface by remember { mutableStateOf<Surface?>(null) }
 
     val (touchSent, audioSent) = parseStats(stats)
 
@@ -94,74 +87,124 @@ fun MonitorScreen(
         }
     }
 
-    // 创建 / 销毁 H.264 解码器
-    LaunchedEffect(monitorEnabled, addr) {
-        if (!monitorEnabled || addr.isBlank()) {
-            h264Decoder?.release()
-            h264Decoder = null
-            currentFrame = null
+    // 创建 / 销毁 MediaCodec 解码器(随 Surface 生命周期)
+    LaunchedEffect(videoSurface, monitorEnabled) {
+        if (!monitorEnabled || videoSurface == null) {
+            mediaCodec?.stop()
+            mediaCodec?.release()
+            mediaCodec = null
+            hasFirstFrame = false
             decoderStatus = null
             return@LaunchedEffect
         }
-        val pk = vm.clientPubkeyB64()
-        if (pk.isBlank()) {
-            decoderStatus = "未配对,无法拉流"
+
+        val w = screenInfo?.width ?: 1920
+        val h = screenInfo?.height ?: 1080
+
+        decoderStatus = "初始化解码器 ${w}x${h}..."
+        try {
+            val codec = MediaCodec.createDecoderByType(MediaFormat.MIMETYPE_VIDEO_AVC)
+            val format = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, w, h).apply {
+                setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Flexible)
+                setInteger(MediaFormat.KEY_FRAME_RATE, 30)
+                setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, w * h * 3 / 2)
+            }
+            codec.configure(format, videoSurface, null, 0)
+            codec.start()
+            mediaCodec = codec
+            decoderStatus = "解码器就绪"
+            Log.i(TAG_DEC, "H.264 解码器启动(Surface 直渲) ${w}x${h}")
+        } catch (e: Exception) {
+            Log.e(TAG_DEC, "解码器启动失败: ${e.message}")
+            decoderStatus = "解码器失败: ${e.message}"
+        }
+    }
+
+    // 启动 / 停止视频推流 + NALU 拉取循环
+    LaunchedEffect(mediaCodec, addr, monitorEnabled) {
+        val codec = mediaCodec ?: return@LaunchedEffect
+        if (addr.isBlank() || !monitorEnabled) return@LaunchedEffect
+
+        val w = screenInfo?.width ?: 1920
+        val h = screenInfo?.height ?: 1080
+        val fps = frameRate
+        val bitrate = 4_000_000
+
+        // 请求服务端开始推流
+        if (!NativeBridge.nativeStartVideo(w, h, fps, bitrate)) {
+            fetchError = "请求视频推流失败"
             return@LaunchedEffect
         }
 
-        // 用屏幕分辨率初始化 decoder;无分辨率信息则回退 1920x1080
-        val w = screenInfo?.width ?: 1920
-        val h = screenInfo?.height ?: 1080
-        if (screenInfo == null) {
-            // 二次尝试拉取一次
-            LauncherRepository.fetchScreenInfo(addr, pk)?.let { screenInfo = it }
-        }
-        val actualW = screenInfo?.width ?: w
-        val actualH = screenInfo?.height ?: h
-
-        decoderStatus = "初始化解码器 ${actualW}x${actualH}..."
-        val decoder = H264Decoder(actualW, actualH) { bmp ->
-            if (bmp != null) {
-                currentFrame = bmp.asImageBitmap()
-                frameCount++
-                fetchError = null
-            }
-        }
-        h264Decoder = decoder
-        decoderStatus = "解码器就绪"
-    }
-
-    // 拉取 H.264 NALU 循环
-    LaunchedEffect(h264Decoder, addr, frameRate) {
-        val decoder = h264Decoder ?: return@LaunchedEffect
-        if (addr.isBlank()) return@LaunchedEffect
-        val pk = vm.clientPubkeyB64()
-        if (pk.isBlank()) return@LaunchedEffect
-
-        val intervalMs = (1000L / frameRate).coerceAtLeast(16L)
-        val bitrate = 4_000_000 // 固定 4Mbps,PC 端首次创建 encoder 时生效
-
+        // NALU 拉取循环:从 Rust 队列取完整 NALU → 喂入 MediaCodec
         while (isActive) {
-            val start = System.currentTimeMillis()
-            val nalu = LauncherRepository.fetchScreenH264(addr, pk, frameRate, bitrate)
-            val cost = System.currentTimeMillis() - start
-            lastFetchMs = cost
+            val nalu = NativeBridge.nativePollVideoFrame()
             if (nalu != null && nalu.isNotEmpty()) {
-                val fed = decoder.feed(nalu)
-                if (!fed) {
-                    fetchError = "解码器队列满,丢帧"
+                try {
+                    val idx = codec.dequeueInputBuffer(5_000)
+                    if (idx >= 0) {
+                        val buf = codec.getInputBuffer(idx) ?: continue
+                        buf.clear()
+                        if (nalu.size <= buf.capacity()) {
+                            buf.put(nalu)
+                            codec.queueInputBuffer(idx, 0, nalu.size, System.nanoTime() / 1000, 0)
+                        }
+                    }
+                    // drain output (Surface 自动渲染,无需手动操作)
+                    val info = MediaCodec.BufferInfo()
+                    while (true) {
+                        val outIdx = codec.dequeueOutputBuffer(info, 0)
+                        when {
+                            outIdx >= 0 -> {
+                                codec.releaseOutputBuffer(outIdx, true)
+                                if (!hasFirstFrame) {
+                                    hasFirstFrame = true
+                                    decoderStatus = null
+                                }
+                                frameCount++
+                            }
+                            outIdx == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> {
+                                Log.i(TAG_DEC, "输出格式变化: ${codec.outputFormat}")
+                            }
+                            else -> break
+                        }
+                    }
+                } catch (e: Exception) {
+                    Log.w(TAG_DEC, "解码 feed 失败: ${e.message}")
                 }
+            } else {
+                delay(2) // 无帧时短暂等待,避免 CPU 空转
             }
-            // 间隔(减去本次耗时,保证目标帧率)
-            val wait = (intervalMs - cost).coerceAtLeast(2L)
-            delay(wait)
         }
     }
 
-    // 退出页面释放 decoder
+    // 视频统计上报:每 1 秒取一次快照 → 上报给服务端做自适应码率
+    // 视频未启动时 nativePollVideoStats 返回全 0,nativeSendVideoStats 内部也会判空,无副作用
+    LaunchedEffect(monitorEnabled, addr) {
+        if (!monitorEnabled || addr.isBlank()) return@LaunchedEffect
+        while (isActive) {
+            delay(1_000)
+            val json = NativeBridge.nativePollVideoStats()
+            // 简易 JSON 解析(避免引入 org.json 依赖)
+            val received = Regex(""received"\s*:\s*(\d+)""").find(json)?.groupValues?.get(1)?.toIntOrNull() ?: 0
+            val lost = Regex(""lost"\s*:\s*(\d+)""").find(json)?.groupValues?.get(1)?.toIntOrNull() ?: 0
+            val recovered = Regex(""recovered"\s*:\s*(\d+)""").find(json)?.groupValues?.get(1)?.toIntOrNull() ?: 0
+            // 三个字段全 0 时跳过上报(无活动)
+            if (received == 0 && lost == 0 && recovered == 0) continue
+            try {
+                NativeBridge.nativeSendVideoStats(received, lost, recovered, 0)
+            } catch (e: Exception) {
+                Log.w(TAG_DEC, "上报视频统计失败: ${e.message}")
+            }
+        }
+    }
+
+    // 退出页面释放
     DisposableEffect(Unit) {
         onDispose {
-            h264Decoder?.release()
+            NativeBridge.nativeStopVideo()
+            mediaCodec?.stop()
+            mediaCodec?.release()
         }
     }
 
@@ -190,7 +233,7 @@ fun MonitorScreen(
                 onDisconnect = onDisconnect,
             )
 
-            // 3. 视频显示区(占满剩余空间)
+            // 3. 视频显示区(SurfaceView 零拷贝直渲)
             Box(
                 modifier = Modifier
                     .weight(1f)
@@ -199,33 +242,49 @@ fun MonitorScreen(
                     .background(Color.Black),
                 contentAlignment = Alignment.Center,
             ) {
-                val bmp = currentFrame
-                if (monitorEnabled && bmp != null) {
-                    Image(
-                        bitmap = bmp,
-                        contentDescription = "远程画面",
+                if (monitorEnabled) {
+                    // SurfaceView: MediaCodec 解码输出直接渲染到 Surface(GPU 零拷贝)
+                    AndroidView(
+                        factory = { ctx ->
+                            SurfaceView(ctx).apply {
+                                holder.addCallback(object : SurfaceHolder.Callback {
+                                    override fun surfaceCreated(holder: SurfaceHolder) {
+                                        videoSurface = holder.surface
+                                    }
+                                    override fun surfaceChanged(
+                                        holder: SurfaceHolder,
+                                        format: Int,
+                                        width: Int,
+                                        height: Int,
+                                    ) {}
+                                    override fun surfaceDestroyed(holder: SurfaceHolder) {
+                                        videoSurface = null
+                                    }
+                                })
+                            }
+                        },
                         modifier = Modifier.fillMaxSize(),
-                        contentScale = ContentScale.Fit,
                     )
-                } else if (monitorEnabled) {
-                    // 已开启但未拉到首帧
-                    Column(
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        verticalArrangement = Arrangement.spacedBy(8.dp),
-                    ) {
-                        CircularProgressIndicator(
-                            modifier = Modifier.size(24.dp),
-                            strokeWidth = 2.dp,
-                            color = Color.White,
-                        )
-                        Text(
-                            decoderStatus ?: fetchError ?: "正在连接远程画面...",
-                            color = Color.White.copy(alpha = 0.8f),
-                            fontSize = 11.sp,
-                        )
+                    // 未收到首帧时显示 loading 覆盖层
+                    if (!hasFirstFrame) {
+                        Column(
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(24.dp),
+                                strokeWidth = 2.dp,
+                                color = Color.White,
+                            )
+                            Text(
+                                decoderStatus ?: fetchError ?: "正在连接远程画面...",
+                                color = Color.White.copy(alpha = 0.8f),
+                                fontSize = 11.sp,
+                            )
+                        }
                     }
                 } else {
-                    // 未开启:空状态占位(对齐设计稿 view-monitor 空状态)
+                    // 未开启:空状态占位
                     Column(
                         horizontalAlignment = Alignment.CenterHorizontally,
                         verticalArrangement = Arrangement.spacedBy(6.dp),
@@ -252,12 +311,11 @@ fun MonitorScreen(
                 }
             }
 
-            // 4. 底部状态栏:分辨率 / 帧数 / 延迟
+            // 4. 底部状态栏:分辨率 / 帧数 (UDP push 模式无拉取延迟)
             MonitorStatusBar(
                 screenInfo = screenInfo,
                 frameRate = frameRate,
                 frameCount = frameCount,
-                lastFetchMs = lastFetchMs,
                 fetchError = fetchError,
             )
         }
@@ -329,13 +387,12 @@ private fun MonitorActionBar(
     }
 }
 
-/** 底部状态栏:分辨率 / 帧数 / 延迟 */
+/** 底部状态栏:分辨率 / 帧数 (UDP push 模式) */
 @Composable
 private fun MonitorStatusBar(
     screenInfo: LauncherRepository.ScreenInfo?,
     frameRate: Int,
     frameCount: Long,
-    lastFetchMs: Long,
     fetchError: String?,
 ) {
     Row(
@@ -361,7 +418,7 @@ private fun MonitorStatusBar(
         )
         StatusChip(
             icon = Icons.Default.Bolt,
-            label = "${lastFetchMs}ms",
+            label = "UDP",
         )
         if (fetchError != null) {
             Text(

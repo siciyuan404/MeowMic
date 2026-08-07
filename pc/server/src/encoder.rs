@@ -1,17 +1,27 @@
-//! H.264 硬件编码器(Media Foundation)
+//! H.264 / HEVC 硬件编码器(Media Foundation)
 //!
-//! 使用 Windows Media Foundation 的 H.264 编码器 MFT,自动选择最佳硬件编码器:
+//! 使用 Windows Media Foundation 的编码器 MFT,自动选择最佳硬件编码器:
 //! - NVIDIA NVENC(GeForce 显卡)
 //! - AMD AMF(Radeon 显卡)
 //! - Intel QuickSync(核显)
 //! - 软件 fallback(无 GPU 时)
 //!
-//! 输入: BGRA32 像素
-//! 输出: H.264 NALU 字节流(Annex-B 格式,带起始码 00 00 00 01)
+//! 支持两种 codec:
+//! - `Codec::H264`:H.264 / AVC,主路径,所有 Windows 8+ 默认支持
+//! - `Codec::Hevc`:HEVC / H.265,需硬件编码器(NVENC HEVC / AMF HEVC / QSV HEVC),
+//!   同等码率下文字清晰度优于 H.264。运行时探测,失败自动回退 H.264。
 //!
-//! 端点:
-//! - 编码单帧:encode_frame() -> Vec<u8> (NALU)
-//! - 编码流:持续编码,通过 /screen/stream 端点分块传输
+//! 输入: BGRA32 像素
+//! 输出: NALU 字节流(Annex-B 格式,带起始码 00 00 00 01)
+
+/// 编码器类型
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Codec {
+    /// H.264 / AVC(默认,所有平台支持)
+    H264,
+    /// HEVC / H.265(需硬件支持,运行时探测)
+    Hevc,
+}
 
 #[cfg(windows)]
 mod mf_encoder {
@@ -23,7 +33,7 @@ mod mf_encoder {
         IMFSample, IMFTransform, MF_API_VERSION, MF_MT_AVG_BITRATE,
         MF_MT_FRAME_RATE, MF_MT_FRAME_SIZE, MF_MT_INTERLACE_MODE, MF_MT_MAJOR_TYPE,
         MF_MT_SUBTYPE, MF_MT_VIDEO_NOMINAL_RANGE, MFSTARTUP_LITE, MFMediaType_Video,
-        MFNominalRange_0_255, MFVideoFormat_H264, MFVideoFormat_RGB32,
+        MFNominalRange_0_255, MFVideoFormat_H264, MFVideoFormat_HEVC, MFVideoFormat_RGB32,
         MFVideoInterlace_Progressive, MFTEnumEx, MFT_ENUM_FLAG, MFT_ENUM_FLAG_HARDWARE,
         MFT_ENUM_FLAG_SYNCMFT, MFT_MESSAGE_COMMAND_DRAIN, MFT_MESSAGE_NOTIFY_BEGIN_STREAMING,
         MFT_MESSAGE_NOTIFY_END_OF_STREAM, MFT_MESSAGE_NOTIFY_END_STREAMING,
@@ -32,9 +42,12 @@ mod mf_encoder {
     };
     use windows::Win32::System::Com::CoTaskMemFree;
 
-    /// H.264 编码器封装
-    pub struct H264Encoder {
+    use super::Codec;
+
+    /// Media Foundation 编码器封装(支持 H.264 / HEVC)
+    pub struct MFEncoder {
         transform: IMFTransform,
+        codec: Codec,
         width: u32,
         height: u32,
         frame_rate: u32,
@@ -43,11 +56,17 @@ mod mf_encoder {
         initialized: bool,
     }
 
-    unsafe impl Send for H264Encoder {}
+    unsafe impl Send for MFEncoder {}
 
-    impl H264Encoder {
-        /// 创建 H.264 硬件编码器
-        pub fn new(width: u32, height: u32, frame_rate: u32, avg_bitrate: u32) -> Option<Self> {
+    impl MFEncoder {
+        /// 创建编码器(根据 codec 选择 H.264 或 HEVC MFT)
+        pub fn new(
+            codec: Codec,
+            width: u32,
+            height: u32,
+            frame_rate: u32,
+            avg_bitrate: u32,
+        ) -> Option<Self> {
             unsafe {
                 // 初始化 MF(如果尚未初始化)
                 static MF_STARTED: OnceLock<()> = OnceLock::new();
@@ -55,9 +74,10 @@ mod mf_encoder {
                     let _ = MFStartup(MF_API_VERSION, MFSTARTUP_LITE);
                 });
 
-                let transform = Self::enum_h264_encoder()?;
+                let transform = Self::enum_encoder(codec)?;
                 let mut encoder = Self {
                     transform,
+                    codec,
                     width,
                     height,
                     frame_rate,
@@ -70,12 +90,20 @@ mod mf_encoder {
             }
         }
 
-        /// 枚举 H.264 编码器 MFT(优先硬件,回退软件)
-        unsafe fn enum_h264_encoder() -> Option<IMFTransform> {
-            // 输出类型过滤:Video / H264
+        /// 返回使用的 codec
+        pub fn codec(&self) -> Codec {
+            self.codec
+        }
+
+        /// 枚举编码器 MFT(优先硬件,回退软件)
+        unsafe fn enum_encoder(codec: Codec) -> Option<IMFTransform> {
+            let subtype = match codec {
+                Codec::H264 => MFVideoFormat_H264,
+                Codec::Hevc => MFVideoFormat_HEVC,
+            };
             let output_type_info = MFT_REGISTER_TYPE_INFO {
                 guidMajorType: MFMediaType_Video,
-                guidSubtype: MFVideoFormat_H264,
+                guidSubtype: subtype,
             };
 
             // 优先硬件编码器
@@ -84,11 +112,11 @@ mod mf_encoder {
                 return Some(transform);
             }
 
-            // 回退到软件编码器
+            // 回退到软件编码器(HEVC 软件编码器在大多数 Windows 上不存在)
             Self::enum_with_flags(MFT_ENUM_FLAG_SYNCMFT, &output_type_info)
         }
 
-        /// 用指定 flags 枚举并激活第一个可用的 H.264 编码器 MFT
+        /// 用指定 flags 枚举并激活第一个可用的编码器 MFT
         unsafe fn enum_with_flags(
             flags: MFT_ENUM_FLAG,
             output_type_info: &MFT_REGISTER_TYPE_INFO,
@@ -127,7 +155,7 @@ mod mf_encoder {
 
         /// 配置编码器输入/输出类型
         unsafe fn configure(&mut self) -> Option<()> {
-            // 输入类型:BGRA32(RGB32) — IMFMediaType 继承自 IMFAttributes,可直接调用 SetGUID/SetUINT32
+            // 输入类型:BGRA32(RGB32)
             let input_type = MFCreateMediaType().ok()?;
             input_type
                 .SetGUID(&MF_MT_MAJOR_TYPE as *const _, &MFMediaType_Video as *const _)
@@ -149,13 +177,17 @@ mod mf_encoder {
                 .ok()?;
             self.transform.SetInputType(0, &input_type, 0).ok()?;
 
-            // 输出类型:H.264
+            // 输出类型:根据 codec 选 H.264 或 HEVC
+            let output_subtype = match self.codec {
+                Codec::H264 => MFVideoFormat_H264,
+                Codec::Hevc => MFVideoFormat_HEVC,
+            };
             let output_type = MFCreateMediaType().ok()?;
             output_type
                 .SetGUID(&MF_MT_MAJOR_TYPE as *const _, &MFMediaType_Video as *const _)
                 .ok()?;
             output_type
-                .SetGUID(&MF_MT_SUBTYPE as *const _, &MFVideoFormat_H264 as *const _)
+                .SetGUID(&MF_MT_SUBTYPE as *const _, &output_subtype as *const _)
                 .ok()?;
             output_type
                 .SetUINT32(&MF_MT_INTERLACE_MODE as *const _, MFVideoInterlace_Progressive.0 as u32)
@@ -183,7 +215,7 @@ mod mf_encoder {
             Some(())
         }
 
-        /// 编码一帧 BGRA 像素,返回 H.264 NALU 字节
+        /// 编码一帧 BGRA 像素,返回 NALU 字节
         pub fn encode_frame(&mut self, bgra: &[u8]) -> Option<Vec<u8>> {
             if !self.initialized {
                 return None;
@@ -225,7 +257,6 @@ mod mf_encoder {
         unsafe fn collect_output(&mut self) -> Option<Vec<u8>> {
             let mut all_nalu = Vec::new();
             loop {
-                // 创建输出 sample(预分配缓冲区)
                 let sample = MFCreateSample().ok()?;
                 let buffer_size = self.width * self.height * 4;
                 let buffer = MFCreateMemoryBuffer(buffer_size).ok()?;
@@ -245,7 +276,6 @@ mod mf_encoder {
                     &mut status,
                 ) {
                     Ok(()) => {
-                        // 取回 sample(从 ManuallyDrop 中)
                         if let Some(sample) =
                             std::mem::ManuallyDrop::take(&mut output_buf.pSample)
                         {
@@ -255,8 +285,6 @@ mod mf_encoder {
                         }
                     }
                     Err(e) => {
-                        // MF_E_TRANSFORM_NEED_MORE_INPUT 表示需要更多输入,属正常
-                        // 释放未取走的 sample(避免泄漏)
                         let _ = std::mem::ManuallyDrop::take(&mut output_buf.pSample);
                         tracing::trace!("ProcessOutput 结束: {:x}", e.code().0);
                         break;
@@ -270,7 +298,6 @@ mod mf_encoder {
             }
         }
 
-        /// 从 sample 中提取 NALU 数据
         unsafe fn extract_nalu(&self, sample: &IMFSample) -> Option<Vec<u8>> {
             let buffer_count = sample.GetBufferCount().ok()?;
             if buffer_count == 0 {
@@ -320,7 +347,7 @@ mod mf_encoder {
         }
     }
 
-    impl Drop for H264Encoder {
+    impl Drop for MFEncoder {
         fn drop(&mut self) {
             if self.initialized {
                 let _ = self.drain();
@@ -328,46 +355,80 @@ mod mf_encoder {
         }
     }
 
-    // ── 全局编码器单例(按分辨率缓存) ──
+    // ── 全局编码器单例(按 codec+分辨率缓存) ──
     struct EncoderEntry {
-        encoder: Mutex<H264Encoder>,
+        encoder: Mutex<MFEncoder>,
+        codec: Codec,
         width: u32,
         height: u32,
     }
 
     static ENCODER: OnceLock<Mutex<Option<EncoderEntry>>> = OnceLock::new();
 
-    /// 编码一帧(使用全局缓存的编码器)
-    pub fn encode_frame(
+    /// 用指定 codec 编码一帧(使用全局缓存的编码器)
+    pub fn encode_frame_with_codec(
         bgra: &[u8],
         width: u32,
         height: u32,
         frame_rate: u32,
         avg_bitrate: u32,
+        codec: Codec,
     ) -> Option<Vec<u8>> {
         let mutex = ENCODER.get_or_init(|| Mutex::new(None));
         let mut guard = mutex.lock().ok()?;
 
-        // 检查是否需要重建编码器(分辨率变化)
+        // 检查是否需要重建编码器(codec 或分辨率变化)
         let need_rebuild = match guard.as_ref() {
-            Some(entry) => entry.width != width || entry.height != height,
+            Some(entry) => entry.codec != codec || entry.width != width || entry.height != height,
             None => true,
         };
 
         if need_rebuild {
-            *guard = H264Encoder::new(width, height, frame_rate, avg_bitrate).map(|enc| {
+            *guard = MFEncoder::new(codec, width, height, frame_rate, avg_bitrate).map(|enc| {
                 EncoderEntry {
                     encoder: Mutex::new(enc),
+                    codec,
                     width,
                     height,
                 }
             });
         }
 
-        // 拆分借用:避免 guard.as_ref()?.encoder.lock().ok()?.encode_frame(bgra) 的临时借用生命周期问题
         let entry = guard.as_ref()?;
         let mut enc_guard = entry.encoder.lock().ok()?;
         enc_guard.encode_frame(bgra)
+    }
+
+    /// 探测指定 codec 在当前硬件上是否可用(尝试枚举编码器 MFT)
+    ///
+    /// 返回 true 表示可以创建该 codec 的编码器(硬件或软件)。
+    /// HEVC 在大多数消费级 Windows 上需要 NVENC/AMF/QSV HEVC 硬件支持,
+    /// 否则返回 false,调用方应回退到 H.264。
+    pub fn probe_codec_support(codec: Codec) -> bool {
+        unsafe {
+            // 初始化 MF(如果尚未初始化)
+            static MF_STARTED: OnceLock<()> = OnceLock::new();
+            MF_STARTED.get_or_init(|| {
+                let _ = MFStartup(MF_API_VERSION, MFSTARTUP_LITE);
+            });
+
+            let subtype = match codec {
+                Codec::H264 => MFVideoFormat_H264,
+                Codec::Hevc => MFVideoFormat_HEVC,
+            };
+            let output_type_info = MFT_REGISTER_TYPE_INFO {
+                guidMajorType: MFMediaType_Video,
+                guidSubtype: subtype,
+            };
+
+            // 优先硬件
+            let hw_flags = MFT_ENUM_FLAG(MFT_ENUM_FLAG_HARDWARE.0 | MFT_ENUM_FLAG_SYNCMFT.0);
+            if MFEncoder::enum_with_flags(hw_flags, &output_type_info).is_some() {
+                return true;
+            }
+            // 软件回退
+            MFEncoder::enum_with_flags(MFT_ENUM_FLAG_SYNCMFT, &output_type_info).is_some()
+        }
     }
 
     /// 刷新编码器,取出剩余 NALU
@@ -393,7 +454,36 @@ mod mf_encoder {
 }
 
 #[cfg(windows)]
-pub use mf_encoder::{drain_encoder, encode_frame};
+pub use mf_encoder::{drain_encoder, encode_frame_with_codec, probe_codec_support};
+
+/// H.264 编码便捷函数(向后兼容)
+#[cfg(windows)]
+pub fn encode_frame(
+    bgra: &[u8],
+    width: u32,
+    height: u32,
+    frame_rate: u32,
+    avg_bitrate: u32,
+) -> Option<Vec<u8>> {
+    encode_frame_with_codec(bgra, width, height, frame_rate, avg_bitrate, Codec::H264)
+}
+
+#[cfg(not(windows))]
+pub fn encode_frame_with_codec(
+    _bgra: &[u8],
+    _width: u32,
+    _height: u32,
+    _frame_rate: u32,
+    _avg_bitrate: u32,
+    _codec: Codec,
+) -> Option<Vec<u8>> {
+    None
+}
+
+#[cfg(not(windows))]
+pub fn probe_codec_support(_codec: Codec) -> bool {
+    false
+}
 
 #[cfg(not(windows))]
 pub fn encode_frame(

@@ -6,11 +6,28 @@
 //! - UDP Audio 端口:接收 Opus 音频包
 
 use std::net::SocketAddr;
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream, UdpSocket};
 use std::collections::HashSet;
 use tokio::sync::{mpsc, RwLock};
+
+/// 服务端首选视频 codec(0=H.264, 1=HEVC)
+/// 由 pc/server main.rs 在启动时根据硬件探测结果设置,
+/// handle_control_msg 在收到 StartVideo 时读取此值,填入 VideoStarted.codec
+/// 和 ServerEvent::StartVideo.codec,告知客户端实际编码类型。
+static PREFERRED_CODEC: AtomicU8 = AtomicU8::new(0);
+
+/// 设置首选视频 codec(由服务端主程序在启动时调用)
+pub fn set_preferred_codec(codec: u8) {
+    PREFERRED_CODEC.store(codec, Ordering::Relaxed);
+}
+
+/// 读取首选视频 codec
+pub fn preferred_codec() -> u8 {
+    PREFERRED_CODEC.load(Ordering::Relaxed)
+}
 
 use meowmic_protocol::{
     ControlMessage, decode_control, encode_control, monotonic_ns,
@@ -63,6 +80,28 @@ pub enum ServerEvent {
     },
     /// 客户端配对成功(通知 UI 更新)
     ClientPaired { client_name: String },
+    /// 客户端请求开始视频推流
+    /// `peer`:客户端 video UDP 接收地址(peer.ip() + client_video_port)
+    /// `codec`:服务端探测后实际使用的编码器(0=H.264, 1=HEVC)
+    StartVideo {
+        client_id: u32,
+        peer: SocketAddr,
+        width: u32,
+        height: u32,
+        fps: u32,
+        bitrate: u32,
+        codec: u8,
+    },
+    /// 客户端请求停止视频推流
+    StopVideo { client_id: u32 },
+    /// 客户端上报视频统计(用于自适应码率)
+    VideoStats {
+        client_id: u32,
+        received_frames: u32,
+        lost_frames: u32,
+        recovered_frames: u32,
+        rtt_ms: u32,
+    },
     /// 错误
     Error(NetError),
 }
@@ -72,6 +111,8 @@ pub struct Server {
     sync: ClockSynchronizer,
     /// 配对管理器(可选:测试或无配对需求时为 None)
     pairing: Option<Arc<PairingManager>>,
+    /// 视频 UDP socket(用于推流给客户端)
+    video_sock: Option<Arc<UdpSocket>>,
 }
 
 impl Server {
@@ -80,6 +121,7 @@ impl Server {
             ports,
             sync: ClockSynchronizer::new(),
             pairing: None,
+            video_sock: None,
         }
     }
 
@@ -89,6 +131,13 @@ impl Server {
         self
     }
 
+    /// 获取 video UDP socket(用于推流)
+    ///
+    /// 在 `run` 启动后才有值,供外部 VideoStreamer 使用。
+    pub fn video_sock(&self) -> Option<&Arc<UdpSocket>> {
+        self.video_sock.as_ref()
+    }
+
     pub fn clock_sync(&self) -> ClockSynchronizer {
         self.sync.clone()
     }
@@ -96,11 +145,13 @@ impl Server {
     /// 启动服务端,返回事件接收端
     ///
     /// - bind_addr: 监听地址(如 "0.0.0.0")
+    /// - video_sock: 预绑定的 video UDP socket(供外部 VideoStreamer 使用)
     pub async fn run(
-        self,
+        mut self,
         bind_addr: &str,
         event_tx: mpsc::Sender<ServerEvent>,
         active_clients: std::sync::Arc<RwLock<HashSet<String>>>,
+        video_sock: Arc<UdpSocket>,
     ) -> Result<(), NetError> {
         let control_addr = format!("{}:{}", bind_addr, self.ports.control);
         let touch_addr = format!("{}:{}", bind_addr, self.ports.touch);
@@ -110,10 +161,16 @@ impl Server {
         let touch_sock = Arc::new(UdpSocket::bind(&touch_addr).await?);
         let audio_sock = Arc::new(UdpSocket::bind(&audio_addr).await?);
 
+        let video_local = video_sock
+            .local_addr()
+            .map(|a| a.to_string())
+            .unwrap_or_else(|_| "<unknown>".to_string());
         tracing::info!(
-            "MeowMic 服务端启动: control={} (TCP), touch={} (UDP), audio={} (UDP)",
-            control_addr, touch_addr, audio_addr
+            "MeowMic 服务端启动: control={} (TCP), touch={} (UDP), audio={} (UDP), video={} (UDP)",
+            control_addr, touch_addr, audio_addr, video_local
         );
+
+        self.video_sock = Some(video_sock);
 
         // 启动 UDP 接收循环
         let touch_tx = event_tx.clone();
@@ -487,6 +544,52 @@ async fn handle_control_msg(
         }
         ControlMessage::Ping => Some(ControlMessage::Pong),
         ControlMessage::Pong => None,
+        ControlMessage::StartVideo { width, height, fps, bitrate, client_video_port } => {
+            // 客户端 video UDP 接收地址 = TCP 对端 IP + 客户端绑定的 video UDP 端口
+            let video_peer = SocketAddr::new(peer.ip(), *client_video_port);
+            // 读取服务端启动时探测的首选 codec(0=H.264, 1=HEVC)
+            let codec = preferred_codec();
+            let _ = event_tx
+                .send(ServerEvent::StartVideo {
+                    client_id: *client_id,
+                    peer: video_peer,
+                    width: *width,
+                    height: *height,
+                    fps: *fps,
+                    bitrate: *bitrate,
+                    codec,
+                })
+                .await;
+            Some(ControlMessage::VideoStarted {
+                width: *width,
+                height: *height,
+                fps: *fps,
+                codec,
+            })
+        }
+        ControlMessage::StopVideo => {
+            let _ = event_tx
+                .send(ServerEvent::StopVideo { client_id: *client_id })
+                .await;
+            None
+        }
+        ControlMessage::VideoStats {
+            received_frames,
+            lost_frames,
+            recovered_frames,
+            rtt_ms,
+        } => {
+            let _ = event_tx
+                .send(ServerEvent::VideoStats {
+                    client_id: *client_id,
+                    received_frames: *received_frames,
+                    lost_frames: *lost_frames,
+                    recovered_frames: *recovered_frames,
+                    rtt_ms: *rtt_ms,
+                })
+                .await;
+            None
+        }
         _ => None,
     }
 }

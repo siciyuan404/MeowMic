@@ -52,6 +52,13 @@ pub enum ClientEvent {
         offset_ms: f64,
         rtt_ms: f64,
     },
+    /// 服务端确认视频推流已开始
+    VideoStarted {
+        width: u32,
+        height: u32,
+        fps: u32,
+        codec: u8,
+    },
     Disconnected,
     Error(NetError),
 }
@@ -67,11 +74,16 @@ pub struct Client {
     /// 同步触摸发送 socket(与 touch_sock 共享同一 fd,用于绕过 block_on)
     touch_sock_sync: Arc<std::net::UdpSocket>,
     audio_sock: Arc<UdpSocket>,
+    /// 视频 UDP socket(接收服务端推送的 H.264 分片)
+    video_sock: Arc<UdpSocket>,
     peer: PeerAddr,
     /// 触摸包序号(原子操作,避免 async Mutex 开销)
     touch_seq: Arc<AtomicU16>,
     /// 音频包序号
     audio_seq: Arc<Mutex<u16>>,
+    /// 服务端 VideoStarted ACK 携带的 codec(255=未收到, 0=H.264, 1=HEVC)
+    /// 由 run_control_recv 写入,nativeStartVideo 读取
+    video_started_codec: Arc<std::sync::atomic::AtomicU8>,
 }
 
 impl Client {
@@ -134,6 +146,8 @@ impl Client {
             control: control_addr,
             touch: SocketAddr::new(control_addr.ip(), control_addr.port() + 1),
             audio: SocketAddr::new(control_addr.ip(), control_addr.port() + 2),
+            // base+3..base+5 留给 HTTP,video 在 base+6
+            video: SocketAddr::new(control_addr.ip(), control_addr.port() + 6),
         };
 
         let stream = match tokio::time::timeout(
@@ -163,18 +177,22 @@ impl Client {
         let touch_sock_sync = Arc::new(touch_sock_std.try_clone()?);
         let touch_sock = UdpSocket::from_std(touch_sock_std)?;
         let audio_sock = UdpSocket::bind("0.0.0.0:0").await?;
+        let video_sock = UdpSocket::bind("0.0.0.0:0").await?;
 
         let sync = ClockSynchronizer::new();
         let control_write = Arc::new(Mutex::new(write_half));
+        let video_started_codec = Arc::new(std::sync::atomic::AtomicU8::new(255));
         let client = Self {
             sync: sync.clone(),
             control_write: control_write.clone(),
             touch_sock: Arc::new(touch_sock),
             touch_sock_sync,
             audio_sock: Arc::new(audio_sock),
+            video_sock: Arc::new(video_sock),
             peer,
             touch_seq: Arc::new(AtomicU16::new(0)),
             audio_seq: Arc::new(Mutex::new(0)),
+            video_started_codec: video_started_codec.clone(),
         };
 
         // 发送第一条消息(Hello 或 HelloPaired)
@@ -184,7 +202,7 @@ impl Client {
         let sync_clone = sync.clone();
         let event_tx_clone = event_tx.clone();
         tokio::spawn(async move {
-            run_control_recv(read_half, sync_clone, event_tx_clone).await;
+            run_control_recv(read_half, sync_clone, event_tx_clone, video_started_codec).await;
         });
 
         // 启动时钟同步循环
@@ -324,12 +342,88 @@ impl Client {
     pub async fn send_key(&self, key_code: u16, is_down: bool) -> Result<(), NetError> {
         self.send_control(ControlMessage::KeyEvent { key_code, is_down }).await
     }
+
+    /// 请求服务端开始视频推流(UDP push 模式)
+    ///
+    /// 服务端收到后在 video 端口 (base+6) 持续推送 H.264 分片。
+    /// 自动从本地 `video_sock` 获取绑定端口,一并告诉服务端推送目标。
+    /// 返回前需调用 `video_sock()` 获取 socket 以接收分片。
+    pub async fn start_video(
+        &self,
+        width: u32,
+        height: u32,
+        fps: u32,
+        bitrate: u32,
+    ) -> Result<(), NetError> {
+        // 取本地 video UDP 绑定端口,告知服务端 push 目标
+        let client_video_port = self
+            .video_sock
+            .local_addr()
+            .map(|a| a.port())
+            .unwrap_or(0);
+        self.send_control(ControlMessage::StartVideo {
+            width,
+            height,
+            fps,
+            bitrate,
+            client_video_port,
+        })
+        .await
+    }
+
+    /// 读取服务端 VideoStarted ACK 携带的 codec
+    /// - 255 = 尚未收到 ACK
+    /// - 0 = H.264
+    /// - 1 = HEVC
+    pub fn video_started_codec(&self) -> u8 {
+        self.video_started_codec.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// 重置 video_started_codec 为 255(未收到),用于重新开始推流前
+    pub fn reset_video_started_codec(&self) {
+        self.video_started_codec.store(255, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// 请求服务端停止视频推流
+    pub async fn stop_video(&self) -> Result<(), NetError> {
+        self.send_control(ControlMessage::StopVideo).await
+    }
+
+    /// 上报视频接收统计(用于服务端自适应码率)
+    ///
+    /// 建议每 1-2 秒上报一次,字段含义见 `ControlMessage::VideoStats`
+    pub async fn send_video_stats(
+        &self,
+        received_frames: u32,
+        lost_frames: u32,
+        recovered_frames: u32,
+        rtt_ms: u32,
+    ) -> Result<(), NetError> {
+        self.send_control(ControlMessage::VideoStats {
+            received_frames,
+            lost_frames,
+            recovered_frames,
+            rtt_ms,
+        })
+        .await
+    }
+
+    /// 获取视频 UDP socket 引用(用于接收服务端推送的 H.264 分片)
+    pub fn video_sock(&self) -> &Arc<UdpSocket> {
+        &self.video_sock
+    }
+
+    /// 获取服务端 video 地址
+    pub fn video_peer(&self) -> SocketAddr {
+        self.peer.video
+    }
 }
 
 async fn run_control_recv(
     mut read_half: tokio::net::tcp::OwnedReadHalf,
     sync: ClockSynchronizer,
     event_tx: mpsc::Sender<ClientEvent>,
+    video_started_codec: Arc<std::sync::atomic::AtomicU8>,
 ) {
     let mut read_buf = Vec::with_capacity(4096);
     loop {
@@ -425,6 +519,23 @@ async fn run_control_recv(
                     }
                     ControlMessage::Pong => {
                         // 心跳响应,忽略
+                    }
+                    ControlMessage::VideoStarted {
+                        width,
+                        height,
+                        fps,
+                        codec,
+                    } => {
+                        // 同时存入 atomic,供 nativeStartVideo 同步读取
+                        video_started_codec.store(codec, std::sync::atomic::Ordering::Relaxed);
+                        let _ = event_tx
+                            .send(ClientEvent::VideoStarted {
+                                width,
+                                height,
+                                fps,
+                                codec,
+                            })
+                            .await;
                     }
                     _ => {}
                 }

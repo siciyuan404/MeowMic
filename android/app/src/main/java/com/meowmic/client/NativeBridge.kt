@@ -254,4 +254,38 @@ object NativeBridge {
 
     /** 获取统计 JSON: {"touch_sent":N,"audio_sent":N} */
     external fun nativeGetStats(): String
+
+    // ============ 视频 ============
+
+    /**
+     * 请求服务端开始视频推流(UDP push 模式)
+     * @param width 屏幕宽度(如 1920)
+     * @param height 屏幕高度(如 1080)
+     * @param fps 目标帧率(如 30)
+     * @param bitrate 目标码率(如 4_000_000 = 4Mbps)
+     * @return true 成功启动接收循环;false 未连接或发送失败
+     */
+    external fun nativeStartVideo(width: Int, height: Int, fps: Int, bitrate: Int): Boolean
+
+    /**
+     * 取出一个完整 NALU(非阻塞)
+     * @return NALU 字节数组,或 null 表示无完整帧
+     */
+    external fun nativePollVideoFrame(): ByteArray?
+
+    /**
+     * 取出并清零视频统计快照
+     * @return JSON {"received":N,"lost":N,"recovered":N}
+     * 视频未启动时返回全 0
+     */
+    external fun nativePollVideoStats(): String
+
+    /**
+     * 上报视频统计给服务端(用于自适应码率)
+     * @return true 成功,false 未连接或发送失败
+     */
+    external fun nativeSendVideoStats(received: Int, lost: Int, recovered: Int, rttMs: Int): Boolean
+
+    /** 停止视频推流 */
+    external fun nativeStopVideo()
 }

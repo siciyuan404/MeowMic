@@ -1,9 +1,10 @@
 //! 网络传输层
 //!
-//! 三通道分离:
+//! 四通道分离:
 //! - Control: TCP,变长 bincode 消息(握手/时钟同步/统计)
 //! - Touch:   UDP,轻量零拷贝包(最新状态优先,丢包可丢)
 //! - Audio:   UDP,带序号 Opus 帧(inband FEC + jitter buffer)
+//! - Video:   UDP,带序号 H.264 NALU 分片(丢包跳到下一个 keyframe)
 //!
 //! P0 阶段:基础 tokio UDP + TCP,时钟同步 EWMA
 //! 后续:SO_TIMESTAMPING、SO_BUSY_LOOP、独立高优先级线程
@@ -25,7 +26,7 @@ pub use pairing::{
     generate_nonce, generate_pin, ClientPairingState, PairedClient, PairingError, PairingManager,
     PairingState,
 };
-pub use server::{Server, ServerEvent};
+pub use server::{preferred_codec, set_preferred_codec, Server, ServerEvent};
 pub use sync::ClockSynchronizer;
 
 use std::net::SocketAddr;
@@ -49,6 +50,7 @@ pub struct PortLayout {
     pub control: u16, // TCP
     pub touch: u16,   // UDP
     pub audio: u16,   // UDP
+    pub video: u16,   // UDP
 }
 
 impl PortLayout {
@@ -57,6 +59,8 @@ impl PortLayout {
             control: base,
             touch: base + 1,
             audio: base + 2,
+            // base+3..base+5 留给 HTTP 端口(stats/serverinfo/pairing)
+            video: base + 6,
         }
     }
     pub const DEFAULT_BASE: u16 = 28900;
@@ -65,10 +69,11 @@ impl PortLayout {
     }
 }
 
-/// 对端地址三元组(用于客户端记录服务端三个端口)
+/// 对端地址四元组(用于客户端记录服务端四个端口)
 #[derive(Debug, Clone, Copy)]
 pub struct PeerAddr {
     pub control: SocketAddr,
     pub touch: SocketAddr,
     pub audio: SocketAddr,
+    pub video: SocketAddr,
 }

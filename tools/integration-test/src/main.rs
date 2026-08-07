@@ -69,8 +69,12 @@ async fn main() -> Result<()> {
     let server = Server::new(ports);
     let (server_event_tx, mut server_event_rx) = tokio::sync::mpsc::channel::<ServerEvent>(1024);
     let bind = "127.0.0.1".to_string();
+    // video UDP socket(供新版 Server::run 签名使用)
+    let video_sock = std::sync::Arc::new(tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap());
+    let active_clients: std::sync::Arc<tokio::sync::RwLock<std::collections::HashSet<String>>> =
+        std::sync::Arc::new(tokio::sync::RwLock::new(std::collections::HashSet::new()));
     tokio::spawn(async move {
-        if let Err(e) = server.run(&bind, server_event_tx).await {
+        if let Err(e) = server.run(&bind, server_event_tx, active_clients, video_sock).await {
             warn!("服务端退出: {}", e);
         }
     });

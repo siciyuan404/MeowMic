@@ -126,9 +126,9 @@ mod dxgi_capturer {
             }
         }
 
-        /// 抓取屏幕并编码 H.264 NALU(P2:NVENC/AMF/QuickSync 硬件编码)
+        /// 抓取屏幕并编码 NALU(H.264 或 HEVC,取决于 codec 参数)
         /// 仅在画面有变化时返回 NALU(无变化时返回 None,客户端保持上一帧)
-        fn capture_h264(&mut self, frame_rate: u32, bitrate: u32) -> Option<Vec<u8>> {
+        fn capture(&mut self, frame_rate: u32, bitrate: u32, codec: crate::encoder::Codec) -> Option<Vec<u8>> {
             if self.needs_rebuild {
                 self.rebuild();
                 if self.needs_rebuild {
@@ -137,12 +137,13 @@ mod dxgi_capturer {
             }
 
             match unsafe { self.acquire_frame() } {
-                Some(frame) => crate::encoder::encode_frame(
+                Some(frame) => crate::encoder::encode_frame_with_codec(
                     &frame.pixels,
                     frame.width,
                     frame.height,
                     frame_rate,
                     bitrate,
+                    codec,
                 ),
                 None => None,
             }
@@ -324,15 +325,19 @@ mod dxgi_capturer {
     /// 抓取屏幕并编码 H.264 NALU(P2:硬件编码)
     /// - frame_rate: 目标帧率(如 30)
     /// - bitrate: 平均码率(如 4_000_000 = 4Mbps)
-    /// 返回: H.264 Annex-B NALU 字节(包含 SPS/PPS/IDR 或 P 帧)
-    pub fn capture_screen_h264(frame_rate: u32, bitrate: u32) -> Option<Vec<u8>> {
+    /// 返回: NALU 字节(包含 SPS/PPS/IDR 或 P 帧,H.264 或 HEVC 取决于 codec)
+    pub fn capture_screen(
+        frame_rate: u32,
+        bitrate: u32,
+        codec: crate::encoder::Codec,
+    ) -> Option<Vec<u8>> {
         let mutex = CAPTURER.get_or_init(|| Mutex::new(None));
         let mut guard = mutex.lock().ok()?;
         if guard.is_none() {
             *guard = ScreenCapturer::new();
         }
         let capturer = guard.as_mut()?;
-        capturer.capture_h264(frame_rate, bitrate)
+        capturer.capture(frame_rate, bitrate, codec)
     }
 
     pub fn screen_resolution() -> (u32, u32) {
@@ -348,10 +353,21 @@ mod dxgi_capturer {
 }
 
 #[cfg(windows)]
-pub use dxgi_capturer::{capture_screen_h264, capture_screen_png, screen_resolution};
+pub use dxgi_capturer::{capture_screen, capture_screen_png, screen_resolution};
+
+/// 向后兼容:H.264 专用入口
+#[cfg(windows)]
+pub fn capture_screen_h264(frame_rate: u32, bitrate: u32) -> Option<Vec<u8>> {
+    capture_screen(frame_rate, bitrate, crate::encoder::Codec::H264)
+}
 
 #[cfg(not(windows))]
 pub fn capture_screen_png(_quality: u8, _scale: f32) -> Option<Vec<u8>> {
+    None
+}
+
+#[cfg(not(windows))]
+pub fn capture_screen(_frame_rate: u32, _bitrate: u32, _codec: crate::encoder::Codec) -> Option<Vec<u8>> {
     None
 }
 

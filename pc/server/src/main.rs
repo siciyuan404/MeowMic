@@ -29,6 +29,7 @@ mod windows;
 mod screen;
 mod encoder;
 mod files;
+mod video;
 
 #[derive(Parser, Debug)]
 #[command(name = "meowmic-server", version, about = "MeowMic 服务端 - 极低延迟手机外设")]
@@ -143,6 +144,12 @@ async fn run_server(bind: &str, port: u16, output_device: Option<&str>) -> Resul
     };
     let (event_tx, mut event_rx) = tokio::sync::mpsc::channel::<ServerEvent>(256);
 
+    // 绑定 video UDP socket (base+6),供 VideoStreamer 推送 H.264 分片给客户端
+    let video_addr: SocketAddr = format!("{}:{}", bind, ports.video).parse()?;
+    let video_sock = Arc::new(tokio::net::UdpSocket::bind(video_addr).await?);
+    info!("video UDP 监听: {} (用于推流)", video_sock.local_addr()?);
+    let video_sock_for_streamer = video_sock.clone();
+
     // 启动统计打印
     let stats = Arc::new(Mutex::new(stats::Stats::default()));
     let stats_clone = stats.clone();
@@ -220,7 +227,7 @@ async fn run_server(bind: &str, port: u16, output_device: Option<&str>) -> Resul
 
     // 事件循环
     let server_handle = tokio::spawn(async move {
-        if let Err(e) = server.run(&bind, event_tx, active_for_events).await {
+        if let Err(e) = server.run(&bind, event_tx, active_for_events, video_sock).await {
             match e {
                 NetError::Io(e) => {
                     anyhow::bail!("网络 IO 错误: {}", e);
@@ -230,6 +237,9 @@ async fn run_server(bind: &str, port: u16, output_device: Option<&str>) -> Resul
         }
         Ok::<(), anyhow::Error>(())
     });
+
+    // VideoStreamer 持有者:StartVideo 时创建,StopVideo 时停止
+    let streamer_slot: Arc<Mutex<Option<video::VideoStreamer>>> = Arc::new(Mutex::new(None));
 
     while let Some(event) = event_rx.recv().await {
         match event {
@@ -307,6 +317,63 @@ async fn run_server(bind: &str, port: u16, output_device: Option<&str>) -> Resul
             ServerEvent::ClientPaired { client_name } => {
                 info!("✓ 客户端配对成功: {}", client_name);
                 // 配对成功后 PIN 已被 PairingManager 清空,下次新设备配对时再生成
+            }
+            ServerEvent::StartVideo { client_id, peer, width, height, fps, bitrate, codec } => {
+                info!(
+                    "▶ 视频推流请求: id={} peer={} {}x{}@{}fps bitrate={}bps codec={}",
+                    client_id, peer, width, height, fps, bitrate, codec
+                );
+                let mut slot = streamer_slot.lock().await;
+                if let Some(mut s) = slot.take() {
+                    s.stop();
+                }
+                let streamer_codec = if codec == 1 {
+                    encoder::Codec::Hevc
+                } else {
+                    encoder::Codec::H264
+                };
+                let streamer = video::VideoStreamer::start(
+                    video_sock_for_streamer.clone(),
+                    peer,
+                    fps,
+                    bitrate,
+                    streamer_codec,
+                );
+                *slot = Some(streamer);
+                info!("✓ 视频推流已启动 → {}", peer);
+            }
+            ServerEvent::StopVideo { client_id } => {
+                info!("■ 停止视频推流: id={}", client_id);
+                let mut slot = streamer_slot.lock().await;
+                if let Some(mut s) = slot.take() {
+                    s.stop();
+                    info!("✓ 视频推流已停止");
+                }
+            }
+            ServerEvent::VideoStats {
+                client_id, received_frames, lost_frames, recovered_frames, rtt_ms,
+            } => {
+                let total = received_frames.saturating_add(lost_frames);
+                let slot_guard = streamer_slot.lock().await;
+                if let Some(streamer) = slot_guard.as_ref() {
+                    if total > 10 {
+                        let loss_rate = lost_frames as f32 / total as f32;
+                        let cur = streamer.current_bitrate();
+                        let new_bitrate = if loss_rate > 0.10 {
+                            ((cur as f32) * 0.8) as u32
+                        } else if loss_rate < 0.01 && rtt_ms < 80 {
+                            ((cur as f32) * 1.1) as u32
+                        } else { cur };
+                        let new_bitrate = new_bitrate.max(500_000).min(20_000_000);
+                        if new_bitrate != cur {
+                            streamer.set_bitrate(new_bitrate);
+                            info!(
+                                "自适应码率 id={} loss={:.1}% rtt={}ms: {}kbps -> {}kbps",
+                                client_id, loss_rate * 100.0, rtt_ms, cur / 1000, new_bitrate / 1000
+                            );
+                        }
+                    }
+                }
             }
             ServerEvent::Error(e) => {
                 warn!("服务端事件错误: {}", e);

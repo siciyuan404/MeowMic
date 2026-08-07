@@ -261,6 +261,209 @@ impl<'a> AudioPacket<'a> {
 }
 
 // ============================================================================
+// UDP 视频分片包:大端字节序手动读写
+// ============================================================================
+
+/// 视频魔数(区别于通用 MAGIC "MM")
+pub const VIDEO_MAGIC: u16 = 0x4D56; // "MV"
+
+/// 视频分片包头(8 字节)
+///
+/// 一个 H.264 NALU 可能超过 MTU,需要分片为多个 UDP 包。
+/// 同一帧的所有分片共享 `frame_id`,接收端按 `frame_id` 重组。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VideoFragment {
+    pub magic: u16,       // VIDEO_MAGIC = 0x4D56
+    pub frame_id: u16,    // 帧序号(同一帧所有分片共享)
+    pub frag_idx: u8,     // 当前分片序号 (0-based)
+    pub frag_total: u8,   // 总分片数(不含 FEC 包)
+    pub nal_type: u8,     // H.264 NALU 类型 (7=SPS, 8=PPS, 5=IDR, 1=P-frame)
+    /// bit0: is_keyframe
+    /// bit1: is_last_fragment
+    /// bit2: is_fec (XOR 冗余包,内容为所有原始分片的异或;
+    ///        frag_idx=frag_total, frag_total=原始分片数;接收端用其恢复单包丢失)
+    pub flags: u8,
+}
+
+pub const VIDEO_FRAGMENT_HEADER_LEN: usize = 8;
+
+/// 单个 UDP 包最大 payload (MTU 安全:1500 - IP 20 - UDP 8 - VideoFragment 8 = 1464)
+pub const MAX_VIDEO_PAYLOAD: usize = 1400;
+
+/// FEC 包固定 padding 长度(所有原始分片按最大长度对齐后异或,
+/// 接收端按此长度恢复,无需长度前缀)
+pub const FEC_PAD_LEN: usize = MAX_VIDEO_PAYLOAD;
+
+impl VideoFragment {
+    pub fn encode(&self, dst: &mut impl BufMut) {
+        dst.put_u16(self.magic);
+        dst.put_u16(self.frame_id);
+        dst.put_u8(self.frag_idx);
+        dst.put_u8(self.frag_total);
+        dst.put_u8(self.nal_type);
+        dst.put_u8(self.flags);
+    }
+
+    pub fn decode(buf: &mut &[u8]) -> Result<Self, ProtocolError> {
+        if buf.remaining() < VIDEO_FRAGMENT_HEADER_LEN {
+            return Err(ProtocolError::TooShort {
+                need: VIDEO_FRAGMENT_HEADER_LEN,
+                got: buf.remaining(),
+            });
+        }
+        let magic = buf.get_u16();
+        let frame_id = buf.get_u16();
+        let frag_idx = buf.get_u8();
+        let frag_total = buf.get_u8();
+        let nal_type = buf.get_u8();
+        let flags = buf.get_u8();
+        Ok(Self { magic, frame_id, frag_idx, frag_total, nal_type, flags })
+    }
+
+    pub fn is_keyframe(&self) -> bool {
+        self.flags & 0x01 != 0
+    }
+
+    pub fn is_last(&self) -> bool {
+        self.flags & 0x02 != 0
+    }
+
+    /// 是否为 XOR 冗余包(FEC)
+    pub fn is_fec(&self) -> bool {
+        self.flags & 0x04 != 0
+    }
+}
+
+/// 从 H.264 NALU 字节流中提取 NALU 类型
+///
+/// Annex-B 格式: [00 00 00 01] 或 [00 00 01] 起始码 + NALU 数据
+/// NALU 类型 = NALU 第一字节 & 0x1F
+pub fn nal_type_from_nalu(nalu: &[u8]) -> u8 {
+    // 跳过起始码
+    let mut i = 0;
+    while i < nalu.len() && nalu[i] == 0 {
+        i += 1;
+    }
+    if i < nalu.len() && (nalu[i] == 1) {
+        i += 1;
+    }
+    if i < nalu.len() {
+        nalu[i] & 0x1F
+    } else {
+        0
+    }
+}
+
+/// 将一个 NALU 分片为多个 UDP 包(每个 ≤ MAX_VIDEO_PAYLOAD)
+///
+/// 返回 Vec<(VideoFragment, Vec<u8>)>,每个元素是一个分片
+pub fn fragment_nalu(nalu: &[u8], frame_id: u16, is_keyframe: bool) -> Vec<(VideoFragment, Vec<u8>)> {
+    let nal_type = nal_type_from_nalu(nalu);
+    let total_len = nalu.len();
+    let frag_count = ((total_len + MAX_VIDEO_PAYLOAD - 1) / MAX_VIDEO_PAYLOAD).max(1) as u8;
+
+    let mut fragments = Vec::with_capacity(frag_count as usize);
+    let mut offset = 0;
+    for idx in 0..frag_count {
+        let end = (offset + MAX_VIDEO_PAYLOAD).min(total_len);
+        let chunk = nalu[offset..end].to_vec();
+        let is_last = idx == frag_count - 1;
+        let mut flags = 0u8;
+        if is_keyframe { flags |= 0x01; }
+        if is_last { flags |= 0x02; }
+        let frag = VideoFragment {
+            magic: VIDEO_MAGIC,
+            frame_id,
+            frag_idx: idx,
+            frag_total: frag_count,
+            nal_type,
+            flags,
+        };
+        fragments.push((frag, chunk));
+        offset = end;
+    }
+    fragments
+}
+
+/// 为一组原始分片生成 1 个 XOR 冗余包(FEC)
+///
+/// - 仅对 `frag_total >= 2` 的 NALU 生成 FEC;单分片 NALU 不需要
+/// - 所有原始分片按 `FEC_PAD_LEN` 零填充对齐后逐字节异或
+/// - FEC 包 `frag_idx = frag_total`(落在原始分片之后),flags 仅置 bit2(is_fec)
+///   (不置 bit1 is_last:它不是 NALU 的最后一段;接收端按 is_fec 单独识别)
+///
+/// 返回 Some((frag, payload)) 用于单包丢失恢复;frag_total < 2 时返回 None
+pub fn xor_fragments(fragments: &[(VideoFragment, Vec<u8>)]) -> Option<(VideoFragment, Vec<u8>)> {
+    if fragments.is_empty() {
+        return None;
+    }
+    let frag_total = fragments[0].0.frag_total;
+    if frag_total < 2 {
+        return None;
+    }
+    let mut fec = vec![0u8; FEC_PAD_LEN];
+    for (_frag, payload) in fragments {
+        for (i, b) in payload.iter().enumerate() {
+            fec[i] ^= b;
+        }
+    }
+    let mut flags = 0u8;
+    flags |= 0x04; // is_fec
+    if fragments[0].0.is_keyframe() {
+        flags |= 0x01;
+    }
+    let frag = VideoFragment {
+        magic: VIDEO_MAGIC,
+        frame_id: fragments[0].0.frame_id,
+        frag_idx: frag_total,
+        frag_total,
+        nal_type: fragments[0].0.nal_type,
+        flags,
+    };
+    Some((frag, fec))
+}
+
+/// 接收端:用 FEC 包恢复缺失的原始分片
+///
+/// - `have`:已收到的原始分片(`frag_idx < frag_total`),按 frag_idx 索引
+/// - `fec_payload`:XOR 冗余包负载(长度 = FEC_PAD_LEN)
+///
+/// 返回恢复出的缺失分片索引和 payload;
+/// 若缺失数 != 1 或无缺失,返回 None(无法恢复多包丢失)
+pub fn recover_with_fec(
+    have: &[(u8, &[u8])], // (frag_idx, payload_slice)
+    fec_payload: &[u8],
+    frag_total: u8,
+) -> Option<(u8, Vec<u8>)> {
+    if frag_total < 2 || fec_payload.len() < FEC_PAD_LEN {
+        return None;
+    }
+    // 已收到的原始分片集合
+    let mut have_set = [false; 256];
+    let mut have_count = 0u32;
+    for (idx, _payload) in have {
+        if (*idx as usize) < frag_total as usize && !have_set[*idx as usize] {
+            have_set[*idx as usize] = true;
+            have_count += 1;
+        }
+    }
+    let missing = frag_total as u32 - have_count;
+    if missing != 1 {
+        return None;
+    }
+    // 找出缺失的分片索引
+    let missing_idx = (0..frag_total).find(|i| !have_set[*i as usize])?;
+    // XOR:缺失分片 = FEC ⊕ 已有分片们
+    let mut recovered = fec_payload.to_vec();
+    for (_, payload) in have {
+        for (i, b) in payload.iter().enumerate() {
+            recovered[i] ^= b;
+        }
+    }
+    Some((missing_idx, recovered))
+}
+
+// ============================================================================
 // TCP 控制消息:变长,bincode 序列化
 // ============================================================================
 
@@ -344,6 +547,38 @@ pub enum ControlMessage {
     /// key_code 为 Windows VK code,is_down=true 按下/false 抬起
     /// 走 TCP 控制通道(可靠传递,快捷键低频)
     KeyEvent { key_code: u16, is_down: bool },
+    /// 客户端请求开始视频推流(UDP push 模式)
+    /// 客户端发送后,服务端在 video 端口 (base+6) 持续推送 H.264 分片
+    /// `client_video_port`:客户端绑定的 video UDP 接收端口(0.0.0.0:port),
+    /// 服务端 push 目标 = SocketAddr::new(peer.ip(), client_video_port)
+    StartVideo {
+        width: u32,
+        height: u32,
+        fps: u32,
+        bitrate: u32,
+        client_video_port: u16,
+    },
+    /// 服务端确认视频推流已开始
+    VideoStarted {
+        width: u32,
+        height: u32,
+        fps: u32,
+        codec: u8, // 0=H.264, 1=HEVC(预留)
+    },
+    /// 客户端请求停止视频推流
+    StopVideo,
+    /// 客户端→服务端:周期性视频接收统计(用于自适应码率)
+    ///
+    /// - `received_frames`:自上次上报以来收到的完整帧数
+    /// - `lost_frames`:自上次上报以来丢失的帧数(frame_id 跳跃 + FEC 恢复失败)
+    /// - `recovered_frames`:FEC 成功恢复的帧数
+    /// - `rtt_ms`:客户端测得的 RTT(若有 ClockSync,否则 0)
+    VideoStats {
+        received_frames: u32,
+        lost_frames: u32,
+        recovered_frames: u32,
+        rtt_ms: u32,
+    },
     Ping,
     Pong,
     Bye,
@@ -492,5 +727,119 @@ mod tests {
         let offset = ClockOffset::from_sync(1_000_000_000, 50, 50, 1_000_000_100);
         assert_eq!(offset.rtt_ns, 100);
         assert_eq!(offset.offset_ns, -1_000_000_000);
+    }
+
+    #[test]
+    fn video_fragment_roundtrip() {
+        let frag = VideoFragment {
+            magic: VIDEO_MAGIC,
+            frame_id: 42,
+            frag_idx: 1,
+            frag_total: 3,
+            nal_type: 5, // IDR
+            flags: 0x01, // keyframe
+        };
+        let mut buf = Vec::new();
+        frag.encode(&mut buf);
+        assert_eq!(buf.len(), VIDEO_FRAGMENT_HEADER_LEN);
+        let mut cur: &[u8] = &buf;
+        let decoded = VideoFragment::decode(&mut cur).unwrap();
+        assert_eq!(decoded, frag);
+        assert!(decoded.is_keyframe());
+        assert!(!decoded.is_last());
+    }
+
+    #[test]
+    fn fragment_nalu_single() {
+        // 小 NALU,单分片
+        let nalu = [0u8, 0, 0, 1, 0x65, 0xAA, 0xBB]; // IDR
+        let frags = fragment_nalu(&nalu, 0, true);
+        assert_eq!(frags.len(), 1);
+        assert!(frags[0].0.is_last());
+        assert!(frags[0].0.is_keyframe());
+        assert_eq!(frags[0].0.frag_total, 1);
+    }
+
+    #[test]
+    fn fragment_nalu_multi() {
+        // 大 NALU,多分片
+        let mut nalu = vec![0u8, 0, 0, 1, 0x65]; // IDR header
+        nalu.extend(vec![0xAA; MAX_VIDEO_PAYLOAD * 2 + 100]); // 超过 2 个分片
+        let frags = fragment_nalu(&nalu, 10, true);
+        assert_eq!(frags.len(), 3);
+        assert!(!frags[0].0.is_last());
+        assert!(!frags[1].0.is_last());
+        assert!(frags[2].0.is_last());
+        // 验证重组后数据一致
+        let mut reassembled = Vec::new();
+        for (_frag, data) in &frags {
+            reassembled.extend_from_slice(data);
+        }
+        assert_eq!(reassembled, nalu);
+    }
+
+    #[test]
+    fn xor_fragments_skip_single() {
+        // 单分片 NALU 不生成 FEC
+        let nalu = vec![0u8, 0, 0, 1, 0x65, 0xAA, 0xBB];
+        let frags = fragment_nalu(&nalu, 0, true);
+        assert_eq!(frags.len(), 1);
+        assert!(xor_fragments(&frags).is_none());
+    }
+
+    #[test]
+    fn xor_fragments_roundtrip() {
+        // 3 分片 NALU,丢任意 1 个,用 FEC 恢复
+        let mut nalu = vec![0u8, 0, 0, 1, 0x65]; // IDR
+        nalu.extend(vec![0x55u8; MAX_VIDEO_PAYLOAD * 2 + 200]); // 3 分片
+        let frags = fragment_nalu(&nalu, 42, true);
+        assert_eq!(frags.len(), 3);
+        let (fec_frag, fec_payload) = xor_fragments(&frags).unwrap();
+        assert!(fec_frag.is_fec());
+        assert_eq!(fec_frag.frag_idx, 3);
+        assert_eq!(fec_frag.frag_total, 3);
+
+        // 丢弃 frag_idx=1,用 FEC 恢复
+        let have: Vec<(u8, &[u8])> = vec![
+            (frags[0].0.frag_idx, frags[0].1.as_slice()),
+            (frags[2].0.frag_idx, frags[2].1.as_slice()),
+        ];
+        let (missing_idx, recovered) = recover_with_fec(&have, &fec_payload, 3).unwrap();
+        assert_eq!(missing_idx, 1);
+        assert_eq!(recovered.len(), frags[1].1.len());
+        assert_eq!(recovered.as_slice(), frags[1].1.as_slice());
+
+        // 完整重组(已恢复)应等于原 NALU
+        let mut reassembled = Vec::new();
+        reassembled.extend_from_slice(&frags[0].1);
+        reassembled.extend_from_slice(&recovered);
+        reassembled.extend_from_slice(&frags[2].1);
+        assert_eq!(reassembled, nalu);
+    }
+
+    #[test]
+    fn recover_with_fec_no_recovery_for_multi_loss() {
+        // 丢 2 个分片,FEC 无法恢复
+        let mut nalu = vec![0u8, 0, 0, 1, 0x65];
+        nalu.extend(vec![0x33u8; MAX_VIDEO_PAYLOAD * 2 + 200]);
+        let frags = fragment_nalu(&nalu, 7, false);
+        let (_, fec_payload) = xor_fragments(&frags).unwrap();
+        // 只保留 frag_idx=0
+        let have: Vec<(u8, &[u8])> = vec![(frags[0].0.frag_idx, frags[0].1.as_slice())];
+        assert!(recover_with_fec(&have, &fec_payload, 3).is_none());
+    }
+
+    #[test]
+    fn recover_with_fec_no_missing() {
+        // 无丢失时不需要恢复
+        let mut nalu = vec![0u8, 0, 0, 1, 0x65];
+        nalu.extend(vec![0x77u8; MAX_VIDEO_PAYLOAD * 2 + 100]);
+        let frags = fragment_nalu(&nalu, 9, true);
+        let (_, fec_payload) = xor_fragments(&frags).unwrap();
+        let have: Vec<(u8, &[u8])> = frags
+            .iter()
+            .map(|(f, p)| (f.frag_idx, p.as_slice()))
+            .collect();
+        assert!(recover_with_fec(&have, &fec_payload, 3).is_none());
     }
 }
