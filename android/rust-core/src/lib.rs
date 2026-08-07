@@ -1283,6 +1283,7 @@ pub extern "system" fn Java_com_meowmic_client_NativeBridge_nativeStartVideo(
     let (client, rt_handle) = {
         let guard = state().lock().unwrap();
         let Some(s) = guard.as_ref() else {
+            log::warn!("nativeStartVideo 失败: state 未初始化(未连接?)");
             return JNI_FALSE;
         };
         (s.client.clone(), s.rt.handle().clone())
@@ -1291,10 +1292,15 @@ pub extern "system" fn Java_com_meowmic_client_NativeBridge_nativeStartVideo(
 
     // 重置 codec 标记,发送 StartVideo,等待 VideoStarted ACK(最多 500ms)
     client.reset_video_started_codec();
+    log::info!(
+        "nativeStartVideo: 发送 StartVideo {}x{}@{}fps {}bps",
+        width, height, fps, bitrate
+    );
     match rt_handle.block_on(
         client.start_video(width as u32, height as u32, fps as u32, bitrate as u32),
     ) {
         Ok(()) => {
+            log::info!("nativeStartVideo: StartVideo 已发送,等待 VideoStarted ACK");
             // 等待 VideoStarted ACK 携带的 codec(轮询,最多 500ms)
             // 注意:ACK 仅用于日志/统计,Kotlin 端固定用 H.264 解码
             let codec = {
@@ -1317,14 +1323,14 @@ pub extern "system" fn Java_com_meowmic_client_NativeBridge_nativeStartVideo(
             }
             *video_guard = Some(rx);
             if codec < 0 {
-                log::warn!("VideoStarted ACK 超时,默认 H.264");
+                log::warn!("nativeStartVideo: VideoStarted ACK 超时(500ms),默认 H.264");
             } else {
-                log::info!("VideoStarted ACK codec={}", codec);
+                log::info!("nativeStartVideo: VideoStarted ACK codec={}", codec);
             }
             JNI_TRUE
         }
         Err(e) => {
-            log::warn!("start_video 失败: {}", e);
+            log::warn!("nativeStartVideo: start_video 失败: {}", e);
             JNI_FALSE
         }
     }
