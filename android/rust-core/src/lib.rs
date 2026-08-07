@@ -1267,6 +1267,9 @@ pub extern "system" fn Java_com_meowmic_client_NativeBridge_nativeSendKey(
 ///
 /// 服务端实际使用的 codec(0=H.264 / 1=HEVC)由 Rust 端记录,
 /// Kotlin 端目前固定使用 H.264(Surface 直渲)。
+///
+/// 注意:state() 锁只在提取引用时短暂持有,block_on 期间不持锁,
+/// 避免阻塞其它 JNI 调用(nativeSendTouch 等)。
 #[no_mangle]
 pub extern "system" fn Java_com_meowmic_client_NativeBridge_nativeStartVideo(
     _env: JNIEnv,
@@ -1276,15 +1279,20 @@ pub extern "system" fn Java_com_meowmic_client_NativeBridge_nativeStartVideo(
     fps: jint,
     bitrate: jint,
 ) -> jboolean {
-    let guard = state().lock().unwrap();
-    let Some(s) = guard.as_ref() else {
-        return JNI_FALSE;
+    // 短暂持锁,提取所需引用,避免 block_on 期间长时间持锁
+    let (client, rt_handle) = {
+        let guard = state().lock().unwrap();
+        let Some(s) = guard.as_ref() else {
+            return JNI_FALSE;
+        };
+        (s.client.clone(), s.rt.handle().clone())
     };
+    // state() 锁已释放,安全 block_on
 
     // 重置 codec 标记,发送 StartVideo,等待 VideoStarted ACK(最多 500ms)
-    s.client.reset_video_started_codec();
-    match s.rt.handle().block_on(
-        s.client.start_video(width as u32, height as u32, fps as u32, bitrate as u32),
+    client.reset_video_started_codec();
+    match rt_handle.block_on(
+        client.start_video(width as u32, height as u32, fps as u32, bitrate as u32),
     ) {
         Ok(()) => {
             // 等待 VideoStarted ACK 携带的 codec(轮询,最多 500ms)
@@ -1292,17 +1300,17 @@ pub extern "system" fn Java_com_meowmic_client_NativeBridge_nativeStartVideo(
             let codec = {
                 let mut got: i32 = -1;
                 for _ in 0..50 {
-                    let c = s.client.video_started_codec();
+                    let c = client.video_started_codec();
                     if c != 255 {
                         got = c as i32;
                         break;
                     }
-                    s.rt.handle().block_on(tokio::time::sleep(std::time::Duration::from_millis(10)));
+                    rt_handle.block_on(tokio::time::sleep(std::time::Duration::from_millis(10)));
                 }
                 got
             };
             // 启动视频接收循环
-            let rx = VideoReceiver::start(s.client.clone());
+            let rx = VideoReceiver::start(client);
             let mut video_guard = video_rx().lock().unwrap();
             if let Some(old) = video_guard.as_mut() {
                 old.stop();
@@ -1377,6 +1385,9 @@ pub extern "system" fn Java_com_meowmic_client_NativeBridge_nativeStopVideo(
 /// 返回 JSON: `{"received":N,"lost":N,"recovered":N}`,并清零内部计数器。
 /// Kotlin 每秒调用一次,通过 `Client.send_video_stats` 上报给服务端做自适应码率。
 /// 视频未启动时返回全 0。
+///
+/// 注意:Kotlin 声明非空 String,Rust 端必须确保不返回 null,
+/// 否则 Kotlin 端 NPE。env.new_string 失败时返回空字符串兜底。
 #[no_mangle]
 pub extern "system" fn Java_com_meowmic_client_NativeBridge_nativePollVideoStats(
     env: JNIEnv,
@@ -1390,10 +1401,11 @@ pub extern "system" fn Java_com_meowmic_client_NativeBridge_nativePollVideoStats
         r#"{{"received":{},"lost":{},"recovered":{}}}"#,
         stats.received_frames, stats.lost_frames, stats.recovered_frames
     );
-    match env.new_string(&json) {
-        Ok(s) => s.into_raw(),
-        Err(_) => std::ptr::null_mut(),
-    }
+    // 确保:Kotlin 声明非空 String,Rust 端不返回 null
+    // env.new_string 正常情况不会失败,失败时用空字符串兜底避免 NPE
+    let fallback = String::from("{}");
+    let s = env.new_string(&json).unwrap_or_else(|_| env.new_string(&fallback).unwrap());
+    s.into_raw()
 }
 
 /// Java: boolean nativeSendVideoStats(received, lost, recovered, rttMs)

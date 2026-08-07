@@ -139,15 +139,28 @@ fun MonitorScreen(
         val fps = frameRate
         val bitrate = 4_000_000
 
-        // 请求服务端开始推流
-        if (!NativeBridge.nativeStartVideo(w, h, fps, bitrate)) {
-            fetchError = "请求视频推流失败"
+        // 请求服务端开始推流(捕获 Throwable 包括 UnsatisfiedLinkError,避免 native 异常闪退)
+        val started = try {
+            NativeBridge.nativeStartVideo(w, h, fps, bitrate)
+        } catch (e: Throwable) {
+            Log.e(TAG_DEC, "nativeStartVideo 异常: ${e.javaClass.simpleName}: ${e.message}")
+            fetchError = "视频推流启动异常: ${e.message}"
+            false
+        }
+        if (!started) {
+            fetchError = fetchError ?: "请求视频推流失败"
             return@LaunchedEffect
         }
 
         // NALU 拉取循环:从 Rust 队列取完整 NALU → 喂入 MediaCodec
         while (isActive) {
-            val nalu = NativeBridge.nativePollVideoFrame()
+            val nalu = try {
+                NativeBridge.nativePollVideoFrame()
+            } catch (e: Throwable) {
+                Log.w(TAG_DEC, "nativePollVideoFrame 异常: ${e.message}")
+                delay(10)
+                continue
+            }
             if (nalu != null && nalu.isNotEmpty()) {
                 try {
                     val idx = codec.dequeueInputBuffer(5_000)
@@ -182,7 +195,7 @@ fun MonitorScreen(
                     Log.w(TAG_DEC, "解码 feed 失败: ${e.message}")
                 }
             } else {
-                delay(2) // 无帧时短暂等待,避免 CPU 空转
+                delay(5) // 无帧时短暂等待,避免 CPU 空转
             }
         }
     }
@@ -193,7 +206,12 @@ fun MonitorScreen(
         if (!monitorEnabled || addr.isBlank()) return@LaunchedEffect
         while (isActive) {
             delay(1_000)
-            val json = NativeBridge.nativePollVideoStats()
+            val json = try {
+                NativeBridge.nativePollVideoStats()
+            } catch (e: Throwable) {
+                Log.w(TAG_DEC, "nativePollVideoStats 异常: ${e.message}")
+                continue
+            }
             // 简易 JSON 解析(避免引入 org.json 依赖)
             // JSON 格式: {"received":N,"lost":N,"recovered":N}
             val received = Regex("""received"\s*:\s*(\d+)""").find(json)?.groupValues?.get(1)?.toIntOrNull() ?: 0
@@ -203,7 +221,7 @@ fun MonitorScreen(
             if (received == 0 && lost == 0 && recovered == 0) continue
             try {
                 NativeBridge.nativeSendVideoStats(received, lost, recovered, 0)
-            } catch (e: Exception) {
+            } catch (e: Throwable) {
                 Log.w(TAG_DEC, "上报视频统计失败: ${e.message}")
             }
         }
