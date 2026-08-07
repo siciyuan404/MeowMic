@@ -363,15 +363,22 @@ object LauncherRepository {
      * @param command 可执行文件路径(支持 %APPDATA% 等环境变量)
      * @return AddAppResult 包含成功 appId 或具体错误信息
      */
-    suspend fun addApp(serverAddr: String, name: String, command: String, pubkey: String): AddAppResult =
+    suspend fun addApp(
+        serverAddr: String,
+        name: String,
+        command: String,
+        pubkey: String,
+        args: List<String> = emptyList(),
+        workingDir: String = "",
+    ): AddAppResult =
         withContext(Dispatchers.IO) {
             val url = "${httpBaseUrl(serverAddr)}/add_app?pubkey=${encodeParam(pubkey)}"
             try {
                 val payload = JSONObject().apply {
                     put("name", name)
                     put("command", command)
-                    put("args", JSONArray())
-                    put("working_dir", "")
+                    put("args", JSONArray(args))
+                    put("working_dir", workingDir)
                 }.toString()
                 val payloadBytes = payload.toByteArray(Charsets.UTF_8)
                 val conn = (URL(url).openConnection() as HttpURLConnection).apply {
