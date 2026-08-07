@@ -186,9 +186,10 @@ fun MonitorScreen(
             delay(1_000)
             val json = NativeBridge.nativePollVideoStats()
             // 简易 JSON 解析(避免引入 org.json 依赖)
-            val received = Regex(""received"\s*:\s*(\d+)""").find(json)?.groupValues?.get(1)?.toIntOrNull() ?: 0
-            val lost = Regex(""lost"\s*:\s*(\d+)""").find(json)?.groupValues?.get(1)?.toIntOrNull() ?: 0
-            val recovered = Regex(""recovered"\s*:\s*(\d+)""").find(json)?.groupValues?.get(1)?.toIntOrNull() ?: 0
+            // JSON 格式: {"received":N,"lost":N,"recovered":N}
+            val received = Regex("""received"\s*:\s*(\d+)""").find(json)?.groupValues?.get(1)?.toIntOrNull() ?: 0
+            val lost = Regex("""lost"\s*:\s*(\d+)""").find(json)?.groupValues?.get(1)?.toIntOrNull() ?: 0
+            val recovered = Regex("""recovered"\s*:\s*(\d+)""").find(json)?.groupValues?.get(1)?.toIntOrNull() ?: 0
             // 三个字段全 0 时跳过上报(无活动)
             if (received == 0 && lost == 0 && recovered == 0) continue
             try {
