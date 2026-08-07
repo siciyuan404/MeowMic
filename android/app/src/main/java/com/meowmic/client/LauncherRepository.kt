@@ -20,6 +20,41 @@ data class AppEntry(
     val id: String,
     val name: String,
 )
+/**
+ * Quick-launch tile type (v2 free-layout)
+ *
+ * - APP:      PC app from /applist (launch via /launch?id=<app_id>)
+ * - SCRIPT:   local script (.bat/.cmd/.ps1, wrapped with cmd or powershell)
+ * - WEBSITE:  URL (opened via explorer.exe with default browser)
+ * - OBSIDIAN: obsidian:// URI (opened via explorer.exe with Obsidian)
+ */
+enum class QuickItemType(val label: String) {
+    APP("\u5E94\u7528"),
+    SCRIPT("\u811A\u672C"),
+    WEBSITE("\u7F51\u7AD9"),
+    OBSIDIAN("Obsidian");
+}
+
+/**
+ * Quick-launch tile (free layout)
+ *
+ * @param id     client-side unique id (for persistence + drag, "qi_" prefix)
+ * @param type   tile type, drives icon and badge dot color
+ * @param name   display name
+ * @param appId  PC app library id (all types launch via /launch?id=<appId>)
+ * @param page   page index (0-based)
+ * @param col    column (1-based, matches design grid-column)
+ * @param row    row (1-based, matches design grid-row)
+ */
+data class QuickItem(
+    val id: String,
+    val type: QuickItemType,
+    val name: String,
+    val appId: String,
+    val page: Int,
+    val col: Int,
+    val row: Int,
+)
 
 /**
  * PC 端目录浏览条目(用于 exe 路径选择)
