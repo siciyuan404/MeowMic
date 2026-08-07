@@ -171,18 +171,7 @@ impl Client {
 
         // TCP keepalive:通过 socket2 设置 SO_KEEPALIVE,防止 NAT/路由闲置断开
         // Android 8.0 默认 keepalive=2h, 显式设为 15s(参考 Sunshine 10s Ping 超时)
-        {
-            use std::os::windows::io::{AsRawSocket, FromRawSocket};
-            let raw = stream.as_raw_socket();
-            // safety: raw 来自活着的 TcpStream
-            let sock = unsafe { socket2::Socket::from_raw_socket(raw) };
-            let keepalive = socket2::TcpKeepalive::new()
-                .with_time(std::time::Duration::from_secs(15))
-                .with_interval(std::time::Duration::from_secs(5));
-            let _ = sock.set_tcp_keepalive(&keepalive);
-            // 不 drop Socket(会 close raw fd),让 TcpStream 继续持有
-            std::mem::forget(sock);
-        }
+        set_keepalive(&stream);
 
         // 分离读写半部:read_half 独占给后台接收 task,write_half 用 Mutex 保护
         // 避免之前的死锁:run_control_recv 持有 Mutex 在 read 上挂起,send_control 永远拿不到锁
@@ -585,6 +574,34 @@ async fn run_control_recv(
                 }
             }
         }
+    }
+}
+
+/// 跨平台设置 TCP keepalive(Windows/Android/Linux)
+///
+/// 参考 Sunshine 10s Ping 超时机制,防止 NAT/路由器因闲置丢弃 TCP 连接。
+/// 通过 socket2 直接在原生 socket 上设置 SO_KEEPALIVE + TCP_KEEPIDLE + TCP_KEEPINTVL。
+fn set_keepalive(stream: &tokio::net::TcpStream) {
+    let keepalive = socket2::TcpKeepalive::new()
+        .with_time(std::time::Duration::from_secs(15))
+        .with_interval(std::time::Duration::from_secs(5));
+
+    #[cfg(windows)]
+    {
+        use std::os::windows::io::{AsRawSocket, FromRawSocket};
+        let raw = stream.as_raw_socket();
+        // safety: raw 来自活着的 TcpStream,drop 时 mem::forget 防止 double-close
+        let sock = unsafe { socket2::Socket::from_raw_socket(raw) };
+        let _ = sock.set_tcp_keepalive(&keepalive);
+        std::mem::forget(sock);
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::io::{AsRawFd, FromRawFd};
+        let raw = stream.as_raw_fd();
+        let sock = unsafe { socket2::Socket::from_raw_fd(raw) };
+        let _ = sock.set_tcp_keepalive(&keepalive);
+        std::mem::forget(sock);
     }
 }
 

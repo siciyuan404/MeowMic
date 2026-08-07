@@ -191,19 +191,7 @@ impl Server {
         loop {
             match tcp.accept().await {
                 Ok((stream, peer)) => {
-                    // TCP keepalive:通过 socket2 + AsRawSocket,防止 NAT/路由闲置断开
-                    {
-                        use std::os::windows::io::{AsRawSocket, FromRawSocket};
-                        let raw = stream.as_raw_socket();
-                        // safety: raw 来自活着的 TcpStream
-                        let sock = unsafe { socket2::Socket::from_raw_socket(raw) };
-                        let keepalive = socket2::TcpKeepalive::new()
-                            .with_time(std::time::Duration::from_secs(15))
-                            .with_interval(std::time::Duration::from_secs(5));
-                        let _ = sock.set_tcp_keepalive(&keepalive);
-                        // 不 drop Socket(会 close raw fd),让 TcpStream 继续持有
-                        std::mem::forget(sock);
-                    }
+                    set_keepalive(&stream);
                     let sync = sync.clone();
                     let event_tx = event_tx.clone();
                     let pairing = pairing.clone();
@@ -219,6 +207,30 @@ impl Server {
                 }
             }
         }
+    }
+}
+
+/// 跨平台设置 TCP keepalive(Windows/Android/Linux)
+fn set_keepalive(stream: &tokio::net::TcpStream) {
+    let keepalive = socket2::TcpKeepalive::new()
+        .with_time(std::time::Duration::from_secs(15))
+        .with_interval(std::time::Duration::from_secs(5));
+
+    #[cfg(windows)]
+    {
+        use std::os::windows::io::{AsRawSocket, FromRawSocket};
+        let raw = stream.as_raw_socket();
+        let sock = unsafe { socket2::Socket::from_raw_socket(raw) };
+        let _ = sock.set_tcp_keepalive(&keepalive);
+        std::mem::forget(sock);
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::io::{AsRawFd, FromRawFd};
+        let raw = stream.as_raw_fd();
+        let sock = unsafe { socket2::Socket::from_raw_fd(raw) };
+        let _ = sock.set_tcp_keepalive(&keepalive);
+        std::mem::forget(sock);
     }
 }
 
