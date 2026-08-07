@@ -1260,8 +1260,13 @@ pub extern "system" fn Java_com_meowmic_client_NativeBridge_nativeSendKey(
     }
 }
 
-/// Java: int nativeStartVideo(int width, int height, int fps, int bitrate)
-/// 返回:-1 = 失败,0 = H.264,1 = HEVC
+/// Java: boolean nativeStartVideo(int width, int height, int fps, int bitrate)
+///
+/// Kotlin 声明返回 Boolean,JNI ABI 对应 jboolean(u8),
+/// 必须 -> jboolean;若用 jint(i32) 会导致 ABI 不匹配,引发应用闪退。
+///
+/// 服务端实际使用的 codec(0=H.264 / 1=HEVC)由 Rust 端记录,
+/// Kotlin 端目前固定使用 H.264(Surface 直渲)。
 #[no_mangle]
 pub extern "system" fn Java_com_meowmic_client_NativeBridge_nativeStartVideo(
     _env: JNIEnv,
@@ -1270,10 +1275,10 @@ pub extern "system" fn Java_com_meowmic_client_NativeBridge_nativeStartVideo(
     height: jint,
     fps: jint,
     bitrate: jint,
-) -> jint {
+) -> jboolean {
     let guard = state().lock().unwrap();
     let Some(s) = guard.as_ref() else {
-        return -1;
+        return JNI_FALSE;
     };
 
     // 重置 codec 标记,发送 StartVideo,等待 VideoStarted ACK(最多 500ms)
@@ -1283,6 +1288,7 @@ pub extern "system" fn Java_com_meowmic_client_NativeBridge_nativeStartVideo(
     ) {
         Ok(()) => {
             // 等待 VideoStarted ACK 携带的 codec(轮询,最多 500ms)
+            // 注意:ACK 仅用于日志/统计,Kotlin 端固定用 H.264 解码
             let codec = {
                 let mut got: i32 = -1;
                 for _ in 0..50 {
@@ -1304,14 +1310,14 @@ pub extern "system" fn Java_com_meowmic_client_NativeBridge_nativeStartVideo(
             *video_guard = Some(rx);
             if codec < 0 {
                 log::warn!("VideoStarted ACK 超时,默认 H.264");
-                0 // 超时默认 H.264
             } else {
-                codec
+                log::info!("VideoStarted ACK codec={}", codec);
             }
+            JNI_TRUE
         }
         Err(e) => {
             log::warn!("start_video 失败: {}", e);
-            -1
+            JNI_FALSE
         }
     }
 }
