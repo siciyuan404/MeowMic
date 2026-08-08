@@ -262,9 +262,24 @@ impl VideoReceiver {
             let local_addr = video_sock.local_addr().map(|a| a.to_string()).unwrap_or_else(|_| "?".to_string());
             log::info!("视频接收循环启动: listen on {}, peer={}", local_addr, video_peer);
 
+            // 诊断:每秒打印收包统计,帮助定位"解码器就绪后转圈"问题
+            let mut recv_count: u32 = 0;
+            let mut last_stats_time = std::time::Instant::now();
+
             loop {
                 match video_sock.recv_from(&mut buf).await {
-                    Ok((n, _peer)) => {
+                    Ok((n, peer_addr)) => {
+                        recv_count = recv_count.saturating_add(1);
+                        if recv_count == 1 {
+                            log::info!("视频首个 UDP 包到达: {} 字节 from {}", n, peer_addr);
+                        }
+                        // 每秒打印一次收包统计
+                        let now = std::time::Instant::now();
+                        if now.duration_since(last_stats_time) >= std::time::Duration::from_secs(1) {
+                            log::info!("视频收包统计: {} 包/秒", recv_count);
+                            recv_count = 0;
+                            last_stats_time = now;
+                        }
                         // 包裹 catch_unwind:任何 panic(如大 NALU 分配失败)不应杀死 task
                         // 或中毒 Mutex,否则 nativePollVideoFrame 会级联 panic→SIGABRT
                         let panic_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
