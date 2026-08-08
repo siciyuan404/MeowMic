@@ -68,6 +68,14 @@ jobs:
         with:
           targets: ${{ matrix.target }}
 
+      - name: Install libopus (vcpkg)
+        shell: bash
+        run: |
+          vcpkg install opus:x64-windows-static-md
+          # audiopus_sys 的 link_opus 会在路径后加 /lib,所以 OPUS_LIB_DIR 指向安装前缀
+          echo "OPUS_LIB_DIR=${VCPKG_INSTALLATION_ROOT}/installed/x64-windows-static-md" >> $GITHUB_ENV
+          echo "OPUS_STATIC=1" >> $GITHUB_ENV
+
       - name: Install Tauri CLI
         run: cargo install tauri-cli --version "^1.5" --locked
 

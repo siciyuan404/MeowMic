@@ -151,7 +151,25 @@ impl AudioJitterBuffer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use meowmic_audio::{AudioConfig, make_decoder};
+    use meowmic_audio::{AudioConfig, AudioDecoder, AudioError};
+
+    /// 测试用 mock 解码器(不依赖 libopus,聚焦 jitter buffer 逻辑验证)
+    struct MockDecoder;
+    impl AudioDecoder for MockDecoder {
+        fn decode(&mut self, opus: &[u8], dst: &mut [i16]) -> Result<usize, AudioError> {
+            let n = opus.len().min(dst.len());
+            for (i, s) in dst[..n].iter_mut().enumerate() {
+                *s = if i < opus.len() { opus[i] as i8 as i16 } else { 0 };
+            }
+            Ok(n)
+        }
+        fn decode_lost(&mut self, dst: &mut [i16]) -> Result<usize, AudioError> {
+            for s in dst.iter_mut() {
+                *s = 0;
+            }
+            Ok(dst.len())
+        }
+    }
 
     fn make_opus_packet(seq: u16, payload: &[u8]) -> (u16, Vec<u8>) {
         (seq, payload.to_vec())
@@ -160,7 +178,7 @@ mod tests {
     #[test]
     fn test_sequential_packets_no_loss() {
         let cfg = AudioConfig::default();
-        let mut dec = make_decoder(&cfg);
+        let mut dec = MockDecoder;
         let mut jb = AudioJitterBuffer::new(2, 10);
 
         // 顺序到达 3 个包
@@ -186,7 +204,7 @@ mod tests {
     #[test]
     fn test_packet_loss_plc_fill() {
         let cfg = AudioConfig::default();
-        let mut dec = make_decoder(&cfg);
+        let mut dec = MockDecoder;
         let mut jb = AudioJitterBuffer::new(1, 10);
 
         // 发送 seq=0, 2(跳过 1)
@@ -209,7 +227,7 @@ mod tests {
     #[test]
     fn test_late_packet_discarded() {
         let cfg = AudioConfig::default();
-        let mut dec = make_decoder(&cfg);
+        let mut dec = MockDecoder;
         let mut jb = AudioJitterBuffer::new(1, 10);
 
         // 发送 seq=0, 1
@@ -232,7 +250,7 @@ mod tests {
     #[test]
     fn test_seq_wraparound() {
         let cfg = AudioConfig::default();
-        let mut dec = make_decoder(&cfg);
+        let mut dec = MockDecoder;
         let mut jb = AudioJitterBuffer::new(1, 10);
 
         // seq 在 u16::MAX 附近回绕
@@ -276,7 +294,7 @@ mod tests {
     #[test]
     fn test_empty_buffer_plc() {
         let cfg = AudioConfig::default();
-        let mut dec = make_decoder(&cfg);
+        let mut dec = MockDecoder;
         let mut jb = AudioJitterBuffer::new(1, 10);
 
         // 发送 1 个包启动

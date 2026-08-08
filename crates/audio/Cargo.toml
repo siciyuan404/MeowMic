@@ -13,7 +13,7 @@ tracing = { workspace = true }
 opus = { version = "0.3", optional = true }
 
 [features]
-default = ["pcm-passthrough"]
+default = ["opus-codec"]
 # 真实 Opus 编解码(需要 libopus;Windows 推荐 vcpkg install opus)
 opus-codec = ["dep:opus"]
 # PCM 直通(P0 管线验证用,无编码,带宽大但无需 libopus)

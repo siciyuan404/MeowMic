@@ -74,7 +74,46 @@ jobs:
         run: |
           yes | sdkmanager --licenses > /dev/null 2>&1 || true
           sdkmanager --update
-          sdkmanager "platforms;android-34" "build-tools;34.0.0" "ndk;26.3.11579264"
+          sdkmanager "platforms;android-34" "build-tools;34.0.0" "ndk;26.3.11579264" "cmake;3.22.1"
+
+      - name: Build libopus for Android (all ABIs)
+        shell: bash
+        run: |
+          set -e
+          # 下载 opus 源码(v1.5.2,API 兼容 audiopus_sys 要求的 1.3+)
+          git clone --depth 1 --branch v1.5.2 https://github.com/xiph/opus.git /tmp/opus-src
+
+          NDK_ROOT="$ANDROID_HOME/ndk/26.3.11579264"
+          TOOLCHAIN="$NDK_ROOT/build/cmake/android.toolchain.cmake"
+
+          # Rust target → Android ABI 映射
+          declare -a TARGETS=(
+            "armv7-linux-androideabi:armeabi-v7a"
+            "aarch64-linux-android:arm64-v8a"
+            "x86_64-linux-android:x86_64"
+          )
+
+          for entry in "${TARGETS[@]}"; do
+            RUST_TARGET="${entry%%:*}"
+            ANDROID_ABI="${entry##*:}"
+            BUILD_DIR="/tmp/opus-build-$ANDROID_ABI"
+            INSTALL_DIR="/tmp/opus-install-$ANDROID_ABI"
+            echo "=== Building libopus for $ANDROID_ABI ($RUST_TARGET) ==="
+            cmake -S /tmp/opus-src -B "$BUILD_DIR" \
+              -DCMAKE_TOOLCHAIN_FILE="$TOOLCHAIN" \
+              -DANDROID_ABI="$ANDROID_ABI" \
+              -DANDROID_PLATFORM=android-21 \
+              -DANDROID_NDK="$NDK_ROOT" \
+              -DCMAKE_INSTALL_PREFIX="$INSTALL_DIR" \
+              -DBUILD_SHARED_LIBS=OFF \
+              -DOPUS_BUILD_PROGRAMS=OFF \
+              -DOPUS_BUILD_TESTS=OFF \
+              -DCMAKE_BUILD_TYPE=Release
+            cmake --build "$BUILD_DIR" -- -j$(nproc)
+            cmake --install "$BUILD_DIR"
+            echo "Installed to $INSTALL_DIR"
+            ls "$INSTALL_DIR/lib/"
+          done
 
       - name: Cache Cargo registry
         uses: actions/cache@v4
@@ -97,11 +136,27 @@ jobs:
           restore-keys: |
             gradle-${{ runner.os }}-
 
-      - name: Build Rust core (all ABIs)
+      - name: Build Rust core (per ABI with libopus)
         working-directory: android/rust-core
         env:
           RUSTFLAGS: "-C link-arg=-landroid"
-        run: cargo ndk -t armv7-linux-androideabi -t aarch64-linux-android -t x86_64-linux-android -o ../app/src/main/jniLibs build --release
+          OPUS_STATIC: "1"
+          OPUS_NO_PKG: "1"
+        run: |
+          set -e
+          declare -a TARGETS=(
+            "armv7-linux-androideabi:armeabi-v7a"
+            "aarch64-linux-android:arm64-v8a"
+            "x86_64-linux-android:x86_64"
+          )
+          for entry in "${TARGETS[@]}"; do
+            RUST_TARGET="${entry%%:*}"
+            ANDROID_ABI="${entry##*:}"
+            # audiopus_sys 的 link_opus 会在路径后加 /lib,所以 OPUS_LIB_DIR 指向安装前缀
+            export OPUS_LIB_DIR="/tmp/opus-install-$ANDROID_ABI"
+            echo "=== Building Rust for $RUST_TARGET (OPUS_LIB_DIR=$OPUS_LIB_DIR) ==="
+            cargo ndk -t "$RUST_TARGET" -o ../app/src/main/jniLibs build --release
+          done
 
       - name: Check keystore availability
         id: check_keystore

@@ -10,7 +10,7 @@ name = "meowmic"
 
 [dependencies]
 meowmic-net = { path = "../../crates/net" }
-meowmic-audio = { path = "../../crates/audio", default-features = false, features = ["pcm-passthrough"] }
+meowmic-audio = { path = "../../crates/audio", default-features = false, features = ["opus-codec"] }
 meowmic-protocol = { path = "../../crates/protocol" }
 meowmic-touch = { path = "../../crates/touch" }
 jni = { version = "0.21", default-features = false }
