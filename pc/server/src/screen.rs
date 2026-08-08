@@ -197,6 +197,11 @@ mod dxgi_capturer {
 
     /// 缩放 BGRA 帧到不超过 (max_w, max_h) 的最大尺寸(保持纵横比,最近邻)
     /// 返回 (new_width, new_height, new_pixels)
+    ///
+    /// 关键:输出分辨率对齐到 16 的倍数(H.264 macroblock 对齐)。
+    /// 非标准分辨率(如 1440x1080,height=1080 不是 16 的倍数)会导致
+    /// Media Foundation 编码器 SetInputType 返回 MF_E_INVALIDMEDIATYPE (0xc00d6d77)。
+    /// 参考 Sunshine:video::config_t 会将宽高对齐到宏块尺寸。
     fn scale_bgra_down(
         src: &[u8],
         sw: u32,
@@ -208,11 +213,12 @@ mod dxgi_capturer {
         let scale = (max_w as f64 / sw as f64).min(max_h as f64 / sh as f64).min(1.0);
         let dw = ((sw as f64) * scale).round() as u32;
         let dh = ((sh as f64) * scale).round() as u32;
-        // 确保偶数(H.264 要求宽高为偶数)
-        let dw = if dw % 2 == 1 { dw - 1 } else { dw };
-        let dh = if dh % 2 == 1 { dh - 1 } else { dh };
-        let dw = dw.max(2);
-        let dh = dh.max(2);
+        // 对齐到 16 的倍数(H.264 macroblock = 16x16)
+        // 不用偶数对齐,因为 16 对齐更严格且满足偶数要求
+        let dw = (dw / 16) * 16;
+        let dh = (dh / 16) * 16;
+        let dw = dw.max(16);
+        let dh = dh.max(16);
 
         let mut out = vec![0u8; (dw as usize) * (dh as usize) * 4];
         for y in 0..dh as usize {

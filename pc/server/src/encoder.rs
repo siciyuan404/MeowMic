@@ -34,7 +34,8 @@ mod mf_encoder {
         MF_MT_FRAME_RATE, MF_MT_FRAME_SIZE, MF_MT_INTERLACE_MODE, MF_MT_MAJOR_TYPE,
         MF_MT_SUBTYPE, MF_MT_VIDEO_NOMINAL_RANGE, MFSTARTUP_LITE, MFMediaType_Video,
         MFNominalRange_0_255, MFVideoFormat_H264, MFVideoFormat_HEVC, MFVideoFormat_NV12,
-        MFVideoInterlace_Progressive, MFTEnumEx, MFT_ENUM_FLAG, MFT_ENUM_FLAG_HARDWARE,
+        MFVideoFormat_RGB32, MFVideoInterlace_Progressive, MFTEnumEx, MFT_ENUM_FLAG,
+        MFT_ENUM_FLAG_HARDWARE,
         MFT_ENUM_FLAG_SYNCMFT, MFT_MESSAGE_COMMAND_DRAIN, MFT_MESSAGE_NOTIFY_BEGIN_STREAMING,
         MFT_MESSAGE_NOTIFY_END_OF_STREAM, MFT_MESSAGE_NOTIFY_END_STREAMING,
         MFT_MESSAGE_NOTIFY_START_OF_STREAM, MFT_OUTPUT_DATA_BUFFER, MFT_REGISTER_TYPE_INFO,
@@ -43,6 +44,18 @@ mod mf_encoder {
     use windows::Win32::System::Com::CoTaskMemFree;
 
     use super::Codec;
+
+    /// 编码器输入格式(NV12 优先,RGB32 回退)
+    /// 不同的编码器 MFT 支持的输入格式不同:
+    /// - 硬件编码器(NVENC/AMF/QSV):通常只接受 NV12
+    /// - 软件 H.264 编码器:接受 NV12 和 RGB32
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum InputFormat {
+        /// NV12(YUV 4:2:0 半平面,硬件编码器首选)
+        Nv12,
+        /// RGB32(BGRA,软件编码器回退)
+        Rgb32,
+    }
 
     /// Media Foundation 编码器封装(支持 H.264 / HEVC)
     pub struct MFEncoder {
@@ -54,6 +67,8 @@ mod mf_encoder {
         avg_bitrate: u32,
         frame_index: u64,
         initialized: bool,
+        /// 实际配置成功的输入格式(决定 encode_frame 的转换路径)
+        input_format: InputFormat,
     }
 
     unsafe impl Send for MFEncoder {}
@@ -94,6 +109,7 @@ mod mf_encoder {
                         avg_bitrate,
                         frame_index: 0,
                         initialized: false,
+                        input_format: InputFormat::Nv12,
                     };
                     match encoder.configure() {
                         Some(_) => {
@@ -194,46 +210,65 @@ mod mf_encoder {
             found
         }
 
-        /// 配置编码器输入/输出类型
-        unsafe fn configure(&mut self) -> Option<()> {
-            // 输入类型:NV12(硬件 H.264 编码器标准输入格式,不接受 RGB32)
-            // 参考 Sunshine:所有硬件编码器(nvenc/amf/qsv)都要求 NV12 输入
-            // MFVideoFormat_NV12 = MFVideoFormat_NV12
-            let input_type = MFCreateMediaType().ok()?;
-            let mut step = || -> Option<()> {
-                input_type
-                    .SetGUID(&MF_MT_MAJOR_TYPE as *const _, &MFMediaType_Video as *const _)
-                    .ok()?;
-                input_type
-                    .SetGUID(&MF_MT_SUBTYPE as *const _, &MFVideoFormat_NV12 as *const _)
-                    .ok()?;
-                input_type
-                    .SetUINT32(&MF_MT_INTERLACE_MODE as *const _, MFVideoInterlace_Progressive.0 as u32)
-                    .ok()?;
-                // 声明 full range [0,255],与 bgra_to_nv12 的 BT.601 full-range 公式匹配
-                // 不设置时编码器默认 limited range [16,235],会导致画面偏暗
-                input_type
-                    .SetUINT32(&MF_MT_VIDEO_NOMINAL_RANGE as *const _, MFNominalRange_0_255.0 as u32)
-                    .ok()?;
-                input_type
-                    .SetUINT64(&MF_MT_FRAME_SIZE as *const _, Self::pack_size(self.width, self.height))
-                    .ok()?;
-                input_type
-                    .SetUINT64(&MF_MT_FRAME_RATE as *const _, Self::pack_size(self.frame_rate, 1))
-                    .ok()?;
-                Some(())
+        /// 尝试设置指定的输入格式,成功返回 Some(())
+        unsafe fn try_set_input_type(&self, fmt: InputFormat) -> Option<()> {
+            let subtype = match fmt {
+                InputFormat::Nv12 => MFVideoFormat_NV12,
+                InputFormat::Rgb32 => MFVideoFormat_RGB32,
             };
-            if step().is_none() {
-                tracing::error!("configure: 输入类型设置失败 (input_type 字段)");
-                return None;
-            }
+            let input_type = MFCreateMediaType().ok()?;
+            input_type
+                .SetGUID(&MF_MT_MAJOR_TYPE as *const _, &MFMediaType_Video as *const _)
+                .ok()?;
+            input_type
+                .SetGUID(&MF_MT_SUBTYPE as *const _, &subtype as *const _)
+                .ok()?;
+            input_type
+                .SetUINT32(&MF_MT_INTERLACE_MODE as *const _, MFVideoInterlace_Progressive.0 as u32)
+                .ok()?;
+            // 声明 full range [0,255](NV12 模式与 bgra_to_nv12 的 BT.601 full-range 匹配;
+            // RGB32 模式下编码器也需要知道 range,否则画面偏暗)
+            input_type
+                .SetUINT32(&MF_MT_VIDEO_NOMINAL_RANGE as *const _, MFNominalRange_0_255.0 as u32)
+                .ok()?;
+            input_type
+                .SetUINT64(&MF_MT_FRAME_SIZE as *const _, Self::pack_size(self.width, self.height))
+                .ok()?;
+            input_type
+                .SetUINT64(&MF_MT_FRAME_RATE as *const _, Self::pack_size(self.frame_rate, 1))
+                .ok()?;
             match self.transform.SetInputType(0, &input_type, 0) {
-                Ok(()) => {}
+                Ok(()) => Some(()),
                 Err(e) => {
-                    tracing::error!("configure: SetInputType 失败: 0x{:x}", e.code().0);
-                    return None;
+                    tracing::warn!(
+                        "try_set_input_type: {:?} SetInputType 失败: 0x{:x} ({}x{})",
+                        fmt, e.code().0, self.width, self.height
+                    );
+                    None
                 }
             }
+        }
+
+        /// 配置编码器输入/输出类型
+        ///
+        /// 输入格式尝试顺序:NV12(硬件编码器首选)→ RGB32(软件编码器回退)
+        /// 不同编码器 MFT 支持的输入格式不同,逐个尝试直到 SetInputType 成功。
+        unsafe fn configure(&mut self) -> Option<()> {
+            // 尝试多种输入格式:NV12 → RGB32
+            let formats = [InputFormat::Nv12, InputFormat::Rgb32];
+            let mut configured_format = None;
+            for fmt in &formats {
+                match self.try_set_input_type(*fmt) {
+                    Some(()) => {
+                        configured_format = Some(*fmt);
+                        break;
+                    }
+                    None => continue,
+                }
+            }
+            let input_format = configured_format?;
+            self.input_format = input_format;
+            tracing::info!("configure: 输入格式 = {:?}", input_format);
 
             // 输出类型:根据 codec 选 H.264 或 HEVC
             let output_subtype = match self.codec {
@@ -300,8 +335,9 @@ mod mf_encoder {
 
         /// 编码一帧 BGRA 像素,返回 NALU 字节
         ///
-        /// 关键:编码器输入类型为 NV12(见 configure),必须先把 BGRA 转换为 NV12 再喂给编码器。
-        /// 直接喂 BGRA 会输出损坏的 H.264 流,客户端解码后无画面。
+        /// 根据 configure 阶段确定的 input_format 决定转换路径:
+        /// - Nv12:先 bgra_to_nv12 转换再喂给编码器
+        /// - Rgb32:直接喂 BGRA 数据(软件编码器接受)
         pub fn encode_frame(&mut self, bgra: &[u8]) -> Option<Vec<u8>> {
             if !self.initialized {
                 if self.frame_index == 0 {
@@ -309,7 +345,6 @@ mod mf_encoder {
                 }
                 return None;
             }
-            // BGRA → NV12(编码器期望 NV12 输入,full range BT.601)
             let expected_bgra = (self.width as usize) * (self.height as usize) * 4;
             if bgra.len() < expected_bgra {
                 if self.frame_index == 0 {
@@ -320,33 +355,39 @@ mod mf_encoder {
                 }
                 return None;
             }
-            let nv12 = bgra_to_nv12(bgra, self.width as usize, self.height as usize);
-            let nv12_len = nv12.len();
+
+            // 根据输入格式选择数据源:NV12 需要转换,RGB32 直接用 BGRA
+            let (frame_data, data_label) = match self.input_format {
+                InputFormat::Nv12 => {
+                    let nv12 = bgra_to_nv12(bgra, self.width as usize, self.height as usize);
+                    (nv12, "nv12")
+                }
+                InputFormat::Rgb32 => (bgra.to_vec(), "bgra"),
+            };
+            let data_len = frame_data.len();
             unsafe {
                 let sample = MFCreateSample().ok()?;
-                let buffer = MFCreateMemoryBuffer(nv12_len as u32).ok()?;
+                let buffer = MFCreateMemoryBuffer(data_len as u32).ok()?;
 
-                // 拷贝 NV12 像素到 buffer
                 let mut ptr: *mut u8 = std::ptr::null_mut();
                 let mut max_len: u32 = 0;
                 let mut cur_len: u32 = 0;
                 buffer
                     .Lock(&mut ptr, Some(&mut max_len), Some(&mut cur_len))
                     .ok()?;
-                if ptr.is_null() || max_len < nv12_len as u32 {
+                if ptr.is_null() || max_len < data_len as u32 {
                     let _ = buffer.Unlock();
                     if self.frame_index == 0 {
-                        tracing::error!("encode_frame: buffer 无效 ptr={} max_len={} need={}", ptr.is_null(), max_len, nv12_len);
+                        tracing::error!("encode_frame: buffer 无效 ptr={} max_len={} need={}", ptr.is_null(), max_len, data_len);
                     }
                     return None;
                 }
-                std::ptr::copy_nonoverlapping(nv12.as_ptr(), ptr, nv12_len);
-                let _ = buffer.SetCurrentLength(nv12_len as u32);
+                std::ptr::copy_nonoverlapping(frame_data.as_ptr(), ptr, data_len);
+                let _ = buffer.SetCurrentLength(data_len as u32);
                 let _ = buffer.Unlock();
 
                 sample.AddBuffer(&buffer).ok()?;
 
-                // 时间戳(100ns 单位)
                 let timestamp = self.frame_index * 10_000_000 / self.frame_rate as u64;
                 let duration = 10_000_000 / self.frame_rate as u64;
                 let _ = sample.SetSampleTime(timestamp as i64);
@@ -360,10 +401,9 @@ mod mf_encoder {
                     return None;
                 }
 
-                // 只在前 3 帧打印详细日志,避免刷屏
                 let need_debug = self.frame_index < 3;
                 if need_debug {
-                    tracing::info!("encode_frame: ProcessInput 成功 frame_index={} nv12_len={}", self.frame_index, nv12_len);
+                    tracing::info!("encode_frame: ProcessInput 成功 frame_index={} {}_len={}", self.frame_index, data_label, data_len);
                 }
                 self.frame_index += 1;
 
