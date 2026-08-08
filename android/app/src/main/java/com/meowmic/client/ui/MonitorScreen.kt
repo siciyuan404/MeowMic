@@ -259,11 +259,11 @@ fun MonitorScreen(
                                 Log.w(TAG_DEC, "输入队列满,nalu 被丢弃 count=$naluDroppedInputFull size=${nalu.size}")
                             }
                         } else {
-                            feedNaluToCodec(nalu, idx2)
+                            feedNaluToCodec(mediaCodec, nalu, idx2)
                             naluFed++
                         }
                     } else {
-                        feedNaluToCodec(nalu, idx)
+                        feedNaluToCodec(mediaCodec, nalu, idx)
                         naluFed++
                     }
 
