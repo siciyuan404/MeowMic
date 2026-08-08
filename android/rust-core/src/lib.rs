@@ -240,6 +240,8 @@ fn process_video_packet(
 
 impl VideoReceiver {
     /// 启动视频接收循环
+    /// 注意:必须在 tokio runtime 上下文中调用(通过 rt_handle.block_on 或 rt.spawn),
+    /// 否则 tokio::spawn 会 panic: "there is no reactor running"
     fn start(client: Arc<Client>) -> Self {
         let frames: Arc<Mutex<std::collections::VecDeque<Vec<u8>>>> =
             Arc::new(Mutex::new(std::collections::VecDeque::with_capacity(5)));
@@ -1422,7 +1424,10 @@ pub extern "system" fn Java_com_meowmic_client_NativeBridge_nativeStartVideo(
                 got
             };
             // 启动视频接收循环
-            let rx = VideoReceiver::start(client);
+            // 关键修复:必须在 runtime 上下文内 spawn,否则 tokio::spawn panic
+            // "there is no reactor running, must be called from the context of a Tokio 1.x runtime"
+            // → abort → SIGABRT(之前 v0.30.8 闪退的根因)
+            let rx = rt_handle.block_on(async { VideoReceiver::start(client) });
             let mut video_guard = lock_or_recover(video_rx());
             if let Some(old) = video_guard.as_mut() {
                 old.stop();
