@@ -134,7 +134,6 @@ mod dxgi_capturer {
         }
 
         /// 抓取屏幕并编码 NALU(H.264 或 HEVC,取决于 codec 参数)
-        /// 仅在画面有变化时返回 NALU(无变化时返回 None,客户端保持上一帧)
         fn capture(&mut self, frame_rate: u32, bitrate: u32, codec: crate::encoder::Codec) -> Option<Vec<u8>> {
             if self.needs_rebuild {
                 self.rebuild();
@@ -144,14 +143,23 @@ mod dxgi_capturer {
             }
 
             match unsafe { self.acquire_frame() } {
-                Some(frame) => crate::encoder::encode_frame_with_codec(
-                    &frame.pixels,
-                    frame.width,
-                    frame.height,
-                    frame_rate,
-                    bitrate,
-                    codec,
-                ),
+                Some(frame) => {
+                    let nalu = crate::encoder::encode_frame_with_codec(
+                        &frame.pixels,
+                        frame.width,
+                        frame.height,
+                        frame_rate,
+                        bitrate,
+                        codec,
+                    );
+                    if nalu.is_none() {
+                        tracing::warn!(
+                            "编码器返回 None: {}x{} {:?} bitrate={}",
+                            frame.width, frame.height, codec, bitrate
+                        );
+                    }
+                    nalu
+                }
                 None => None,
             }
         }

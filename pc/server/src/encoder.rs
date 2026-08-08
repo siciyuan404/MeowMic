@@ -377,14 +377,26 @@ mod mf_encoder {
         let mutex = ENCODER.get_or_init(|| Mutex::new(None));
         let mut guard = mutex.lock().ok()?;
 
-        // 检查是否需要重建编码器(codec 或分辨率变化)
+        // 检查是否需要重建编码器(codec 或分辨率变化,或上次创建失败 guard=None)
         let need_rebuild = match guard.as_ref() {
             Some(entry) => entry.codec != codec || entry.width != width || entry.height != height,
             None => true,
         };
 
         if need_rebuild {
-            *guard = MFEncoder::new(codec, width, height, frame_rate, avg_bitrate).map(|enc| {
+            let new_encoder = MFEncoder::new(codec, width, height, frame_rate, avg_bitrate);
+            if new_encoder.is_none() {
+                tracing::error!(
+                    "MFEncoder::new 失败: codec={:?} {}x{} bitrate={}",
+                    codec, width, height, avg_bitrate
+                );
+            } else {
+                tracing::info!(
+                    "MFEncoder 创建成功: codec={:?} {}x{} bitrate={}",
+                    codec, width, height, avg_bitrate
+                );
+            }
+            *guard = new_encoder.map(|enc| {
                 EncoderEntry {
                     encoder: Mutex::new(enc),
                     codec,
