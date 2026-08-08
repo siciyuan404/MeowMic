@@ -211,6 +211,7 @@ mod mf_encoder {
         }
 
         /// 尝试设置指定的输入格式,成功返回 Some(())
+        /// 直接构造 media type 并调用 SetInputType,不经过 GetInputAvailableType 枚举
         unsafe fn try_set_input_type(&self, fmt: InputFormat) -> Option<()> {
             let subtype = match fmt {
                 InputFormat::Nv12 => MFVideoFormat_NV12,
@@ -226,8 +227,6 @@ mod mf_encoder {
             input_type
                 .SetUINT32(&MF_MT_INTERLACE_MODE as *const _, MFVideoInterlace_Progressive.0 as u32)
                 .ok()?;
-            // 声明 full range [0,255](NV12 模式与 bgra_to_nv12 的 BT.601 full-range 匹配;
-            // RGB32 模式下编码器也需要知道 range,否则画面偏暗)
             input_type
                 .SetUINT32(&MF_MT_VIDEO_NOMINAL_RANGE as *const _, MFNominalRange_0_255.0 as u32)
                 .ok()?;
@@ -249,96 +248,137 @@ mod mf_encoder {
             }
         }
 
-        /// 配置编码器输入/输出类型
-        ///
-        /// 关键:Media Foundation 编码器必须**先设置输出类型,再设置输入类型**。
-        /// 参考 MSDN "Implementing a Codec MFT":
-        ///   1. SetOutputType(编码格式,如 H.264)
-        ///   2. GetInputAvailableType(获取兼容的输入类型列表)
-        ///   3. SetInputType(设置未压缩输入格式,如 NV12)
-        ///
-        /// 顺序反了会导致 SetInputType 返回 MF_E_INVALIDMEDIATYPE (0xc00d6d77),
-        /// 因为编码器在不知道输出格式的情况下无法确定支持哪些输入格式。
-        ///
-        /// 输入格式尝试顺序:NV12(硬件编码器首选)→ RGB32(软件编码器回退)
-        unsafe fn configure(&mut self) -> Option<()> {
-            // 1. 先设置输出类型(编码格式:H.264 或 HEVC)
+        /// 枚举并设置编码器支持的输入格式
+        /// 使用 GetInputAvailableType 获取编码器实际支持的格式列表,
+        /// 而不是盲猜 NV12/RGB32。优先选择 NV12,其次 RGB32。
+        unsafe fn negotiate_input_type(&self) -> Option<InputFormat> {
+            // 枚举 GetInputAvailableType,找到编码器实际支持的输入格式
+            for i in 0..32u32 {
+                let available = match self.transform.GetInputAvailableType(0, i) {
+                    Ok(mt) => mt,
+                    Err(_) => break, // MF_E_NO_MORE_TYPES
+                };
+                // 读取 subtype GUID
+                let subtype = match available.GetGUID(&MF_MT_SUBTYPE as *const _) {
+                    Ok(g) => g,
+                    Err(_) => continue,
+                };
+                // 匹配已知格式
+                let fmt = if subtype == MFVideoFormat_NV12 {
+                    InputFormat::Nv12
+                } else if subtype == MFVideoFormat_RGB32 {
+                    InputFormat::Rgb32
+                } else {
+                    // 记录未知格式,帮助诊断
+                    if i < 10 {
+                        tracing::info!("negotiate_input_type: 可用格式[{}] = non-standard GUID", i);
+                    }
+                    continue;
+                };
+                // 尝试设置这个格式
+                if self.try_set_input_type(fmt).is_some() {
+                    tracing::info!("negotiate_input_type: 选中 {:?} (index={})", fmt, i);
+                    return Some(fmt);
+                }
+            }
+            None
+        }
+
+        /// 构建并设置输出类型(H.264 或 HEVC 编码格式)
+        unsafe fn set_output_type(&self) -> Option<()> {
             let output_subtype = match self.codec {
                 Codec::H264 => MFVideoFormat_H264,
                 Codec::Hevc => MFVideoFormat_HEVC,
             };
             let output_type = MFCreateMediaType().ok()?;
-            let mut step = || -> Option<()> {
-                output_type
-                    .SetGUID(&MF_MT_MAJOR_TYPE as *const _, &MFMediaType_Video as *const _)
-                    .ok()?;
-                output_type
-                    .SetGUID(&MF_MT_SUBTYPE as *const _, &output_subtype as *const _)
-                    .ok()?;
-                output_type
-                    .SetUINT32(&MF_MT_INTERLACE_MODE as *const _, MFVideoInterlace_Progressive.0 as u32)
-                    .ok()?;
-                output_type
-                    .SetUINT64(&MF_MT_FRAME_SIZE as *const _, Self::pack_size(self.width, self.height))
-                    .ok()?;
-                output_type
-                    .SetUINT64(&MF_MT_FRAME_RATE as *const _, Self::pack_size(self.frame_rate, 1))
-                    .ok()?;
-                output_type
-                    .SetUINT32(&MF_MT_AVG_BITRATE as *const _, self.avg_bitrate)
-                    .ok()?;
-                Some(())
-            };
-            if step().is_none() {
-                tracing::error!("configure: 输出类型设置失败 (output_type 字段)");
-                return None;
-            }
+            output_type
+                .SetGUID(&MF_MT_MAJOR_TYPE as *const _, &MFMediaType_Video as *const _)
+                .ok()?;
+            output_type
+                .SetGUID(&MF_MT_SUBTYPE as *const _, &output_subtype as *const _)
+                .ok()?;
+            output_type
+                .SetUINT32(&MF_MT_INTERLACE_MODE as *const _, MFVideoInterlace_Progressive.0 as u32)
+                .ok()?;
+            output_type
+                .SetUINT64(&MF_MT_FRAME_SIZE as *const _, Self::pack_size(self.width, self.height))
+                .ok()?;
+            output_type
+                .SetUINT64(&MF_MT_FRAME_RATE as *const _, Self::pack_size(self.frame_rate, 1))
+                .ok()?;
+            output_type
+                .SetUINT32(&MF_MT_AVG_BITRATE as *const _, self.avg_bitrate)
+                .ok()?;
             match self.transform.SetOutputType(0, &output_type, 0) {
-                Ok(()) => {}
+                Ok(()) => Some(()),
                 Err(e) => {
-                    tracing::error!("configure: SetOutputType 失败: 0x{:x}", e.code().0);
-                    return None;
+                    tracing::warn!("set_output_type: SetOutputType 失败: 0x{:x}", e.code().0);
+                    None
                 }
             }
+        }
 
-            // 2. 设置输出类型后,再尝试输入格式:NV12 → RGB32
-            let formats = [InputFormat::Nv12, InputFormat::Rgb32];
-            let mut configured_format = None;
-            for fmt in &formats {
-                match self.try_set_input_type(*fmt) {
-                    Some(()) => {
-                        configured_format = Some(*fmt);
-                        break;
-                    }
-                    None => continue,
-                }
-            }
-            let input_format = configured_format?;
-            self.input_format = input_format;
-            tracing::info!("configure: 输入格式 = {:?}", input_format);
-
-            // 3. 通知流开始
-            match self.transform.ProcessMessage(MFT_MESSAGE_NOTIFY_BEGIN_STREAMING, 0) {
-                Ok(()) => {}
-                Err(e) => {
-                    tracing::error!("configure: BEGIN_STREAMING 失败: 0x{:x}", e.code().0);
-                    return None;
-                }
-            }
-            match self.transform.ProcessMessage(MFT_MESSAGE_NOTIFY_START_OF_STREAM, 0) {
-                Ok(()) => {}
-                Err(e) => {
-                    tracing::error!("configure: START_OF_STREAM 失败: 0x{:x}", e.code().0);
-                    return None;
-                }
-            }
-
-            self.initialized = true;
-            tracing::info!(
-                "configure: 成功 codec={:?} {}x{} fps={} bitrate={}",
-                self.codec, self.width, self.height, self.frame_rate, self.avg_bitrate
-            );
+        /// 通知流开始(BEGIN_STREAMING + START_OF_STREAM)
+        unsafe fn notify_stream_start(&self) -> Option<()> {
+            self.transform
+                .ProcessMessage(MFT_MESSAGE_NOTIFY_BEGIN_STREAMING, 0)
+                .ok()?;
+            self.transform
+                .ProcessMessage(MFT_MESSAGE_NOTIFY_START_OF_STREAM, 0)
+                .ok()?;
             Some(())
+        }
+
+        /// 配置编码器输入/输出类型
+        ///
+        /// 不同编码器 MFT 要求不同的设置顺序,需要尝试两种路径:
+        /// 1. Output-first(标准顺序,大多数软件编码器):SetOutputType → GetInputAvailableType → SetInputType
+        /// 2. Input-first(部分硬件编码器):SetInputType → SetOutputType
+        ///
+        /// 错误码参考:
+        /// - 0xc00d6d60 = MF_E_TRANSFORM_TYPE_NOT_SET(需要先设另一个类型)
+        /// - 0xc00d6d77 = MF_E_INVALIDMEDIATYPE(格式不被接受)
+        /// - 0xc00d36b4 = MF_E_UNSUPPORTED_FORMAT(格式不支持)
+        /// - 0xc00d6d76 = 输出类型无效(可能需要先设输入类型)
+        unsafe fn configure(&mut self) -> Option<()> {
+            // 方式 1:Output-first(标准顺序)
+            // 适用于大多数 MFT:先设输出(编码格式),再枚举输入格式
+            if self.set_output_type().is_some() {
+                // 输出类型设置成功,用 GetInputAvailableType 枚举输入格式
+                if let Some(fmt) = self.negotiate_input_type() {
+                    self.input_format = fmt;
+                    tracing::info!("configure: 成功(output-first) format={:?} {}x{}", fmt, self.width, self.height);
+                    if self.notify_stream_start().is_some() {
+                        self.initialized = true;
+                        return Some(());
+                    }
+                }
+                // Output-first 失败,清理输出类型
+                let _ = self.transform.SetOutputType(0, None, 0);
+            }
+
+            // 方式 2:Input-first(部分硬件编码器需要)
+            // 直接尝试 NV12 和 RGB32,成功后再设输出类型
+            for fmt in [InputFormat::Nv12, InputFormat::Rgb32] {
+                if self.try_set_input_type(fmt).is_some() {
+                    if self.set_output_type().is_some() {
+                        self.input_format = fmt;
+                        tracing::info!("configure: 成功(input-first) format={:?} {}x{}", fmt, self.width, self.height);
+                        if self.notify_stream_start().is_some() {
+                            self.initialized = true;
+                            return Some(());
+                        }
+                    }
+                    // 清理输入类型,尝试下一个
+                    let _ = self.transform.SetInputType(0, None, 0);
+                }
+            }
+
+            tracing::error!(
+                "configure: 所有配置方式都失败 codec={:?} {}x{}",
+                self.codec, self.width, self.height
+            );
+            None
         }
 
         /// 编码一帧 BGRA 像素,返回 NALU 字节
