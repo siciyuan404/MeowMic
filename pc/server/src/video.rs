@@ -83,6 +83,8 @@ impl VideoStreamer {
                     break;
                 }
 
+                let frame_start = std::time::Instant::now();
+
                 // 1. 采集 + 编码 (复用全局 ScreenCapturer + Encoder 单例)
                 // 自适应码率:每帧读取最新目标 bitrate
                 let cur_bitrate = target_bitrate_clone.load(Ordering::Relaxed);
@@ -146,7 +148,12 @@ impl VideoStreamer {
                     empty_captures = 0;
                     last_stats_time = now;
                 }
-                tokio::time::sleep(interval).await;
+                // 帧节奏控制:如果采集+编码已经超过 interval,不额外 sleep
+                // (capture_screen 是同步阻塞调用,在 tokio 任务中会阻塞 runtime)
+                let elapsed = frame_start.elapsed();
+                if elapsed < interval {
+                    tokio::time::sleep(interval - elapsed).await;
+                }
             }
 
             tracing::info!("视频推流停止");

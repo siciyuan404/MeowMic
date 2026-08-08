@@ -29,30 +29,39 @@ mod mf_encoder {
 
     use windows::core::Interface;
     use windows::Win32::Media::MediaFoundation::{
-        MFCreateMemoryBuffer, MFCreateMediaType, MFCreateSample, MFStartup,
-        IMFSample, IMFTransform, MF_API_VERSION, MF_MT_AVG_BITRATE,
-        MF_MT_FRAME_RATE, MF_MT_FRAME_SIZE, MF_MT_INTERLACE_MODE, MF_MT_MAJOR_TYPE,
-        MF_MT_SUBTYPE, MF_MT_VIDEO_NOMINAL_RANGE, MFSTARTUP_LITE, MFMediaType_Video,
+        MFCreateMemoryBuffer, MFCreateMediaType, MFCreateSample, MFStartup, IMFMediaType,
+        IMFSample, IMFTransform, MF_API_VERSION, MF_MT_AVG_BITRATE, MF_MT_FRAME_RATE,
+        MF_MT_FRAME_SIZE, MF_MT_INTERLACE_MODE, MF_MT_MAJOR_TYPE, MF_MT_SUBTYPE,
+        MF_MT_VIDEO_NOMINAL_RANGE, MF_MT_MPEG2_PROFILE, MFSTARTUP_LITE, MFMediaType_Video,
         MFNominalRange_0_255, MFVideoFormat_H264, MFVideoFormat_HEVC, MFVideoFormat_NV12,
         MFVideoFormat_RGB32, MFVideoInterlace_Progressive, MFTEnumEx, MFT_ENUM_FLAG,
-        MFT_ENUM_FLAG_HARDWARE,
-        MFT_ENUM_FLAG_SYNCMFT, MFT_MESSAGE_COMMAND_DRAIN, MFT_MESSAGE_NOTIFY_BEGIN_STREAMING,
-        MFT_MESSAGE_NOTIFY_END_OF_STREAM, MFT_MESSAGE_NOTIFY_END_STREAMING,
-        MFT_MESSAGE_NOTIFY_START_OF_STREAM, MFT_OUTPUT_DATA_BUFFER, MFT_REGISTER_TYPE_INFO,
-        MFT_CATEGORY_VIDEO_ENCODER,
+        MFT_ENUM_FLAG_ASYNCMFT, MFT_ENUM_FLAG_HARDWARE, MFT_ENUM_FLAG_SYNCMFT,
+        MFT_INPUT_STATUS_ACCEPT_DATA, MFT_MESSAGE_COMMAND_DRAIN,
+        MFT_MESSAGE_NOTIFY_BEGIN_STREAMING, MFT_MESSAGE_NOTIFY_END_OF_STREAM,
+        MFT_MESSAGE_NOTIFY_END_STREAMING, MFT_MESSAGE_NOTIFY_START_OF_STREAM,
+        MFT_OUTPUT_DATA_BUFFER, MFT_REGISTER_TYPE_INFO, MFT_CATEGORY_VIDEO_ENCODER,
     };
     use windows::Win32::System::Com::CoTaskMemFree;
 
     use super::Codec;
 
-    /// 编码器输入格式(NV12 优先,RGB32 回退)
-    /// 不同的编码器 MFT 支持的输入格式不同:
-    /// - 硬件编码器(NVENC/AMF/QSV):通常只接受 NV12
-    /// - 软件 H.264 编码器:接受 NV12 和 RGB32
+    /// 编码器输入格式
+    /// 不同的编码器 MFT 支持的输入格式不同,按优先级尝试:
+    /// - IYUV/I420(YUV 4:2:0 planar,软件编码器首选,MFWebCamRtp 示例使用)
+    /// - NV12(YUV 4:2:0 半平面,硬件编码器首选)
+    /// - YV12(YUV 4:2:0 planar,Y+V+U 顺序)
+    /// - YUYV/YUY2(YUV 4:2:2 packed)
+    /// - RGB32(BGRA,软件编码器回退)
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     enum InputFormat {
+        /// IYUV/I420(YUV 4:2:0 planar,软件编码器首选)
+        Iyuv,
         /// NV12(YUV 4:2:0 半平面,硬件编码器首选)
         Nv12,
+        /// YV12(YUV 4:2:0 planar,Y+V+U 顺序)
+        Yv12,
+        /// YUYV/YUY2(YUV 4:2:2 packed)
+        Yuyv,
         /// RGB32(BGRA,软件编码器回退)
         Rgb32,
     }
@@ -67,6 +76,8 @@ mod mf_encoder {
         avg_bitrate: u32,
         frame_index: u64,
         initialized: bool,
+        /// 是否为异步 MFT(支持 IMFMediaEventGenerator)
+        is_async: bool,
         /// 实际配置成功的输入格式(决定 encode_frame 的转换路径)
         input_format: InputFormat,
     }
@@ -83,7 +94,6 @@ mod mf_encoder {
             avg_bitrate: u32,
         ) -> Option<Self> {
             unsafe {
-                // 初始化 MF(如果尚未初始化)
                 static MF_STARTED: OnceLock<()> = OnceLock::new();
                 MF_STARTED.get_or_init(|| {
                     let r = MFStartup(MF_API_VERSION, MFSTARTUP_LITE);
@@ -94,12 +104,20 @@ mod mf_encoder {
                     tracing::info!("MFStartup 返回 0x{:x}", code as u32);
                 });
 
-                // 尝试硬件编码器,configure 失败则回退软件编码器
-                // 原因:硬件 H.264 编码器(Intel QSV / NVIDIA NVENC)通常不接受 RGB32 输入,
-                // SetInputType 返回 MF_E_INVALIDMEDIATYPE (0xc00d6d77)。
-                // 软件编码器接受 RGB32,性能足够 1080p30fps。
                 let candidates = Self::enum_encoders_all(codec);
+                tracing::info!(
+                    "MFEncoder::new: 枚举到 {} 个编码器候选 codec={:?}",
+                    candidates.len(),
+                    codec
+                );
+
                 for (idx, transform) in candidates.iter().enumerate() {
+                    let is_async = Self::check_async_mft(transform);
+                    tracing::info!(
+                        "MFEncoder::new: encoder[{}] is_async={}",
+                        idx, is_async
+                    );
+
                     let mut encoder = Self {
                         transform: transform.clone(),
                         codec,
@@ -109,13 +127,14 @@ mod mf_encoder {
                         avg_bitrate,
                         frame_index: 0,
                         initialized: false,
-                        input_format: InputFormat::Nv12,
+                        is_async,
+                        input_format: InputFormat::Iyuv,
                     };
                     match encoder.configure() {
                         Some(_) => {
                             tracing::info!(
-                                "MFEncoder::new: 使用 encoder[{}] 成功 codec={:?} {}x{}",
-                                idx, codec, width, height
+                                "MFEncoder::new: 使用 encoder[{}] 成功 codec={:?} {}x{} is_async={}",
+                                idx, codec, width, height, is_async
                             );
                             return Some(encoder);
                         }
@@ -127,18 +146,25 @@ mod mf_encoder {
                         }
                     }
                 }
-                tracing::error!("MFEncoder::new: 所有 {} 个编码器都 configure 失败", candidates.len());
+                tracing::error!(
+                    "MFEncoder::new: 所有 {} 个编码器都 configure 失败",
+                    candidates.len()
+                );
                 None
             }
         }
 
-        /// 返回使用的 codec
+        /// 检查 MFT 是否为异步 MFT
+        /// 异步 MFT 实现了 IMFMediaEventGenerator 接口
+        unsafe fn check_async_mft(transform: &IMFTransform) -> bool {
+            use windows::Win32::Media::MediaFoundation::IMFMediaEventGenerator;
+            transform.cast::<IMFMediaEventGenerator>().is_ok()
+        }
+
         pub fn codec(&self) -> Codec {
             self.codec
         }
 
-        /// 枚举所有可用编码器 MFT(硬件优先,软件兜底)
-        /// 返回候选列表,由调用方逐个尝试 configure 直到成功
         unsafe fn enum_encoders_all(codec: Codec) -> Vec<IMFTransform> {
             let subtype = match codec {
                 Codec::H264 => MFVideoFormat_H264,
@@ -151,17 +177,16 @@ mod mf_encoder {
 
             let mut all = Vec::new();
 
-            // 优先硬件编码器
-            let hw_flags = MFT_ENUM_FLAG(MFT_ENUM_FLAG_HARDWARE.0 | MFT_ENUM_FLAG_SYNCMFT.0);
+            let hw_flags = MFT_ENUM_FLAG(
+                MFT_ENUM_FLAG_HARDWARE.0 | MFT_ENUM_FLAG_SYNCMFT.0 | MFT_ENUM_FLAG_ASYNCMFT.0,
+            );
             all.extend(Self::enum_with_flags_all(hw_flags, &output_type_info));
 
-            // 软件编码器兜底(HEVC 软件编码器在大多数 Windows 上不存在)
             all.extend(Self::enum_with_flags_all(MFT_ENUM_FLAG_SYNCMFT, &output_type_info));
 
             all
         }
 
-        /// 用指定 flags 枚举并激活所有可用的编码器 MFT
         unsafe fn enum_with_flags_all(
             flags: MFT_ENUM_FLAG,
             output_type_info: &MFT_REGISTER_TYPE_INFO,
@@ -184,7 +209,9 @@ mod mf_encoder {
             };
             tracing::info!(
                 "enum_with_flags_all: MFTEnumEx hr=0x{:x} count={} flags={}",
-                hr_code as u32, count, flags.0
+                hr_code as u32,
+                count,
+                flags.0
             );
 
             let mut found = Vec::new();
@@ -198,7 +225,11 @@ mod mf_encoder {
                                 found.push(transform);
                             }
                             Err(e) => {
-                                tracing::warn!("enum_with_flags_all: 激活 encoder[{}] 失败: 0x{:x}", i, e.code().0);
+                                tracing::warn!(
+                                    "enum_with_flags_all: 激活 encoder[{}] 失败: 0x{:x}",
+                                    i,
+                                    e.code().0
+                                );
                             }
                         }
                     }
@@ -210,182 +241,393 @@ mod mf_encoder {
             found
         }
 
-        /// 尝试设置指定的输入格式,成功返回 Some(())
-        /// 直接构造 media type 并调用 SetInputType,不经过 GetInputAvailableType 枚举
-        unsafe fn try_set_input_type(&self, fmt: InputFormat) -> Option<()> {
-            let subtype = match fmt {
+        fn format_to_subtype(fmt: InputFormat) -> windows::core::GUID {
+            const STD_DATA2: u16 = 0x0010;
+            const STD_DATA3: u16 = 0x8000;
+            const STD_DATA4: [u8; 8] = [0x00, 0xaa, 0x00, 0x38, 0x9b, 0x71, 0x00, 0x00];
+            match fmt {
                 InputFormat::Nv12 => MFVideoFormat_NV12,
                 InputFormat::Rgb32 => MFVideoFormat_RGB32,
-            };
-            let input_type = MFCreateMediaType().ok()?;
-            input_type
-                .SetGUID(&MF_MT_MAJOR_TYPE as *const _, &MFMediaType_Video as *const _)
+                InputFormat::Iyuv => windows::core::GUID {
+                    data1: 0x56555949,
+                    data2: STD_DATA2,
+                    data3: STD_DATA3,
+                    data4: STD_DATA4,
+                },
+                InputFormat::Yv12 => windows::core::GUID {
+                    data1: 0x32315659,
+                    data2: STD_DATA2,
+                    data3: STD_DATA3,
+                    data4: STD_DATA4,
+                },
+                InputFormat::Yuyv => windows::core::GUID {
+                    data1: 0x32595559,
+                    data2: STD_DATA2,
+                    data3: STD_DATA3,
+                    data4: STD_DATA4,
+                },
+            }
+        }
+
+        /// 构建基础 input media type(参考 MFWebCamRtp)
+        /// 包含:major type = Video, subtype, frame size, frame rate, interlace mode, nominal range
+        unsafe fn build_base_type(&self, subtype: windows::core::GUID) -> Option<IMFMediaType> {
+            let mt = MFCreateMediaType().ok()?;
+            mt.SetGUID(
+                &MF_MT_MAJOR_TYPE as *const _,
+                &MFMediaType_Video as *const _,
+            )
+            .ok()?;
+            mt.SetGUID(&MF_MT_SUBTYPE as *const _, &subtype as *const _)
                 .ok()?;
-            input_type
-                .SetGUID(&MF_MT_SUBTYPE as *const _, &subtype as *const _)
-                .ok()?;
-            input_type
-                .SetUINT32(&MF_MT_INTERLACE_MODE as *const _, MFVideoInterlace_Progressive.0 as u32)
-                .ok()?;
-            input_type
-                .SetUINT32(&MF_MT_VIDEO_NOMINAL_RANGE as *const _, MFNominalRange_0_255.0 as u32)
-                .ok()?;
-            input_type
-                .SetUINT64(&MF_MT_FRAME_SIZE as *const _, Self::pack_size(self.width, self.height))
-                .ok()?;
-            input_type
-                .SetUINT64(&MF_MT_FRAME_RATE as *const _, Self::pack_size(self.frame_rate, 1))
-                .ok()?;
+            mt.SetUINT32(
+                &MF_MT_INTERLACE_MODE as *const _,
+                MFVideoInterlace_Progressive.0 as u32,
+            )
+            .ok()?;
+            mt.SetUINT32(
+                &MF_MT_VIDEO_NOMINAL_RANGE as *const _,
+                MFNominalRange_0_255.0 as u32,
+            )
+            .ok()?;
+            mt.SetUINT64(
+                &MF_MT_FRAME_SIZE as *const _,
+                Self::pack_size(self.width, self.height),
+            )
+            .ok()?;
+            mt.SetUINT64(
+                &MF_MT_FRAME_RATE as *const _,
+                Self::pack_size(self.frame_rate, 1),
+            )
+            .ok()?;
+            Some(mt)
+        }
+
+        /// 构建并设置 input type(使用 build_base_type 构造基础类型)
+        unsafe fn try_set_input_type(&self, fmt: InputFormat) -> Option<()> {
+            let subtype = Self::format_to_subtype(fmt);
+            let input_type = self.build_base_type(subtype)?;
             match self.transform.SetInputType(0, &input_type, 0) {
                 Ok(()) => Some(()),
                 Err(e) => {
                     tracing::warn!(
                         "try_set_input_type: {:?} SetInputType 失败: 0x{:x} ({}x{})",
-                        fmt, e.code().0, self.width, self.height
+                        fmt,
+                        e.code().0,
+                        self.width,
+                        self.height
                     );
                     None
                 }
             }
         }
 
-        /// 枚举并设置编码器支持的输入格式
-        /// 使用 GetInputAvailableType 获取编码器实际支持的格式列表,
-        /// 而不是盲猜 NV12/RGB32。优先选择 NV12,其次 RGB32。
+        /// 枚举可用的 input type(GetInputAvailableType),失败则直接构造
+        /// 参考 MFWebCamRtp,优先尝试 IYUV
         unsafe fn negotiate_input_type(&self) -> Option<InputFormat> {
-            // 枚举 GetInputAvailableType,找到编码器实际支持的输入格式
             for i in 0..32u32 {
                 let available = match self.transform.GetInputAvailableType(0, i) {
                     Ok(mt) => mt,
-                    Err(_) => break, // MF_E_NO_MORE_TYPES
+                    Err(e) => {
+                        if i == 0 {
+                            tracing::warn!(
+                                "negotiate_input_type: GetInputAvailableType[0] 失败: 0x{:x} 改用直接构造格式",
+                                e.code().0
+                            );
+                        }
+                        break;
+                    }
                 };
-                // 读取 subtype GUID
                 let subtype = match available.GetGUID(&MF_MT_SUBTYPE as *const _) {
                     Ok(g) => g,
                     Err(_) => continue,
                 };
-                // 匹配已知格式
-                let fmt = if subtype == MFVideoFormat_NV12 {
-                    InputFormat::Nv12
-                } else if subtype == MFVideoFormat_RGB32 {
-                    InputFormat::Rgb32
-                } else {
-                    // 记录未知格式,帮助诊断
-                    if i < 10 {
-                        tracing::info!("negotiate_input_type: 可用格式[{}] = non-standard GUID", i);
+                let fmt = match Self::guid_to_format(&subtype) {
+                    Some(f) => f,
+                    None => {
+                        tracing::debug!(
+                            "negotiate_input_type: 跳过未知格式[{}] GUID={:08x}",
+                            i,
+                            subtype.data1
+                        );
+                        continue;
                     }
-                    continue;
                 };
-                // 尝试设置这个格式
+                tracing::info!(
+                    "negotiate_input_type: 可用格式[{}] = {:?} GUID={:08x}",
+                    i,
+                    fmt,
+                    subtype.data1
+                );
+                let _ = available.SetUINT64(
+                    &MF_MT_FRAME_SIZE as *const _,
+                    Self::pack_size(self.width, self.height),
+                );
+                let _ = available.SetUINT64(
+                    &MF_MT_FRAME_RATE as *const _,
+                    Self::pack_size(self.frame_rate, 1),
+                );
+                let _ = available.SetUINT32(
+                    &MF_MT_INTERLACE_MODE as *const _,
+                    MFVideoInterlace_Progressive.0 as u32,
+                );
+                let _ = available.SetUINT32(
+                    &MF_MT_VIDEO_NOMINAL_RANGE as *const _,
+                    MFNominalRange_0_255.0 as u32,
+                );
+                match self.transform.SetInputType(0, &available, 0) {
+                    Ok(()) => {
+                        tracing::info!("negotiate_input_type: 选中 {:?} (index={})", fmt, i);
+                        return Some(fmt);
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            "negotiate_input_type: {:?} SetInputType 失败: 0x{:x}",
+                            fmt,
+                            e.code().0
+                        );
+                        continue;
+                    }
+                }
+            }
+
+            tracing::info!("negotiate_input_type: 枚举失败,尝试直接构造已知格式");
+            for fmt in [
+                InputFormat::Iyuv,
+                InputFormat::Nv12,
+                InputFormat::Yv12,
+                InputFormat::Yuyv,
+                InputFormat::Rgb32,
+            ] {
                 if self.try_set_input_type(fmt).is_some() {
-                    tracing::info!("negotiate_input_type: 选中 {:?} (index={})", fmt, i);
                     return Some(fmt);
                 }
             }
             None
         }
 
-        /// 构建并设置输出类型(H.264 或 HEVC 编码格式)
+        unsafe fn guid_to_format(guid: &windows::core::GUID) -> Option<InputFormat> {
+            const STD_DATA2: u16 = 0x0010;
+            const STD_DATA3: u16 = 0x8000;
+            const STD_DATA4: [u8; 8] = [0x00, 0xaa, 0x00, 0x38, 0x9b, 0x71, 0x00, 0x00];
+            if guid.data2 != STD_DATA2 || guid.data3 != STD_DATA3 || guid.data4 != STD_DATA4 {
+                return None;
+            }
+            let fourcc = guid.data1;
+            match fourcc {
+                0x3231564e => Some(InputFormat::Nv12),
+                0x56555949 => Some(InputFormat::Iyuv),
+                0x32315659 => Some(InputFormat::Yv12),
+                0x32595559 => Some(InputFormat::Yuyv),
+                0x32344252 => Some(InputFormat::Rgb32),
+                _ => None,
+            }
+        }
+
+        /// 构建并设置 output type(参考 MFWebCamRtp:从 input type CopyAllItems,再修改)
+        ///
+        /// 流程:
+        /// 1. 构建基础 input type(IYUV,含 major/subtype/frame_size/frame_rate/interlace/nominal_range)
+        /// 2. 创建 output type,从 input type CopyAllItems(复制所有属性)
+        /// 3. 修改 output type:subtype = H264/HEVC,添加 avg_bitrate, interlace_mode, mpeg2_profile
+        /// 4. SetOutputType
         unsafe fn set_output_type(&self) -> Option<()> {
             let output_subtype = match self.codec {
                 Codec::H264 => MFVideoFormat_H264,
                 Codec::Hevc => MFVideoFormat_HEVC,
             };
+            // 构建基础 input type(IYUV,参考 MFWebCamRtp 使用 IYUV 作为基础)
+            let base_input = self.build_base_type(Self::format_to_subtype(InputFormat::Iyuv))?;
+            // 创建 output type,从 input type CopyAllItems
             let output_type = MFCreateMediaType().ok()?;
-            output_type
-                .SetGUID(&MF_MT_MAJOR_TYPE as *const _, &MFMediaType_Video as *const _)
+            base_input
+                .CopyAllItems(&output_type)
+                .map_err(|e| {
+                    tracing::warn!(
+                        "set_output_type: CopyAllItems 失败: 0x{:x}",
+                        e.code().0
+                    );
+                })
                 .ok()?;
+            // 修改 output type
             output_type
                 .SetGUID(&MF_MT_SUBTYPE as *const _, &output_subtype as *const _)
                 .ok()?;
             output_type
-                .SetUINT32(&MF_MT_INTERLACE_MODE as *const _, MFVideoInterlace_Progressive.0 as u32)
-                .ok()?;
-            output_type
-                .SetUINT64(&MF_MT_FRAME_SIZE as *const _, Self::pack_size(self.width, self.height))
-                .ok()?;
-            output_type
-                .SetUINT64(&MF_MT_FRAME_RATE as *const _, Self::pack_size(self.frame_rate, 1))
-                .ok()?;
-            output_type
                 .SetUINT32(&MF_MT_AVG_BITRATE as *const _, self.avg_bitrate)
                 .ok()?;
+            output_type
+                .SetUINT32(
+                    &MF_MT_INTERLACE_MODE as *const _,
+                    MFVideoInterlace_Progressive.0 as u32,
+                )
+                .ok()?;
+            if self.codec == Codec::H264 {
+                const H264_PROFILE_BASELINE: u32 = 66;
+                let _ = output_type.SetUINT32(
+                    &MF_MT_MPEG2_PROFILE as *const _,
+                    H264_PROFILE_BASELINE,
+                );
+            }
             match self.transform.SetOutputType(0, &output_type, 0) {
-                Ok(()) => Some(()),
+                Ok(()) => {
+                    tracing::info!(
+                        "set_output_type: SetOutputType 成功 {}x{} {:?}",
+                        self.width,
+                        self.height,
+                        self.codec
+                    );
+                    Some(())
+                }
                 Err(e) => {
-                    tracing::warn!("set_output_type: SetOutputType 失败: 0x{:x}", e.code().0);
+                    tracing::warn!(
+                        "set_output_type: SetOutputType 失败: 0x{:x} ({}x{})",
+                        e.code().0,
+                        self.width,
+                        self.height
+                    );
                     None
                 }
             }
         }
 
         /// 通知流开始(BEGIN_STREAMING + START_OF_STREAM)
+        /// 参考 MFWebCamRtp:在 SetOutputType → SetInputType → GetInputStatus 之后调用
         unsafe fn notify_stream_start(&self) -> Option<()> {
-            self.transform
-                .ProcessMessage(MFT_MESSAGE_NOTIFY_BEGIN_STREAMING, 0)
-                .ok()?;
-            self.transform
-                .ProcessMessage(MFT_MESSAGE_NOTIFY_START_OF_STREAM, 0)
-                .ok()?;
-            Some(())
+            let hr1 = self
+                .transform
+                .ProcessMessage(MFT_MESSAGE_NOTIFY_BEGIN_STREAMING, 0);
+            let hr2 = self
+                .transform
+                .ProcessMessage(MFT_MESSAGE_NOTIFY_START_OF_STREAM, 0);
+            match (hr1, hr2) {
+                (Ok(()), Ok(())) => Some(()),
+                (Err(e1), _) => {
+                    tracing::warn!(
+                        "notify_stream_start: BEGIN_STREAMING 失败: 0x{:x}",
+                        e1.code().0
+                    );
+                    None
+                }
+                (_, Err(e2)) => {
+                    tracing::warn!(
+                        "notify_stream_start: START_OF_STREAM 失败: 0x{:x}",
+                        e2.code().0
+                    );
+                    None
+                }
+            }
+        }
+
+        /// GetInputStatus 检查 + 通知流开始
+        /// 返回 true 表示编码器就绪可以接受数据
+        unsafe fn check_input_status_and_start(&self, fmt: InputFormat) -> bool {
+            match self.transform.GetInputStatus(0) {
+                Ok(status) if status == MFT_INPUT_STATUS_ACCEPT_DATA.0 as u32 => {
+                    tracing::info!(
+                        "check_input_status_and_start: GetInputStatus = ACCEPT_DATA format={:?}",
+                        fmt
+                    );
+                }
+                Ok(status) => {
+                    tracing::warn!(
+                        "check_input_status_and_start: GetInputStatus = 0x{:x} 不接受数据 format={:?}",
+                        status,
+                        fmt
+                    );
+                    return false;
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        "check_input_status_and_start: GetInputStatus 失败: 0x{:x} format={:?}",
+                        e.code().0,
+                        fmt
+                    );
+                    return false;
+                }
+            }
+            self.notify_stream_start().is_some()
         }
 
         /// 配置编码器输入/输出类型
         ///
-        /// 不同编码器 MFT 要求不同的设置顺序,需要尝试两种路径:
-        /// 1. Output-first(标准顺序,大多数软件编码器):SetOutputType → GetInputAvailableType → SetInputType
-        /// 2. Input-first(部分硬件编码器):SetInputType → SetOutputType
+        /// 参考 MFWebCamRtp 示例的正确顺序:
+        /// 1. SetOutputType(先)
+        /// 2. SetInputType / negotiate_input_type(后)
+        /// 3. GetInputStatus 检查是否接受数据
+        /// 4. ProcessMessage(BEGIN_STREAMING)
+        /// 5. ProcessMessage(START_OF_STREAM)
         ///
-        /// 错误码参考:
-        /// - 0xc00d6d60 = MF_E_TRANSFORM_TYPE_NOT_SET(需要先设另一个类型)
-        /// - 0xc00d6d77 = MF_E_INVALIDMEDIATYPE(格式不被接受)
-        /// - 0xc00d36b4 = MF_E_UNSUPPORTED_FORMAT(格式不支持)
-        /// - 0xc00d6d76 = 输出类型无效(可能需要先设输入类型)
+        /// 关键修复:不再提前发送 BEGIN_STREAMING(之前在 SetOutputType/SetInputType 之前发送是错误的)
         unsafe fn configure(&mut self) -> Option<()> {
-            // 方式 1:Output-first(标准顺序)
-            // 适用于大多数 MFT:先设输出(编码格式),再枚举输入格式
+            tracing::info!(
+                "configure: 开始 codec={:?} {}x{} is_async={}",
+                self.codec,
+                self.width,
+                self.height,
+                self.is_async
+            );
+
+            // Output-first 路径(标准顺序,参考 MFWebCamRtp):
+            // SetOutputType → negotiate_input_type → GetInputStatus → BEGIN_STREAMING → START_OF_STREAM
             if self.set_output_type().is_some() {
-                // 输出类型设置成功,用 GetInputAvailableType 枚举输入格式
                 if let Some(fmt) = self.negotiate_input_type() {
                     self.input_format = fmt;
-                    tracing::info!("configure: 成功(output-first) format={:?} {}x{}", fmt, self.width, self.height);
-                    if self.notify_stream_start().is_some() {
+                    tracing::info!(
+                        "configure: SetOutputType + negotiate_input_type 成功 format={:?} {}x{}",
+                        fmt,
+                        self.width,
+                        self.height
+                    );
+                    if self.check_input_status_and_start(fmt) {
+                        self.initialized = true;
+                        return Some(());
+                    }
+                    let _ = self.transform.SetInputType(0, None, 0);
+                    let _ = self.transform.SetOutputType(0, None, 0);
+                } else {
+                    let _ = self.transform.SetOutputType(0, None, 0);
+                }
+            }
+
+            // Input-first 路径(fallback):
+            // SetInputType → SetOutputType → GetInputStatus → BEGIN_STREAMING → START_OF_STREAM
+            // 优先 IYUV(软件编码器首选,MFWebCamRtp 使用)
+            for fmt in [
+                InputFormat::Iyuv,
+                InputFormat::Nv12,
+                InputFormat::Yv12,
+                InputFormat::Yuyv,
+                InputFormat::Rgb32,
+            ] {
+                if self.try_set_input_type(fmt).is_some()
+                    && self.set_output_type().is_some()
+                {
+                    self.input_format = fmt;
+                    tracing::info!(
+                        "configure: 成功(input-first) format={:?} {}x{}",
+                        fmt,
+                        self.width,
+                        self.height
+                    );
+                    if self.check_input_status_and_start(fmt) {
                         self.initialized = true;
                         return Some(());
                     }
                 }
-                // Output-first 失败,清理输出类型
+                let _ = self.transform.SetInputType(0, None, 0);
                 let _ = self.transform.SetOutputType(0, None, 0);
-            }
-
-            // 方式 2:Input-first(部分硬件编码器需要)
-            // 直接尝试 NV12 和 RGB32,成功后再设输出类型
-            for fmt in [InputFormat::Nv12, InputFormat::Rgb32] {
-                if self.try_set_input_type(fmt).is_some() {
-                    if self.set_output_type().is_some() {
-                        self.input_format = fmt;
-                        tracing::info!("configure: 成功(input-first) format={:?} {}x{}", fmt, self.width, self.height);
-                        if self.notify_stream_start().is_some() {
-                            self.initialized = true;
-                            return Some(());
-                        }
-                    }
-                    // 清理输入类型,尝试下一个
-                    let _ = self.transform.SetInputType(0, None, 0);
-                }
             }
 
             tracing::error!(
                 "configure: 所有配置方式都失败 codec={:?} {}x{}",
-                self.codec, self.width, self.height
+                self.codec,
+                self.width,
+                self.height
             );
             None
         }
 
-        /// 编码一帧 BGRA 像素,返回 NALU 字节
-        ///
-        /// 根据 configure 阶段确定的 input_format 决定转换路径:
-        /// - Nv12:先 bgra_to_nv12 转换再喂给编码器
-        /// - Rgb32:直接喂 BGRA 数据(软件编码器接受)
         pub fn encode_frame(&mut self, bgra: &[u8]) -> Option<Vec<u8>> {
             if !self.initialized {
                 if self.frame_index == 0 {
@@ -398,17 +640,31 @@ mod mf_encoder {
                 if self.frame_index == 0 {
                     tracing::error!(
                         "encode_frame: bgra 长度不足 {} < {} ({}x{})",
-                        bgra.len(), expected_bgra, self.width, self.height
+                        bgra.len(),
+                        expected_bgra,
+                        self.width,
+                        self.height
                     );
                 }
                 return None;
             }
 
-            // 根据输入格式选择数据源:NV12 需要转换,RGB32 直接用 BGRA
             let (frame_data, data_label) = match self.input_format {
                 InputFormat::Nv12 => {
                     let nv12 = bgra_to_nv12(bgra, self.width as usize, self.height as usize);
                     (nv12, "nv12")
+                }
+                InputFormat::Iyuv => {
+                    let iyuv = bgra_to_iyuv(bgra, self.width as usize, self.height as usize);
+                    (iyuv, "iyuv")
+                }
+                InputFormat::Yv12 => {
+                    let yv12 = bgra_to_yv12(bgra, self.width as usize, self.height as usize);
+                    (yv12, "yv12")
+                }
+                InputFormat::Yuyv => {
+                    let yuyv = bgra_to_yuyv(bgra, self.width as usize, self.height as usize);
+                    (yuyv, "yuyv")
                 }
                 InputFormat::Rgb32 => (bgra.to_vec(), "bgra"),
             };
@@ -426,7 +682,12 @@ mod mf_encoder {
                 if ptr.is_null() || max_len < data_len as u32 {
                     let _ = buffer.Unlock();
                     if self.frame_index == 0 {
-                        tracing::error!("encode_frame: buffer 无效 ptr={} max_len={} need={}", ptr.is_null(), max_len, data_len);
+                        tracing::error!(
+                            "encode_frame: buffer 无效 ptr={} max_len={} need={}",
+                            ptr.is_null(),
+                            max_len,
+                            data_len
+                        );
                     }
                     return None;
                 }
@@ -436,14 +697,18 @@ mod mf_encoder {
 
                 sample.AddBuffer(&buffer).ok()?;
 
-                let timestamp = self.frame_index * 10_000_000 / self.frame_rate as u64;
+                let timestamp =
+                    self.frame_index * 10_000_000 / self.frame_rate as u64;
                 let duration = 10_000_000 / self.frame_rate as u64;
                 let _ = sample.SetSampleTime(timestamp as i64);
                 let _ = sample.SetSampleDuration(duration as i64);
 
                 if self.transform.ProcessInput(0, &sample, 0).is_err() {
-                    if self.frame_index == 0 {
-                        tracing::error!("encode_frame: ProcessInput 失败 frame_index={}", self.frame_index);
+                    if self.frame_index < 3 {
+                        tracing::error!(
+                            "encode_frame: ProcessInput 失败 frame_index={}",
+                            self.frame_index
+                        );
                     }
                     self.frame_index += 1;
                     return None;
@@ -451,19 +716,27 @@ mod mf_encoder {
 
                 let need_debug = self.frame_index < 3;
                 if need_debug {
-                    tracing::info!("encode_frame: ProcessInput 成功 frame_index={} {}_len={}", self.frame_index, data_label, data_len);
+                    tracing::info!(
+                        "encode_frame: ProcessInput 成功 frame_index={} {}_len={}",
+                        self.frame_index,
+                        data_label,
+                        data_len
+                    );
                 }
                 self.frame_index += 1;
 
                 let result = self.collect_output();
                 if need_debug {
-                    tracing::info!("encode_frame: collect_output 返回 {} 字节 frame_index={}", result.as_ref().map(|v| v.len()).unwrap_or(0), self.frame_index);
+                    tracing::info!(
+                        "encode_frame: collect_output 返回 {} 字节 frame_index={}",
+                        result.as_ref().map(|v| v.len()).unwrap_or(0),
+                        self.frame_index
+                    );
                 }
                 result
             }
         }
 
-        /// 收集编码器输出的 NALU(循环直到无输出)
         unsafe fn collect_output(&mut self) -> Option<Vec<u8>> {
             let mut all_nalu = Vec::new();
             let mut loop_count = 0u32;
@@ -498,11 +771,12 @@ mod mf_encoder {
                     }
                     Err(e) => {
                         let _ = std::mem::ManuallyDrop::take(&mut output_buf.pSample);
-                        // 只在前几帧打印错误码,0xc00d6d72 = MF_E_TRANSFORM_NEED_MORE_INPUT(正常,编码器需要更多输入)
                         if self.frame_index < 3 {
                             tracing::info!(
                                 "collect_output: ProcessOutput 返回 0x{:x} (loop_count={} frame_index={})",
-                                e.code().0, loop_count, self.frame_index
+                                e.code().0,
+                                loop_count,
+                                self.frame_index
                             );
                         }
                         break;
@@ -537,13 +811,14 @@ mod mf_encoder {
             Some(data)
         }
 
-        /// 刷新编码器(取出剩余输出)
         pub fn drain(&mut self) -> Vec<Vec<u8>> {
             if !self.initialized {
                 return Vec::new();
             }
             unsafe {
-                let _ = self.transform.ProcessMessage(MFT_MESSAGE_COMMAND_DRAIN, 0);
+                let _ = self
+                    .transform
+                    .ProcessMessage(MFT_MESSAGE_COMMAND_DRAIN, 0);
             }
             let mut outputs = Vec::new();
             loop {
@@ -553,8 +828,12 @@ mod mf_encoder {
                 }
             }
             unsafe {
-                let _ = self.transform.ProcessMessage(MFT_MESSAGE_NOTIFY_END_OF_STREAM, 0);
-                let _ = self.transform.ProcessMessage(MFT_MESSAGE_NOTIFY_END_STREAMING, 0);
+                let _ = self
+                    .transform
+                    .ProcessMessage(MFT_MESSAGE_NOTIFY_END_OF_STREAM, 0);
+                let _ = self
+                    .transform
+                    .ProcessMessage(MFT_MESSAGE_NOTIFY_END_STREAMING, 0);
             }
             self.initialized = false;
             outputs
@@ -573,30 +852,14 @@ mod mf_encoder {
         }
     }
 
-    /// BGRA → NV12 转换(BT.601 full range,与 input_type 的 MFNominalRange_0_255 匹配)
-    ///
-    /// NV12 内存布局:
-    /// - Y 平面:height 行,每行 width 字节(stride = width)
-    /// - UV 交错平面:height/2 行,每行 width 字节(U V 交错,stride = width)
-    ///
-    /// 总大小 = width * height * 3 / 2
-    ///
-    /// full range BT.601 整数运算(避免浮点):
-    /// - Y = (77*R + 150*G + 29*B + 128) >> 8
-    /// - U = ((-43*R - 84*G + 127*B + 128) >> 8) + 128
-    /// - V = ((127*R - 106*G - 21*B + 128) >> 8) + 128
-    ///
-    /// UV 在 2x2 像素块内做平均下采样(每 4 个像素共享一对 UV)
     fn bgra_to_nv12(bgra: &[u8], width: usize, height: usize) -> Vec<u8> {
         debug_assert!(width % 2 == 0 && height % 2 == 0, "NV12 要求宽高为偶数");
         let y_size = width * height;
         let uv_size = width * (height / 2);
         let mut nv12 = vec![0u8; y_size + uv_size];
 
-        // 拆分 Y / UV 平面(一次性 split_at_mut 避免重复借用)
         let (y_plane, uv_plane) = nv12.split_at_mut(y_size);
 
-        // Y 平面(逐像素)
         for row in 0..height {
             let y_row = row * width;
             let bgra_row = y_row * 4;
@@ -610,12 +873,11 @@ mod mf_encoder {
             }
         }
 
-        // UV 交错平面(2x2 块平均下采样)
         let half_h = height / 2;
         let half_w = width / 2;
         for row in 0..half_h {
-            let uv_row = row * width; // UV 行 stride = width
-            let py = row * 2;         // 对应 Y 平面行
+            let uv_row = row * width;
+            let py = row * 2;
             for col in 0..half_w {
                 let px = col * 2;
                 let i00 = (py * width + px) * 4;
@@ -623,13 +885,21 @@ mod mf_encoder {
                 let i10 = ((py + 1) * width + px) * 4;
                 let i11 = ((py + 1) * width + (px + 1)) * 4;
 
-                // 2x2 块的 B/G/R 平均
-                let b = (bgra[i00] as i32 + bgra[i01] as i32
-                    + bgra[i10] as i32 + bgra[i11] as i32) >> 2;
-                let g = (bgra[i00 + 1] as i32 + bgra[i01 + 1] as i32
-                    + bgra[i10 + 1] as i32 + bgra[i11 + 1] as i32) >> 2;
-                let r = (bgra[i00 + 2] as i32 + bgra[i01 + 2] as i32
-                    + bgra[i10 + 2] as i32 + bgra[i11 + 2] as i32) >> 2;
+                let b = (bgra[i00] as i32
+                    + bgra[i01] as i32
+                    + bgra[i10] as i32
+                    + bgra[i11] as i32)
+                    >> 2;
+                let g = (bgra[i00 + 1] as i32
+                    + bgra[i01 + 1] as i32
+                    + bgra[i10 + 1] as i32
+                    + bgra[i11 + 1] as i32)
+                    >> 2;
+                let r = (bgra[i00 + 2] as i32
+                    + bgra[i01 + 2] as i32
+                    + bgra[i10 + 2] as i32
+                    + bgra[i11 + 2] as i32)
+                    >> 2;
 
                 let u = (((-43 * r - 84 * g + 127 * b + 128) >> 8) + 128).clamp(0, 255) as u8;
                 let v = (((127 * r - 106 * g - 21 * b + 128) >> 8) + 128).clamp(0, 255) as u8;
@@ -643,7 +913,131 @@ mod mf_encoder {
         nv12
     }
 
-    // ── 全局编码器单例(按 codec+分辨率缓存) ──
+    fn bgra_to_iyuv(bgra: &[u8], width: usize, height: usize) -> Vec<u8> {
+        let y_size = width * height;
+        let uv_size = (width / 2) * (height / 2);
+        let mut iyuv = vec![0u8; y_size + uv_size * 2];
+        let (y_plane, rest) = iyuv.split_at_mut(y_size);
+        let (u_plane, v_plane) = rest.split_at_mut(uv_size);
+
+        for row in 0..height {
+            for col in 0..width {
+                let i = (row * width + col) * 4;
+                let b = bgra[i] as i32;
+                let g = bgra[i + 1] as i32;
+                let r = bgra[i + 2] as i32;
+                let y = (77 * r + 150 * g + 29 * b + 128) >> 8;
+                y_plane[row * width + col] = y.clamp(0, 255) as u8;
+            }
+        }
+
+        let half_h = height / 2;
+        let half_w = width / 2;
+        for row in 0..half_h {
+            for col in 0..half_w {
+                let py = row * 2;
+                let px = col * 2;
+                let i00 = (py * width + px) * 4;
+                let i01 = (py * width + (px + 1)) * 4;
+                let i10 = ((py + 1) * width + px) * 4;
+                let i11 = ((py + 1) * width + (px + 1)) * 4;
+                let b = (bgra[i00] as i32 + bgra[i01] as i32 + bgra[i10] as i32 + bgra[i11] as i32) >> 2;
+                let g = (bgra[i00 + 1] as i32
+                    + bgra[i01 + 1] as i32
+                    + bgra[i10 + 1] as i32
+                    + bgra[i11 + 1] as i32)
+                    >> 2;
+                let r = (bgra[i00 + 2] as i32
+                    + bgra[i01 + 2] as i32
+                    + bgra[i10 + 2] as i32
+                    + bgra[i11 + 2] as i32)
+                    >> 2;
+                let u = (((-43 * r - 84 * g + 127 * b + 128) >> 8) + 128).clamp(0, 255) as u8;
+                let v = (((127 * r - 106 * g - 21 * b + 128) >> 8) + 128).clamp(0, 255) as u8;
+                u_plane[row * half_w + col] = u;
+                v_plane[row * half_w + col] = v;
+            }
+        }
+        iyuv
+    }
+
+    fn bgra_to_yv12(bgra: &[u8], width: usize, height: usize) -> Vec<u8> {
+        let y_size = width * height;
+        let uv_size = (width / 2) * (height / 2);
+        let mut yv12 = vec![0u8; y_size + uv_size * 2];
+        let (y_plane, rest) = yv12.split_at_mut(y_size);
+        let (v_plane, u_plane) = rest.split_at_mut(uv_size);
+
+        for row in 0..height {
+            for col in 0..width {
+                let i = (row * width + col) * 4;
+                let b = bgra[i] as i32;
+                let g = bgra[i + 1] as i32;
+                let r = bgra[i + 2] as i32;
+                let y = (77 * r + 150 * g + 29 * b + 128) >> 8;
+                y_plane[row * width + col] = y.clamp(0, 255) as u8;
+            }
+        }
+
+        let half_h = height / 2;
+        let half_w = width / 2;
+        for row in 0..half_h {
+            for col in 0..half_w {
+                let py = row * 2;
+                let px = col * 2;
+                let i00 = (py * width + px) * 4;
+                let i01 = (py * width + (px + 1)) * 4;
+                let i10 = ((py + 1) * width + px) * 4;
+                let i11 = ((py + 1) * width + (px + 1)) * 4;
+                let b = (bgra[i00] as i32 + bgra[i01] as i32 + bgra[i10] as i32 + bgra[i11] as i32) >> 2;
+                let g = (bgra[i00 + 1] as i32
+                    + bgra[i01 + 1] as i32
+                    + bgra[i10 + 1] as i32
+                    + bgra[i11 + 1] as i32)
+                    >> 2;
+                let r = (bgra[i00 + 2] as i32
+                    + bgra[i01 + 2] as i32
+                    + bgra[i10 + 2] as i32
+                    + bgra[i11 + 2] as i32)
+                    >> 2;
+                let u = (((-43 * r - 84 * g + 127 * b + 128) >> 8) + 128).clamp(0, 255) as u8;
+                let v = (((127 * r - 106 * g - 21 * b + 128) >> 8) + 128).clamp(0, 255) as u8;
+                v_plane[row * half_w + col] = v;
+                u_plane[row * half_w + col] = u;
+            }
+        }
+        yv12
+    }
+
+    fn bgra_to_yuyv(bgra: &[u8], width: usize, height: usize) -> Vec<u8> {
+        let mut yuyv = vec![0u8; width * height * 2];
+        for row in 0..height {
+            for col in (0..width).step_by(2) {
+                let i0 = (row * width + col) * 4;
+                let i1 = (row * width + (col + 1)) * 4;
+                let b0 = bgra[i0] as i32;
+                let g0 = bgra[i0 + 1] as i32;
+                let r0 = bgra[i0 + 2] as i32;
+                let b1 = bgra[i1] as i32;
+                let g1 = bgra[i1 + 1] as i32;
+                let r1 = bgra[i1 + 2] as i32;
+                let y0 = (77 * r0 + 150 * g0 + 29 * b0 + 128) >> 8;
+                let y1 = (77 * r1 + 150 * g1 + 29 * b1 + 128) >> 8;
+                let b = (b0 + b1) >> 1;
+                let g = (g0 + g1) >> 1;
+                let r = (r0 + r1) >> 1;
+                let u = (((-43 * r - 84 * g + 127 * b + 128) >> 8) + 128).clamp(0, 255) as u8;
+                let v = (((127 * r - 106 * g - 21 * b + 128) >> 8) + 128).clamp(0, 255) as u8;
+                let o = (row * width + col) * 2;
+                yuyv[o] = y0.clamp(0, 255) as u8;
+                yuyv[o + 1] = u;
+                yuyv[o + 2] = y1.clamp(0, 255) as u8;
+                yuyv[o + 3] = v;
+            }
+        }
+        yuyv
+    }
+
     struct EncoderEntry {
         encoder: Mutex<MFEncoder>,
         codec: Codec,
@@ -653,7 +1047,6 @@ mod mf_encoder {
 
     static ENCODER: OnceLock<Mutex<Option<EncoderEntry>>> = OnceLock::new();
 
-    /// 用指定 codec 编码一帧(使用全局缓存的编码器)
     pub fn encode_frame_with_codec(
         bgra: &[u8],
         width: u32,
@@ -665,7 +1058,6 @@ mod mf_encoder {
         let mutex = ENCODER.get_or_init(|| Mutex::new(None));
         let mut guard = mutex.lock().ok()?;
 
-        // 检查是否需要重建编码器(codec 或分辨率变化,或上次创建失败 guard=None)
         let need_rebuild = match guard.as_ref() {
             Some(entry) => entry.codec != codec || entry.width != width || entry.height != height,
             None => true,
@@ -676,21 +1068,25 @@ mod mf_encoder {
             if new_encoder.is_none() {
                 tracing::error!(
                     "MFEncoder::new 失败: codec={:?} {}x{} bitrate={}",
-                    codec, width, height, avg_bitrate
+                    codec,
+                    width,
+                    height,
+                    avg_bitrate
                 );
             } else {
                 tracing::info!(
                     "MFEncoder 创建成功: codec={:?} {}x{} bitrate={}",
-                    codec, width, height, avg_bitrate
-                );
-            }
-            *guard = new_encoder.map(|enc| {
-                EncoderEntry {
-                    encoder: Mutex::new(enc),
                     codec,
                     width,
                     height,
-                }
+                    avg_bitrate
+                );
+            }
+            *guard = new_encoder.map(|enc| EncoderEntry {
+                encoder: Mutex::new(enc),
+                codec,
+                width,
+                height,
             });
         }
 
@@ -699,34 +1095,17 @@ mod mf_encoder {
         enc_guard.encode_frame(bgra)
     }
 
-    /// 探测指定 codec 在当前硬件上是否可用(尝试枚举编码器 MFT)
-    ///
-    /// 返回 true 表示可以创建该 codec 的编码器(硬件或软件)。
-    /// HEVC 在大多数消费级 Windows 上需要 NVENC/AMF/QSV HEVC 硬件支持,
-    /// 否则返回 false,调用方应回退到 H.264。
     pub fn probe_codec_support(codec: Codec) -> bool {
         unsafe {
-            // 初始化 MF(如果尚未初始化)
             static MF_STARTED: OnceLock<()> = OnceLock::new();
             MF_STARTED.get_or_init(|| {
                 let _ = MFStartup(MF_API_VERSION, MFSTARTUP_LITE);
             });
 
-            let subtype = match codec {
-                Codec::H264 => MFVideoFormat_H264,
-                Codec::Hevc => MFVideoFormat_HEVC,
-            };
-            let output_type_info = MFT_REGISTER_TYPE_INFO {
-                guidMajorType: MFMediaType_Video,
-                guidSubtype: subtype,
-            };
-
-            // 枚举硬件+软件,任一可用即支持
             !MFEncoder::enum_encoders_all(codec).is_empty()
         }
     }
 
-    /// 刷新编码器,取出剩余 NALU
     pub fn drain_encoder() -> Vec<Vec<u8>> {
         let mutex = match ENCODER.get() {
             Some(m) => m,
@@ -751,7 +1130,6 @@ mod mf_encoder {
 #[cfg(windows)]
 pub use mf_encoder::{drain_encoder, encode_frame_with_codec, probe_codec_support};
 
-/// H.264 编码便捷函数(向后兼容)
 #[cfg(windows)]
 pub fn encode_frame(
     bgra: &[u8],
