@@ -83,21 +83,29 @@ mod dxgi_capturer {
             match self.acquire_frame() {
                 Some(frame) => {
                     let t_acquire = t0.elapsed();
-                    // 分辨率规整:降低到 1024x768 以提升帧率
-                    // 2048x1536 源缩放到 1408x1056 时,scale 耗时 51ms + encode 41ms = 92ms(仅 10fps)
-                    // 降到 1024x768 后,scale 约 27ms + encode 22ms = 49ms(约 20fps)
-                    // 画质换流畅度:远程桌面场景对帧率敏感度高于分辨率
-                    const MAX_ENC_WIDTH: u32 = 1024;
-                    const MAX_ENC_HEIGHT: u32 = 768;
+                    // 分辨率规整:从环境变量读取上限(由 PC 控制台远程桌面设置注入)
+                    // 默认 1024x768:画质换流畅度,远程桌面场景对帧率敏感度高于分辨率
+                    // 0 表示不限制(用屏幕原始分辨率,但编码器可能拒绝超大分辨率)
+                    let max_w = std::env::var("MEOWMIC_VIDEO_MAX_WIDTH")
+                        .ok()
+                        .and_then(|v| v.parse::<u32>().ok())
+                        .filter(|v| *v > 0)
+                        .unwrap_or(1024);
+                    let max_h = std::env::var("MEOWMIC_VIDEO_MAX_HEIGHT")
+                        .ok()
+                        .and_then(|v| v.parse::<u32>().ok())
+                        .filter(|v| *v > 0)
+                        .unwrap_or(768);
+                    let (max_enc_w, max_enc_h) = (max_w, max_h);
 
-                    let (enc_w, enc_h, enc_pixels) = if frame.width > MAX_ENC_WIDTH || frame.height > MAX_ENC_HEIGHT {
+                    let (enc_w, enc_h, enc_pixels) = if frame.width > max_enc_w || frame.height > max_enc_h {
                         let t_scale_start = std::time::Instant::now();
                         let (nw, nh, np) = scale_bgra_down(
                             &frame.pixels,
                             frame.width,
                             frame.height,
-                            MAX_ENC_WIDTH,
-                            MAX_ENC_HEIGHT,
+                            max_enc_w,
+                            max_enc_h,
                         );
                         let t_scale = t_scale_start.elapsed();
                         // 只在第一次缩放时打印日志,避免刷屏

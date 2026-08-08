@@ -35,6 +35,53 @@ pub struct AppConfig {
     /// 关闭窗口时最小化到系统托盘(而非退出)
     #[serde(default)]
     pub minimize_to_tray: bool,
+    /// 远程桌面设置
+    #[serde(default)]
+    pub remote_desktop: RemoteDesktopConfig,
+}
+
+/// 远程桌面设置(视频编码相关)
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct RemoteDesktopConfig {
+    /// 编码器类型: "h264" | "hevc"(HEVC 需硬件支持,失败回退 H.264)
+    #[serde(default = "default_codec")]
+    pub codec: String,
+    /// GPU 适配器选择: "auto" | "nvidia" | "amd" | "intel" | "software"
+    /// auto=自动选择最佳硬件编码器,software=强制软件编码
+    #[serde(default = "default_adapter")]
+    pub adapter: String,
+    /// 最大分辨率宽度(像素,0 表示按屏幕原始分辨率)
+    #[serde(default = "default_max_width")]
+    pub max_width: u32,
+    /// 最大分辨率高度(像素,0 表示按屏幕原始分辨率)
+    #[serde(default = "default_max_height")]
+    pub max_height: u32,
+    /// 目标帧率
+    #[serde(default = "default_fps")]
+    pub fps: u32,
+    /// 目标码率(Mbps)
+    #[serde(default = "default_bitrate")]
+    pub bitrate_mbps: u32,
+}
+
+fn default_codec() -> String { "h264".to_string() }
+fn default_adapter() -> String { "auto".to_string() }
+fn default_max_width() -> u32 { 1024 }
+fn default_max_height() -> u32 { 768 }
+fn default_fps() -> u32 { 30 }
+fn default_bitrate() -> u32 { 8 }
+
+impl Default for RemoteDesktopConfig {
+    fn default() -> Self {
+        Self {
+            codec: default_codec(),
+            adapter: default_adapter(),
+            max_width: default_max_width(),
+            max_height: default_max_height(),
+            fps: default_fps(),
+            bitrate_mbps: default_bitrate(),
+        }
+    }
 }
 
 impl Default for AppConfig {
@@ -47,6 +94,7 @@ impl Default for AppConfig {
             sensitivity: 1.2,
             launch_at_login: false,
             minimize_to_tray: true,
+            remote_desktop: RemoteDesktopConfig::default(),
         }
     }
 }
@@ -196,6 +244,16 @@ impl ServiceManager {
         if !config.output_device.is_empty() {
             cmd.arg("--output-device").arg(&config.output_device);
         }
+
+        // 远程桌面设置:通过环境变量传递给 server
+        // (用环境变量而非 CLI 参数,避免 server 的 clap 定义膨胀,且便于扩展)
+        let rd = &config.remote_desktop;
+        cmd.env("MEOWMIC_VIDEO_CODEC", &rd.codec);
+        cmd.env("MEOWMIC_VIDEO_ADAPTER", &rd.adapter);
+        cmd.env("MEOWMIC_VIDEO_MAX_WIDTH", rd.max_width.to_string());
+        cmd.env("MEOWMIC_VIDEO_MAX_HEIGHT", rd.max_height.to_string());
+        cmd.env("MEOWMIC_VIDEO_FPS", rd.fps.to_string());
+        cmd.env("MEOWMIC_VIDEO_BITRATE_MBPS", rd.bitrate_mbps.to_string());
 
         // stdout/stderr 用 piped:在后台线程持续读取并转发到前端"服务日志"面板。
         // 必须持续读取:否则 4KB 管道缓冲填满后 server 日志写入阻塞,导致无法接受新连接。
@@ -512,6 +570,80 @@ fn get_output_devices() -> Result<Vec<String>, String> {
         }
     }
     Ok(devices)
+}
+
+/// GPU 适配器信息
+#[derive(Debug, Serialize, Clone)]
+pub struct GpuAdapter {
+    pub id: String,       // "auto" | "nvidia" | "amd" | "intel" | "software"
+    pub name: String,     // 显示名
+    pub available: bool,  // 是否可用
+}
+
+/// 枚举系统 GPU 适配器(用于远程桌面编码器选择)
+#[tauri::command]
+fn list_video_adapters() -> Result<Vec<GpuAdapter>, String> {
+    // 静态列表 + 简单检测:实际枚举 DXGI 适配器
+    let mut adapters = vec![
+        GpuAdapter { id: "auto".to_string(), name: "自动(优先硬件)".to_string(), available: true },
+    ];
+
+    #[cfg(target_os = "windows")]
+    {
+        use windows::Win32::Graphics::Dxgi::{CreateDXGIFactory1, IDXGIFactory1, DXGI_ADAPTER_DESC};
+
+        // 通过 DXGI 枚举适配器,检测厂商
+        let factory: IDXGIFactory1 = unsafe {
+            CreateDXGIFactory1::<IDXGIFactory1>().map_err(|e| e.to_string())?
+        };
+
+        let mut idx: u32 = 0;
+        let mut has_nvidia = false;
+        let mut has_amd = false;
+        let mut has_intel = false;
+
+        loop {
+            let adapter = unsafe { factory.EnumAdapters1(idx) };
+            match adapter {
+                Ok(adapter) => {
+                    let desc: DXGI_ADAPTER_DESC = unsafe {
+                        adapter.GetDesc().unwrap_or_default()
+                    };
+                    // Vendor ID: NVIDIA=0x10DE, AMD=0x1002, Intel=0x8086
+                    let vendor_name = match desc.VendorId {
+                        0x10DE => { has_nvidia = true; "NVIDIA" }
+                        0x1002 => { has_amd = true; "AMD" }
+                        0x8086 => { has_intel = true; "Intel" }
+                        _ => "未知厂商",
+                    };
+                    let name = String::from_utf16_lossy(&desc.Description)
+                        .trim_end_matches('\0')
+                        .to_string();
+                    adapters.push(GpuAdapter {
+                        id: vendor_name.to_lowercase(),
+                        name: format!("{} ({})", vendor_name, name),
+                        available: true,
+                    });
+                    idx += 1;
+                }
+                Err(_) => break,
+            }
+        }
+
+        if !has_nvidia {
+            adapters.push(GpuAdapter { id: "nvidia".to_string(), name: "NVIDIA (未检测到)".to_string(), available: false });
+        }
+        if !has_amd {
+            adapters.push(GpuAdapter { id: "amd".to_string(), name: "AMD (未检测到)".to_string(), available: false });
+        }
+        if !has_intel {
+            adapters.push(GpuAdapter { id: "intel".to_string(), name: "Intel (未检测到)".to_string(), available: false });
+        }
+    }
+
+    adapters.push(GpuAdapter { id: "software".to_string(), name: "软件编码(兼容性最好,性能最低)".to_string(), available: true });
+
+    Ok(adapters)
 }
 
 /// 运行时切换外放静音。
@@ -904,6 +1036,7 @@ pub fn run() {
             stop_service,
             get_status,
             get_output_devices,
+            list_video_adapters,
             set_mute_speaker,
             get_pairing_state,
             reset_pairing,

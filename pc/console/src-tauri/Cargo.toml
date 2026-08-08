@@ -27,6 +27,9 @@ local-ip-address = "0.6"
 [target.'cfg(windows)'.dependencies]
 cpal = "0.15"
 winreg = "0.52"
+windows = { version = "0.58", features = [
+    "Win32_Graphics_Dxgi",
+] }
 
 [features]
 default = ["custom-protocol"]

@@ -1476,6 +1476,74 @@
                     </div>
                 </section>
             </div>
+
+            <!-- 远程桌面设置(独立一行) -->
+            <section class="mm-card mm-settings-card" style="margin-top:16px;">
+                <div class="mm-section-title">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" x2="16" y1="21" y2="21"/><line x1="12" x2="12" y1="17" y2="21"/></svg>
+                    <span>远程桌面</span>
+                </div>
+                <p class="mm-field-hint" style="margin-bottom:12px;">配置视频推流的编码器、分辨率与画质参数。更改后需重启服务生效。</p>
+                <div class="mm-form-stack">
+                    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+                        <div class="mm-field">
+                            <label class="mm-field-label" for="rdCodec">视频编码</label>
+                            <div class="mm-select-wrapper">
+                                <select id="rdCodec" class="mm-select">
+                                    <option value="h264">H.264(兼容性最好)</option>
+                                    <option value="hevc">H.265 / HEVC(需硬件支持,文字更清晰)</option>
+                                </select>
+                                <svg class="mm-select-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg>
+                            </div>
+                            <p class="mm-field-hint">HEVC 同等码率下画质更好,但需客户端支持</p>
+                        </div>
+                        <div class="mm-field">
+                            <label class="mm-field-label" for="rdAdapter">GPU 编码器</label>
+                            <div class="mm-select-wrapper">
+                                <select id="rdAdapter" class="mm-select">
+                                    <option value="auto">加载中...</option>
+                                </select>
+                                <svg class="mm-select-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg>
+                            </div>
+                            <p class="mm-field-hint">硬件编码器(NVENC/AMF/QSV)比软件编码快 5-10 倍</p>
+                        </div>
+                    </div>
+                    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+                        <div class="mm-field">
+                            <label class="mm-field-label" for="rdMaxWidth">最大宽度(像素)</label>
+                            <input id="rdMaxWidth" class="mm-input" type="number" min="320" max="3840" step="16" value="1024" placeholder="1024">
+                            <p class="mm-field-hint">0=原始分辨率(可能被编码器拒绝);推荐 1024</p>
+                        </div>
+                        <div class="mm-field">
+                            <label class="mm-field-label" for="rdMaxHeight">最大高度(像素)</label>
+                            <input id="rdMaxHeight" class="mm-input" type="number" min="240" max="2160" step="16" value="768" placeholder="768">
+                            <p class="mm-field-hint">0=原始分辨率;推荐 768</p>
+                        </div>
+                    </div>
+                    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+                        <div class="mm-field">
+                            <label class="mm-field-label" for="rdFps">目标帧率</label>
+                            <input id="rdFps" class="mm-input" type="number" min="10" max="120" value="30" placeholder="30">
+                            <p class="mm-field-hint">0=由客户端决定;推荐 30</p>
+                        </div>
+                        <div class="mm-field">
+                            <label class="mm-field-label" for="rdBitrate">目标码率(Mbps)</label>
+                            <input id="rdBitrate" class="mm-input" type="number" min="1" max="100" value="8" placeholder="8">
+                            <p class="mm-field-hint">0=由客户端决定;推荐 8(1080p)/4(720p)</p>
+                        </div>
+                    </div>
+                    <div style="display:flex;gap:8px;margin-top:4px;">
+                        <button class="mm-btn mm-btn-secondary mm-btn-sm" type="button" onclick="loadVideoAdapters()">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/></svg>
+                            <span>检测 GPU</span>
+                        </button>
+                        <button class="mm-btn mm-btn-secondary mm-btn-sm" type="button" onclick="resetRemoteDesktopDefaults()">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></svg>
+                            <span>恢复默认</span>
+                        </button>
+                    </div>
+                </div>
+            </section>
         </div>
 
         <!-- ===== Page: 关于 ===== -->
@@ -1655,6 +1723,9 @@
                 } catch(e) {
                     console.error('加载输出设备列表失败:', e);
                 }
+
+                // 加载 GPU 适配器列表(远程桌面设置)
+                loadVideoAdapters();
 
                 updateStatus();
                 statusInterval = setInterval(updateStatus, 1000);
@@ -1899,6 +1970,21 @@
             document.getElementById('autoStart').checked = cfg.auto_start;
             document.getElementById('launchAtLogin').checked = !!cfg.launch_at_login;
             document.getElementById('minimizeToTray').checked = cfg.minimize_to_tray !== false;
+
+            // 远程桌面设置
+            const rd = cfg.remote_desktop || {};
+            document.getElementById('rdCodec').value = rd.codec || 'h264';
+            // adapter select 异步加载,先存待选值
+            const rdAdapter = document.getElementById('rdAdapter');
+            if (rdAdapter.options.length > 1) {
+                rdAdapter.value = rd.adapter || 'auto';
+            } else {
+                rdAdapter.setAttribute('data-pending', rd.adapter || 'auto');
+            }
+            document.getElementById('rdMaxWidth').value = rd.max_width ?? 1024;
+            document.getElementById('rdMaxHeight').value = rd.max_height ?? 768;
+            document.getElementById('rdFps').value = rd.fps ?? 30;
+            document.getElementById('rdBitrate').value = rd.bitrate_mbps ?? 8;
         }
 
         function getConfigFromUI() {
@@ -1910,7 +1996,48 @@
                 sensitivity: 1.2,
                 launch_at_login: document.getElementById('launchAtLogin').checked,
                 minimize_to_tray: document.getElementById('minimizeToTray').checked,
+                remote_desktop: {
+                    codec: document.getElementById('rdCodec').value || 'h264',
+                    adapter: document.getElementById('rdAdapter').value || 'auto',
+                    max_width: parseInt(document.getElementById('rdMaxWidth').value) || 0,
+                    max_height: parseInt(document.getElementById('rdMaxHeight').value) || 0,
+                    fps: parseInt(document.getElementById('rdFps').value) || 0,
+                    bitrate_mbps: parseInt(document.getElementById('rdBitrate').value) || 0,
+                },
             };
+        }
+
+        // ============ Remote Desktop ============
+        async function loadVideoAdapters() {
+            const Tauri = window.__TAURI__;
+            const select = document.getElementById('rdAdapter');
+            const pending = select.getAttribute('data-pending') || select.value || 'auto';
+            try {
+                const adapters = await Tauri.invoke('list_video_adapters');
+                select.innerHTML = '';
+                adapters.forEach(a => {
+                    const opt = document.createElement('option');
+                    opt.value = a.id;
+                    opt.textContent = a.name;
+                    if (!a.available) opt.disabled = true;
+                    if (a.id === pending) opt.selected = true;
+                    select.appendChild(opt);
+                });
+                select.removeAttribute('data-pending');
+            } catch(e) {
+                console.error('加载 GPU 列表失败:', e);
+                select.innerHTML = '<option value="auto">自动(检测失败)</option>';
+            }
+        }
+
+        function resetRemoteDesktopDefaults() {
+            document.getElementById('rdCodec').value = 'h264';
+            document.getElementById('rdAdapter').value = 'auto';
+            document.getElementById('rdMaxWidth').value = 1024;
+            document.getElementById('rdMaxHeight').value = 768;
+            document.getElementById('rdFps').value = 30;
+            document.getElementById('rdBitrate').value = 8;
+            showToast('已恢复远程桌面默认设置(需重启服务生效)');
         }
 
         // ============ Service ============
