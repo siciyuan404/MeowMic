@@ -81,7 +81,7 @@ private const val BTN_MIDDLE = 0x04
 private const val KEY_TAG = "MeowMicKey"
 
 // ============ Windows VK code 常量(用于模拟键盘) ============
-private object VK {
+internal object VK {
     // 修饰键 L/R 专用 code(借鉴 moonlight-android,用于粘滞/锁定状态)
     // Windows 对部分快捷键区分左右(如右 Shift 长按=筛选键),用专用 code 行为更精确
     const val LCONTROL = 0xA2
