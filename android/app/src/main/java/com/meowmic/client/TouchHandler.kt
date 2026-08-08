@@ -474,9 +474,9 @@ class TouchHandler(
                     isTwoFingerScroll = false
                     isPinchZoom = false
                 } else if (pointerCount <= 4) {
-                    // 三指/四指降级:重置多指手势触发标志,允许降级后的指头数重新判定
-                    threeFingerGestureFired = false
-                    fourFingerGestureFired = false
+                    // 三指/四指降级:不重置 fired 标志。
+                    // 降级重置会导致滑动后抬起手指误判为多指单击(fired 被清,UP 时条件成立)。
+                    // fired 标志仅在新的多指手势开始时(POINTER_DOWN 2→3)重置。
                 }
                 // 双指轻触右键准备
                 if (downPointerCount >= 2 && !isTwoFingerScroll && pointerCount == 2) {

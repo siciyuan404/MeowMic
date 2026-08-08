@@ -114,7 +114,11 @@ fun LauncherScreen(
     var locked by remember { mutableStateOf(false) }
     var landscape by remember { mutableStateOf(false) }
     var connExpanded by remember { mutableStateOf(false) }
-    var gridCols by remember { mutableStateOf(GridCols.AUTO) }
+    // 列数从 ViewModel 读取(持久化),切换页面/重启后保留
+    val gridColsName by vm.gridColsName.collectAsState()
+    val gridCols = remember(gridColsName) {
+        runCatching { GridCols.valueOf(gridColsName) }.getOrNull() ?: GridCols.AUTO
+    }
 
     // 进入页面时拉取应用库(仅一次,且需已连接)
     LaunchedEffect(connectionState) {
@@ -190,7 +194,7 @@ fun LauncherScreen(
                     locked = !locked
                 },
                 onToggleLandscape = { landscape = !landscape },
-                onGridColsChange = { gridCols = it },
+                onGridColsChange = { vm.setGridCols(it.name) },
             )
 
             // 3. 分页网格
@@ -513,6 +517,8 @@ private fun PagerGrid(
     var draggingItemId by remember { mutableStateOf<String?>(null) }
     // 当前拖动悬停的位置(page, col, row);page=-1 表示"新建页面"占位区
     var dropTarget by remember { mutableStateOf<Triple<Int, Int, Int>?>(null) }
+    // 拖动偏移量(图标跟随手指移动的视觉位移)
+    var dragOffset by remember { mutableStateOf(Offset.Zero) }
     // 每个 cell 的屏幕位置,key = "page:col:row"(1-based col/row)
     val cellBounds = remember { mutableStateMapOf<String, Rect>() }
     // "新建页面"占位区的屏幕位置
@@ -538,12 +544,17 @@ private fun PagerGrid(
                             val parts = hitKey.split(":")
                             val (hp, hc, hr) = Triple(parts[0].toInt(), parts[1].toInt(), parts[2].toInt())
                             val item = quickItems.firstOrNull { it.page == hp && it.col == hc && it.row == hr }
-                            if (item != null) draggingItemId = item.id
+                            if (item != null) {
+                                draggingItemId = item.id
+                                dragOffset = Offset.Zero
+                            }
                         }
                     },
-                    onDrag = { change, _ ->
+                    onDrag = { change, dragAmount ->
                         change.consume()
                         if (draggingItemId == null) return@detectDragGesturesAfterLongPress
+                        // 累加偏移量,让图标跟随手指移动
+                        dragOffset += dragAmount
                         val globalPos = change.position + gridOrigin
                         // 命中检测:优先匹配格子,其次匹配"新建页面"占位区
                         val hitKey = cellBounds.entries.firstOrNull { it.value.contains(globalPos) }?.key
@@ -568,9 +579,10 @@ private fun PagerGrid(
                         }
                     },
                     onDragEnd = {
-                        val (page, col, row) = dropTarget ?: Triple(0, 0, 0)
+                        val target = dropTarget
                         val id = draggingItemId
-                        if (id != null && page != 0) {
+                        if (id != null && target != null) {
+                            val (page, col, row) = target
                             if (page == -1) {
                                 // 拖到"新建页面"占位区 → 在新页面 (maxPage+1) 放置
                                 val newPageIdx = (quickItems.maxOfOrNull { it.page } ?: -1) + 1
@@ -581,10 +593,12 @@ private fun PagerGrid(
                         }
                         draggingItemId = null
                         dropTarget = null
+                        dragOffset = Offset.Zero
                     },
                     onDragCancel = {
                         draggingItemId = null
                         dropTarget = null
+                        dragOffset = Offset.Zero
                     },
                 )
             }
@@ -636,6 +650,7 @@ private fun PagerGrid(
                                             editMode = editMode,
                                             isDragging = draggingItemId == item.id,
                                             isDropTarget = false,
+                                            dragOffset = if (draggingItemId == item.id) dragOffset else Offset.Zero,
                                             onLaunch = onLaunch,
                                             onRemove = onRemove,
                                         )
@@ -677,6 +692,7 @@ private fun QuickItemCell(
     editMode: Boolean,
     isDragging: Boolean,
     isDropTarget: Boolean,
+    dragOffset: Offset = Offset.Zero,
     onLaunch: (QuickItem) -> Unit,
     onRemove: (String) -> Unit,
 ) {
@@ -684,11 +700,13 @@ private fun QuickItemCell(
         modifier = Modifier
             .fillMaxSize()
             .graphicsLayer {
-                // 拖动中:轻微放大 + 提高透明度(视觉反馈)
+                // 拖动中:轻微放大 + 跟随手指位移 + 提高透明度(视觉反馈)
                 if (isDragging) {
                     scaleX = 1.1f
                     scaleY = 1.1f
                     alpha = 0.85f
+                    translationX = dragOffset.x
+                    translationY = dragOffset.y
                 }
             }
             .clickable { onLaunch(item) }
@@ -696,8 +714,9 @@ private fun QuickItemCell(
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center,
     ) {
+        // 图标区:weight(1f) 占据文字之外的空间,确保文字不被挤压
         Box(
-            modifier = Modifier.fillMaxWidth(),
+            modifier = Modifier.weight(1f).fillMaxWidth(),
             contentAlignment = Alignment.Center,
         ) {
             // 图标容器:APP 类型用 PC 真实图标;其他类型用类型对应图标
@@ -726,7 +745,7 @@ private fun QuickItemCell(
                 }
             }
         }
-        Spacer(Modifier.height(4.dp))
+        Spacer(Modifier.height(2.dp))
         Text(
             item.name,
             fontSize = 10.sp,
@@ -761,7 +780,9 @@ private fun TypeIconBox(item: QuickItem, vm: MeowMicViewModel) {
     BoxWithConstraints(
         modifier = Modifier
             .fillMaxWidth()
-            .aspectRatio(1f)
+            // matchHeightConstraintsFirst:先匹配高度约束算宽度(正方形),
+            // 若宽度不够则改用宽度算高度。确保图标不超出 cell 高度,文字不被挤压。
+            .aspectRatio(1f, matchHeightConstraintsFirst = true)
             .background(MaterialTheme.colorScheme.surface, RoundedCornerShape(14.dp))
             .border(
                 1.dp,
@@ -1641,16 +1662,6 @@ private fun AddAppDialog(
                         }
                     }
                     QuickItemType.SCRIPT, QuickItemType.WEBSITE, QuickItemType.OBSIDIAN -> {
-                        // SCRIPT 类型:在表单上方显示预设模板快捷按钮(点击自动填表)
-                        if (selectedType == QuickItemType.SCRIPT) {
-                            PresetTemplates(
-                                onPick = { name, target ->
-                                    manualName = name
-                                    manualTarget = target
-                                },
-                            )
-                            Spacer(Modifier.height(8.dp))
-                        }
                         CustomTypeForm(
                             type = selectedType,
                             name = manualName,
@@ -1731,60 +1742,6 @@ private fun AddAppDialog(
             },
             onDismiss = { showDirBrowser = false },
         )
-    }
-}
-
-/**
- * 预设模板(仅 SCRIPT 类型):一键填充 name + target,快速添加 CLI 工具快捷启动。
- *
- * 覆盖 VSCode/Claude Code/Opencode/Cursor/Windsurf/Gemini CLI/Copilot 等常见开发工具,
- * target 形如 `code <项目路径>`,用户填表后替换 <项目路径> 为实际路径(或保留 . 打开当前目录)。
- * PC 端 buildCommandForType 会按命令行解析为 command + args。
- */
-@Composable
-private fun PresetTemplates(onPick: (name: String, target: String) -> Unit) {
-    val presets = remember {
-        listOf(
-            "VSCode" to "code .",
-            "Claude Code" to "claude .",
-            "Opencode" to "opencode .",
-            "Cursor" to "cursor .",
-            "Windsurf" to "windsurf .",
-            "Gemini CLI" to "gemini .",
-            "Copilot" to "copilot .",
-            "PowerShell" to "powershell -NoExit",
-            "CMD" to "cmd /k",
-        )
-    }
-    Column(modifier = Modifier.fillMaxWidth()) {
-        Text(
-            "预设模板(点击填充,把 . 换成项目路径)",
-            fontSize = 10.sp,
-            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
-        )
-        Spacer(Modifier.height(4.dp))
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .horizontalScroll(rememberScrollState()),
-            horizontalArrangement = Arrangement.spacedBy(6.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            presets.forEach { (name, target) ->
-                AssistChip(
-                    onClick = { onPick(name, target) },
-                    label = { Text(name, fontSize = 11.sp) },
-                    leadingIcon = {
-                        Icon(
-                            Icons.Default.Terminal,
-                            contentDescription = null,
-                            modifier = Modifier.size(12.dp),
-                            tint = MaterialTheme.colorScheme.primary,
-                        )
-                    },
-                )
-            }
-        }
     }
 }
 

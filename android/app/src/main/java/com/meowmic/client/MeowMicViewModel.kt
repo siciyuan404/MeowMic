@@ -167,6 +167,9 @@ class MeowMicViewModel : ViewModel() {
 
         // 触控风格(THINKPAD / MAC)
         private const val KEY_TOUCH_STYLE = "touch_style"
+
+        // 快捷启动列数设置(存 GridCols enum name,UI 层转换)
+        private const val KEY_GRID_COLS = "grid_cols"
     }
 
     private val _connectionState = MutableStateFlow<ConnectionState>(ConnectionState.Disconnected)
@@ -226,6 +229,10 @@ class MeowMicViewModel : ViewModel() {
     // 触控风格(THINKPAD=Windows 风格反向滚动+无惯性 / MAC=自然滚动+平滑惯性)
     private val _touchStyle = MutableStateFlow(TouchStyle.THINKPAD)
     val touchStyle: StateFlow<TouchStyle> = _touchStyle.asStateFlow()
+
+    // 快捷启动列数设置(存 GridCols enum name,持久化于 SharedPreferences)
+    private val _gridColsName = MutableStateFlow("AUTO")
+    val gridColsName: StateFlow<String> = _gridColsName.asStateFlow()
 
     private val audioInputManager = AudioInputManager()
     val currentAudioMode: StateFlow<AudioInputManager.InputMode> = audioInputManager.currentMode
@@ -786,6 +793,15 @@ class MeowMicViewModel : ViewModel() {
     }
 
     /**
+     * 设置快捷启动列数(持久化,切换页面/重启后保留)
+     */
+    fun setGridCols(name: String) {
+        _gridColsName.value = name
+        context?.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)?.edit()
+            ?.putString(KEY_GRID_COLS, name)?.apply()
+    }
+
+    /**
      * 播放操作反馈音效(短促"嘀"声)。仅在 [soundFeedback] 开启时发声。
      * 调用方无需判断状态,内部自检。
      */
@@ -972,6 +988,9 @@ class MeowMicViewModel : ViewModel() {
         // 触控风格
         _touchStyle.value = TouchStyle.fromName(prefs.getString(KEY_TOUCH_STYLE, TouchStyle.THINKPAD.name))
         touchHandler?.touchStyle = _touchStyle.value
+
+        // 快捷启动列数设置
+        _gridColsName.value = prefs.getString(KEY_GRID_COLS, "AUTO") ?: "AUTO"
     }
 
     private fun persistAudioPanel() {
