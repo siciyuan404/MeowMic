@@ -85,7 +85,7 @@ enum class DisplayMode(val label: String) {
  *
  * 支持三种显示模式(Fit/Fill/Crop)、全屏沉浸式横屏、全屏触控交互、虚拟键盘。
  */
-@OptIn(ExperimentalComposeUiApi::class)
+@OptIn(ExperimentalComposeUiApi::class, androidx.compose.material3.ExperimentalMaterial3Api::class)
 @Composable
 fun MonitorScreen(
     vm: MeowMicViewModel,
