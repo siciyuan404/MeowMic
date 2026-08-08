@@ -646,6 +646,117 @@ fn list_video_adapters() -> Result<Vec<GpuAdapter>, String> {
     Ok(adapters)
 }
 
+/// 分辨率预设项
+#[derive(Debug, Serialize, Clone)]
+pub struct ResolutionPreset {
+    pub id: String,       // "1024x768"
+    pub label: String,    // "1024 × 768 (4:3)"
+    pub width: u32,
+    pub height: u32,
+}
+
+/// 枚举显示器支持的分辨率列表(用于远程桌面设置)
+/// 结合系统支持的分辨率 + 常用预设(确保 16 对齐)
+#[tauri::command]
+fn list_screen_resolutions() -> Result<Vec<ResolutionPreset>, String> {
+    let mut presets: Vec<ResolutionPreset> = Vec::new();
+    let mut seen: std::collections::HashSet<(u32, u32)> = std::collections::HashSet::new();
+
+    // 1. 常用预设(16 对齐,编码器普遍支持)
+    let common: &[(u32, u32, &str)] = &[
+        (1920, 1080, "16:9 FHD"),
+        (1680, 1050, "16:10"),
+        (1600, 900, "16:9 HD+"),
+        (1440, 900, "16:10"),
+        (1408, 1056, "4:3"),
+        (1280, 1024, "5:4"),
+        (1280, 960, "4:3"),
+        (1280, 720, "16:9 HD"),
+        (1024, 768, "4:3 XGA"),
+        (960, 720, "4:3"),
+        (800, 600, "4:3 SVGA"),
+        (640, 480, "4:3 VGA"),
+    ];
+
+    #[cfg(target_os = "windows")]
+    {
+        use windows::Win32::Graphics::Gdi::{
+            EnumDisplaySettingsW, DEVMODEW, ENUM_DISPLAY_SETTINGS_MODE,
+        };
+        use windows::core::PCWSTR;
+
+        // 2. 枚举当前显示器支持的所有模式
+        unsafe {
+            let mut i: u32 = 0;
+            let mut dm = DEVMODEW::default();
+            dm.dmSize = std::mem::size_of::<DEVMODEW>() as u16;
+            while EnumDisplaySettingsW(PCWSTR::null(), ENUM_DISPLAY_SETTINGS_MODE(i), &mut dm).as_bool() {
+                let w = dm.dmPelsWidth;
+                let h = dm.dmPelsHeight;
+                if w > 0 && h > 0 && w >= 640 && h >= 480 && w <= 3840 && h <= 2160 {
+                    // 只保留 16 对齐的分辨率(编码器要求)
+                    if w % 16 == 0 && h % 16 == 0 {
+                        if seen.insert((w, h)) {
+                            let ratio = if (w as f64 / h as f64 - 16.0/9.0).abs() < 0.05 { "16:9" }
+                                else if (w as f64 / h as f64 - 4.0/3.0).abs() < 0.05 { "4:3" }
+                                else if (w as f64 / h as f64 - 16.0/10.0).abs() < 0.05 { "16:10" }
+                                else { "" };
+                            let label = if ratio.is_empty() {
+                                format!("{} × {}", w, h)
+                            } else {
+                                format!("{} × {} ({})", w, h, ratio)
+                            };
+                            presets.push(ResolutionPreset {
+                                id: format!("{}x{}", w, h),
+                                label,
+                                width: w,
+                                height: h,
+                            });
+                        }
+                    }
+                }
+                i += 1;
+                if i > 200 { break; } // 安全上限
+            }
+        }
+    }
+
+    // 3. 补充常用预设(确保即使 EnumDisplaySettings 失败也有选项)
+    for &(w, h, ratio) in common {
+        if seen.insert((w, h)) {
+            presets.push(ResolutionPreset {
+                id: format!("{}x{}", w, h),
+                label: format!("{} × {} ({})", w, h, ratio),
+                width: w,
+                height: h,
+            });
+        }
+    }
+
+    // 4. 按面积降序排列(高分辨率在前)
+    presets.sort_by(|a, b| (b.width * b.height).cmp(&(a.width * a.height)));
+
+    // 5. 在最前面加一个"原始分辨率"选项
+    #[cfg(target_os = "windows")]
+    {
+        use windows::Win32::UI::WindowsAndMessaging::{GetSystemMetrics, SM_CXSCREEN, SM_CYSCREEN};
+        unsafe {
+            let sw = GetSystemMetrics(SM_CXSCREEN).max(0) as u32;
+            let sh = GetSystemMetrics(SM_CYSCREEN).max(0) as u32;
+            if sw > 0 && sh > 0 {
+                presets.insert(0, ResolutionPreset {
+                    id: format!("{}x{}", sw, sh),
+                    label: format!("{} × {} (原始分辨率)", sw, sh),
+                    width: sw,
+                    height: sh,
+                });
+            }
+        }
+    }
+
+    Ok(presets)
+}
+
 /// 运行时切换外放静音。
 /// 持久化配置,服务运行中则同步推送到 server;未运行时仅保存,下次启动生效。
 #[tauri::command]
@@ -1037,6 +1148,7 @@ pub fn run() {
             get_status,
             get_output_devices,
             list_video_adapters,
+            list_screen_resolutions,
             set_mute_speaker,
             get_pairing_state,
             reset_pairing,

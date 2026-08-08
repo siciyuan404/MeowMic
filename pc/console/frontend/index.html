@@ -1510,26 +1510,56 @@
                     </div>
                     <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
                         <div class="mm-field">
-                            <label class="mm-field-label" for="rdMaxWidth">最大宽度(像素)</label>
-                            <input id="rdMaxWidth" class="mm-input" type="number" min="320" max="3840" step="16" value="1024" placeholder="1024">
-                            <p class="mm-field-hint">0=原始分辨率(可能被编码器拒绝);推荐 1024</p>
+                            <label class="mm-field-label" for="rdResolution">编码分辨率</label>
+                            <div class="mm-select-wrapper">
+                                <select id="rdResolution" class="mm-select">
+                                    <option value="1024x768">加载中...</option>
+                                </select>
+                                <svg class="mm-select-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg>
+                            </div>
+                            <p class="mm-field-hint">从系统支持的分辨率中选择(16 对齐,编码器兼容)</p>
                         </div>
                         <div class="mm-field">
-                            <label class="mm-field-label" for="rdMaxHeight">最大高度(像素)</label>
-                            <input id="rdMaxHeight" class="mm-input" type="number" min="240" max="2160" step="16" value="768" placeholder="768">
-                            <p class="mm-field-hint">0=原始分辨率;推荐 768</p>
+                            <label class="mm-field-label" for="rdAdapter">GPU 编码器</label>
+                            <div class="mm-select-wrapper">
+                                <select id="rdAdapter" class="mm-select">
+                                    <option value="auto">加载中...</option>
+                                </select>
+                                <svg class="mm-select-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg>
+                            </div>
+                            <p class="mm-field-hint">硬件编码器(NVENC/AMF/QSV)比软件编码快 5-10 倍</p>
                         </div>
                     </div>
                     <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
                         <div class="mm-field">
                             <label class="mm-field-label" for="rdFps">目标帧率</label>
-                            <input id="rdFps" class="mm-input" type="number" min="10" max="120" value="30" placeholder="30">
-                            <p class="mm-field-hint">0=由客户端决定;推荐 30</p>
+                            <div class="mm-select-wrapper">
+                                <select id="rdFps" class="mm-select">
+                                    <option value="0">由客户端决定</option>
+                                    <option value="15">15 fps(省电/弱网)</option>
+                                    <option value="20">20 fps(平衡)</option>
+                                    <option value="30">30 fps(流畅)</option>
+                                    <option value="60">60 fps(极致流畅,需硬件编码)</option>
+                                </select>
+                                <svg class="mm-select-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg>
+                            </div>
+                            <p class="mm-field-hint">帧率越高越流畅,但 CPU/GPU 负载越大</p>
                         </div>
                         <div class="mm-field">
-                            <label class="mm-field-label" for="rdBitrate">目标码率(Mbps)</label>
-                            <input id="rdBitrate" class="mm-input" type="number" min="1" max="100" value="8" placeholder="8">
-                            <p class="mm-field-hint">0=由客户端决定;推荐 8(1080p)/4(720p)</p>
+                            <label class="mm-field-label" for="rdBitrate">目标码率</label>
+                            <div class="mm-select-wrapper">
+                                <select id="rdBitrate" class="mm-select">
+                                    <option value="0">由客户端决定</option>
+                                    <option value="2">2 Mbps(低画质/弱网)</option>
+                                    <option value="4">4 Mbps(720p 推荐)</option>
+                                    <option value="8">8 Mbps(1080p 推荐)</option>
+                                    <option value="12">12 Mbps(高画质)</option>
+                                    <option value="20">20 Mbps(极高画质)</option>
+                                    <option value="50">50 Mbps(无损级,需强网络)</option>
+                                </select>
+                                <svg class="mm-select-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg>
+                            </div>
+                            <p class="mm-field-hint">码率越高画质越好,但占用带宽越大</p>
                         </div>
                     </div>
                     <div style="display:flex;gap:8px;margin-top:4px;">
@@ -1726,6 +1756,8 @@
 
                 // 加载 GPU 适配器列表(远程桌面设置)
                 loadVideoAdapters();
+                // 加载屏幕分辨率列表(远程桌面设置)
+                loadScreenResolutions();
 
                 updateStatus();
                 statusInterval = setInterval(updateStatus, 1000);
@@ -1981,13 +2013,21 @@
             } else {
                 rdAdapter.setAttribute('data-pending', rd.adapter || 'auto');
             }
-            document.getElementById('rdMaxWidth').value = rd.max_width ?? 1024;
-            document.getElementById('rdMaxHeight').value = rd.max_height ?? 768;
-            document.getElementById('rdFps').value = rd.fps ?? 30;
-            document.getElementById('rdBitrate').value = rd.bitrate_mbps ?? 8;
+            // resolution select 异步加载,先存待选值
+            const rdRes = document.getElementById('rdResolution');
+            const resId = (rd.max_width && rd.max_height) ? `${rd.max_width}x${rd.max_height}` : '1024x768';
+            if (rdRes.options.length > 1) {
+                rdRes.value = resId;
+            } else {
+                rdRes.setAttribute('data-pending', resId);
+            }
+            document.getElementById('rdFps').value = String(rd.fps ?? 30);
+            document.getElementById('rdBitrate').value = String(rd.bitrate_mbps ?? 8);
         }
 
         function getConfigFromUI() {
+            const resId = document.getElementById('rdResolution').value || '1024x768';
+            const [w, h] = resId.split('x').map(s => parseInt(s) || 0);
             return {
                 base_port: parseInt(document.getElementById('tcpPort').value) || 28900,
                 output_device: document.getElementById('outputDevice').value,
@@ -1999,8 +2039,8 @@
                 remote_desktop: {
                     codec: document.getElementById('rdCodec').value || 'h264',
                     adapter: document.getElementById('rdAdapter').value || 'auto',
-                    max_width: parseInt(document.getElementById('rdMaxWidth').value) || 0,
-                    max_height: parseInt(document.getElementById('rdMaxHeight').value) || 0,
+                    max_width: w,
+                    max_height: h,
                     fps: parseInt(document.getElementById('rdFps').value) || 0,
                     bitrate_mbps: parseInt(document.getElementById('rdBitrate').value) || 0,
                 },
@@ -2030,13 +2070,33 @@
             }
         }
 
+        async function loadScreenResolutions() {
+            const Tauri = window.__TAURI__;
+            const select = document.getElementById('rdResolution');
+            const pending = select.getAttribute('data-pending') || select.value || '1024x768';
+            try {
+                const presets = await Tauri.invoke('list_screen_resolutions');
+                select.innerHTML = '';
+                presets.forEach(p => {
+                    const opt = document.createElement('option');
+                    opt.value = p.id;
+                    opt.textContent = p.label;
+                    if (p.id === pending) opt.selected = true;
+                    select.appendChild(opt);
+                });
+                select.removeAttribute('data-pending');
+            } catch(e) {
+                console.error('加载分辨率列表失败:', e);
+                select.innerHTML = '<option value="1024x768">1024 × 768 (4:3)</option>';
+            }
+        }
+
         function resetRemoteDesktopDefaults() {
             document.getElementById('rdCodec').value = 'h264';
             document.getElementById('rdAdapter').value = 'auto';
-            document.getElementById('rdMaxWidth').value = 1024;
-            document.getElementById('rdMaxHeight').value = 768;
-            document.getElementById('rdFps').value = 30;
-            document.getElementById('rdBitrate').value = 8;
+            document.getElementById('rdResolution').value = '1024x768';
+            document.getElementById('rdFps').value = '30';
+            document.getElementById('rdBitrate').value = '8';
             showToast('已恢复远程桌面默认设置(需重启服务生效)');
         }
 

@@ -1,5 +1,7 @@
 package com.meowmic.client.ui
 
+import android.app.Activity
+import android.content.pm.ActivityInfo
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.ImageFormat
@@ -18,22 +20,42 @@ import android.view.Surface
 import android.view.SurfaceHolder
 import android.view.SurfaceView
 import java.io.ByteArrayOutputStream
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.snapshots.SnapshotStateMap
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.changedToUp
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.pointerInteropFilter
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import com.meowmic.client.ConnectionState
 import com.meowmic.client.LauncherRepository
 import com.meowmic.client.MeowMicViewModel
@@ -42,13 +64,28 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 
 /**
+ * 视频显示模式
+ * - FIT:按比例伸缩,保持宽高比,上下/左右留黑边(默认)
+ * - FILL:自适应填充,拉伸填满整个区域(会变形)
+ * - CROP:裁剪填充,保持宽高比,裁掉超出部分
+ */
+enum class DisplayMode(val label: String) {
+    FIT("按比例伸缩"),
+    FILL("自适应填充"),
+    CROP("裁剪填充"),
+}
+
+/**
  * 远程显示器页面
  *
  * UDP push 模式(借鉴 Sunshine 架构):
  * - PC 服务端持续采集 DXGI → H.264 硬件编码 → UDP 分片推送
  * - Android 端 Rust 核心接收 UDP 分片 → 重组 → MediaCodec 硬解 → Surface 直渲
  * - SurfaceView 零拷贝:解码输出直接渲染到屏幕,不经 CPU
+ *
+ * 支持三种显示模式(Fit/Fill/Crop)、全屏沉浸式横屏、全屏触控交互、虚拟键盘。
  */
+@OptIn(ExperimentalComposeUiApi::class)
 @Composable
 fun MonitorScreen(
     vm: MeowMicViewModel,
@@ -58,6 +95,8 @@ fun MonitorScreen(
 ) {
     val connectionState by vm.connectionState.collectAsState()
     val stats by vm.stats.collectAsState()
+    val context = LocalContext.current
+    val activity = context as? Activity
 
     val addr = (connectionState as? ConnectionState.Connected)?.serverAddr ?: ""
 
@@ -69,10 +108,16 @@ fun MonitorScreen(
     var showSettings by remember { mutableStateOf(false) }
     // 连接栏展开
     var connExpanded by remember { mutableStateOf(false) }
+    // 显示模式(裁剪/填充/按比例伸缩)
+    var displayMode by remember { mutableStateOf(DisplayMode.FIT) }
+    // 全屏模式开关
+    var isFullscreen by remember { mutableStateOf(false) }
+    // 虚拟键盘可见状态
+    var showKeyboard by remember { mutableStateOf(false) }
 
     // 当前帧是否已收到首帧(用于 UI 状态切换)
     var hasFirstFrame by remember { mutableStateOf(false) }
-    // 屏幕分辨率(供 UI 显示)
+    // 屏幕分辨率(供 UI 显示与显示模式计算)
     var screenInfo by remember { mutableStateOf<LauncherRepository.ScreenInfo?>(null) }
     // 拉取统计
     var frameCount by remember { mutableStateOf(0L) }
@@ -96,6 +141,30 @@ fun MonitorScreen(
             if (pk.isNotBlank()) {
                 LauncherRepository.fetchScreenInfo(addr, pk)?.let { screenInfo = it }
             }
+        }
+    }
+
+    // 全屏模式:控制屏幕方向与系统栏沉浸式
+    // 进入全屏=锁定横屏 + 隐藏状态栏/导航栏(immersive sticky);退出=恢复
+    DisposableEffect(isFullscreen) {
+        val win = activity?.window
+        val controller = win?.let { WindowInsetsControllerCompat(it, it.decorView) }
+        if (isFullscreen) {
+            activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
+            win?.let { WindowCompat.setDecorFitsSystemWindows(it, false) }
+            controller?.hide(WindowInsetsCompat.Type.systemBars())
+            controller?.systemBarsBehavior =
+                WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+        } else {
+            activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+            win?.let { WindowCompat.setDecorFitsSystemWindows(it, true) }
+            controller?.show(WindowInsetsCompat.Type.systemBars())
+        }
+        onDispose {
+            // 离开页面或状态切换时统一恢复,避免沉浸式残留
+            activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+            win?.let { WindowCompat.setDecorFitsSystemWindows(it, true) }
+            controller?.show(WindowInsetsCompat.Type.systemBars())
         }
     }
 
@@ -351,42 +420,80 @@ fun MonitorScreen(
         }
     }
 
+    // 视频宽高(显示模式计算用)
+    val videoW = screenInfo?.width ?: 1920
+    val videoH = screenInfo?.height ?: 1080
+    val videoAspect = videoW.toFloat() / videoH.toFloat()
+
     Box(modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
         Column(
-            modifier = Modifier.fillMaxSize().padding(12.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp),
+            modifier = Modifier
+                .fillMaxSize()
+                .then(if (isFullscreen) Modifier else Modifier.padding(12.dp)),
+            verticalArrangement = if (isFullscreen) Arrangement.spacedBy(0.dp) else Arrangement.spacedBy(8.dp),
         ) {
-            // 1. 可折叠连接栏
-            ConnBar(
-                addr = addr,
-                expanded = connExpanded,
-                onToggle = { connExpanded = !connExpanded },
-                touchSent = touchSent,
-                audioSent = audioSent,
-                landscape = false,
-            )
+            // 1. 可折叠连接栏(全屏时隐藏)
+            if (!isFullscreen) {
+                ConnBar(
+                    addr = addr,
+                    expanded = connExpanded,
+                    onToggle = { connExpanded = !connExpanded },
+                    touchSent = touchSent,
+                    audioSent = audioSent,
+                    landscape = false,
+                )
+            }
 
-            // 2. 顶部操作栏:页面切换组 + 远程画面开关 + 设置 + 断开
-            MonitorActionBar(
-                monitorEnabled = monitorEnabled,
-                onToggleMonitor = { monitorEnabled = !monitorEnabled },
-                onShowSettings = { showSettings = true },
-                onBack = onBack,
-                onNavigate = onNavigate,
-                onDisconnect = onDisconnect,
-            )
+            // 2. 顶部操作栏(全屏时隐藏;非全屏显示页面切换 + 画面开关 + 全屏/键盘/设置/断开)
+            if (!isFullscreen) {
+                MonitorActionBar(
+                    monitorEnabled = monitorEnabled,
+                    onToggleMonitor = { monitorEnabled = !monitorEnabled },
+                    onShowSettings = { showSettings = true },
+                    onShowKeyboard = { showKeyboard = true },
+                    onToggleFullscreen = { isFullscreen = true },
+                    onBack = onBack,
+                    onNavigate = onNavigate,
+                    onDisconnect = onDisconnect,
+                )
+            }
 
             // 3. 视频显示区(SurfaceView 零拷贝直渲)
-            Box(
+            // 全屏与非全屏共用此区域,AndroidView 处于稳定位置,切换全屏/显示模式不会重建 MediaCodec
+            // BoxWithConstraints 提供容器尺寸,用于 CROP 模式计算 matchHeightConstraintsFirst
+            BoxWithConstraints(
                 modifier = Modifier
                     .weight(1f)
                     .fillMaxWidth()
-                    .clip(RoundedCornerShape(12.dp))
+                    .then(
+                        if (isFullscreen) Modifier.clipToBounds()
+                        else Modifier.clip(RoundedCornerShape(12.dp))
+                    )
                     .background(Color.Black),
                 contentAlignment = Alignment.Center,
             ) {
                 if (monitorEnabled) {
+                    // 容器宽高比(用于 CROP 判定:视频更宽则匹配高度优先,反之匹配宽度优先)
+                    val containerAspect: Float =
+                        if (maxHeight > 0.dp && maxWidth > 0.dp) maxWidth / maxHeight
+                        else videoAspect
+
+                    // 根据显示模式计算 SurfaceView 的 modifier
+                    // - FILL:fillMaxSize 拉伸(当前行为)
+                    // - FIT :aspectRatio,保持宽高比并居中留黑边
+                    // - CROP:aspectRatio 并让较大维度溢出,被外层 clip 裁掉
+                    val surfaceModifier = when (displayMode) {
+                        DisplayMode.FILL -> Modifier.fillMaxSize()
+                        DisplayMode.FIT -> Modifier.aspectRatio(videoAspect)
+                        DisplayMode.CROP -> Modifier.aspectRatio(
+                            videoAspect,
+                            matchHeightConstraintsFirst = videoAspect > containerAspect,
+                        )
+                    }
+
                     // SurfaceView: MediaCodec 解码输出直接渲染到 Surface(GPU 零拷贝)
+                    // 注意:factory 仅在首次创建时执行,切换显示模式只触发 layout 不会重建 Surface,
+                    // 因此不会重建 MediaCodec(避免视频流中断)。
                     AndroidView(
                         factory = { ctx ->
                             SurfaceView(ctx).apply {
@@ -406,8 +513,9 @@ fun MonitorScreen(
                                 })
                             }
                         },
-                        modifier = Modifier.fillMaxSize(),
+                        modifier = surfaceModifier,
                     )
+
                     // 未收到首帧时显示 loading 覆盖层
                     if (!hasFirstFrame) {
                         Column(
@@ -425,6 +533,36 @@ fun MonitorScreen(
                                 fontSize = 11.sp,
                             )
                         }
+                    }
+
+                    // 全屏模式:视频上叠加触控层与浮动按钮(仅首帧已到达时启用)
+                    if (isFullscreen && hasFirstFrame) {
+                        // 触控层:捕获 MotionEvent 交给 TouchHandler
+                        // 单指=鼠标移动/点击,双指=滚轮/右键,三指=手势
+                        Box(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .pointerInteropFilter { event ->
+                                    vm.handleTouch(event)
+                                    true
+                                },
+                        )
+                        // 退出全屏按钮(右上角浮动)
+                        FloatingCircleButton(
+                            icon = Icons.Default.FullscreenExit,
+                            contentDescription = "退出全屏",
+                            onClick = { isFullscreen = false },
+                            modifier = Modifier.align(Alignment.TopEnd).padding(12.dp),
+                        )
+                        // 虚拟键盘按钮(右下角浮动)
+                        FloatingCircleButton(
+                            icon = Icons.Default.Keyboard,
+                            contentDescription = "虚拟键盘",
+                            onClick = { showKeyboard = true },
+                            modifier = Modifier.align(Alignment.BottomEnd).padding(12.dp),
+                            size = 44.dp,
+                            iconSize = 22.dp,
+                        )
                     }
                 } else {
                     // 未开启:空状态占位
@@ -454,32 +592,70 @@ fun MonitorScreen(
                 }
             }
 
-            // 4. 底部状态栏:分辨率 / 帧数 (UDP push 模式无拉取延迟)
-            MonitorStatusBar(
-                screenInfo = screenInfo,
+            // 4. 底部状态栏(全屏时隐藏):分辨率 / 帧数 (UDP push 模式无拉取延迟)
+            if (!isFullscreen) {
+                MonitorStatusBar(
+                    screenInfo = screenInfo,
+                    frameRate = frameRate,
+                    frameCount = frameCount,
+                    fetchError = fetchError,
+                )
+            }
+        }
+
+        // 设置浮层
+        if (showSettings) {
+            MonitorSettingsDialog(
                 frameRate = frameRate,
-                frameCount = frameCount,
-                fetchError = fetchError,
+                onFrameRateChange = { frameRate = it },
+                displayMode = displayMode,
+                onDisplayModeChange = { displayMode = it },
+                onDismiss = { showSettings = false },
             )
         }
-    }
 
-    // 设置浮层
-    if (showSettings) {
-        MonitorSettingsDialog(
-            frameRate = frameRate,
-            onFrameRateChange = { frameRate = it },
-            onDismiss = { showSettings = false },
-        )
+        // 虚拟键盘底部弹出(全屏与非全屏均可使用)
+        if (showKeyboard) {
+            val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+            ModalBottomSheet(
+                onDismissRequest = { showKeyboard = false },
+                sheetState = sheetState,
+            ) {
+                MonitorKeyboardPanel(vm = vm)
+            }
+        }
     }
 }
 
-/** 远程显示器顶部操作栏:页面切换组 + 远程画面开关 + 设置 + 断开 */
+/** 全屏模式下浮动圆形按钮(半透明黑底 + 白色图标) */
+@Composable
+private fun FloatingCircleButton(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    contentDescription: String,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    size: androidx.compose.ui.unit.Dp = 40.dp,
+    iconSize: androidx.compose.ui.unit.Dp = 20.dp,
+) {
+    Box(
+        modifier = modifier
+            .size(size)
+            .background(Color.Black.copy(alpha = 0.5f), CircleShape)
+            .clickable(onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) {
+        Icon(icon, contentDescription, Modifier.size(iconSize), tint = Color.White)
+    }
+}
+
+/** 远程显示器顶部操作栏:页面切换组 + 远程画面开关 + 全屏/键盘/设置 + 断开 */
 @Composable
 private fun MonitorActionBar(
     monitorEnabled: Boolean,
     onToggleMonitor: () -> Unit,
     onShowSettings: () -> Unit,
+    onShowKeyboard: () -> Unit,
+    onToggleFullscreen: () -> Unit,
     onBack: () -> Unit,
     onNavigate: (String) -> Unit,
     onDisconnect: () -> Unit,
@@ -502,12 +678,26 @@ private fun MonitorActionBar(
 
         Spacer(Modifier.weight(1f))
 
-        // 右侧上下文:远程画面开关 + 设置
+        // 右侧上下文:远程画面开关 + 全屏 + 键盘 + 设置
         ToggleButtonSmall(
             icon = if (monitorEnabled) Icons.Default.Videocam else Icons.Default.VideocamOff,
             contentDescription = if (monitorEnabled) "关闭远程画面" else "开启远程画面",
             isOn = monitorEnabled,
             onClick = onToggleMonitor,
+            buttonSize = btnSize,
+            iconSize = icSize,
+        )
+        IconButtonSmall(
+            icon = Icons.Default.Fullscreen,
+            contentDescription = "全屏",
+            onClick = onToggleFullscreen,
+            buttonSize = btnSize,
+            iconSize = icSize,
+        )
+        IconButtonSmall(
+            icon = Icons.Default.Keyboard,
+            contentDescription = "虚拟键盘",
+            onClick = onShowKeyboard,
             buttonSize = btnSize,
             iconSize = icSize,
         )
@@ -582,11 +772,13 @@ private fun StatusChip(icon: androidx.compose.ui.graphics.vector.ImageVector, la
     }
 }
 
-/** 画面设置浮层:帧率选择 */
+/** 画面设置浮层:帧率 + 显示模式选择 */
 @Composable
 private fun MonitorSettingsDialog(
     frameRate: Int,
     onFrameRateChange: (Int) -> Unit,
+    displayMode: DisplayMode,
+    onDisplayModeChange: (DisplayMode) -> Unit,
     onDismiss: () -> Unit,
 ) {
     AlertDialog(
@@ -594,6 +786,18 @@ private fun MonitorSettingsDialog(
         title = { Text("画面设置") },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                // 显示模式选择
+                Text("显示模式", fontSize = 12.sp, fontWeight = FontWeight.Medium)
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    DisplayMode.entries.forEach { mode ->
+                        FilterChip(
+                            selected = displayMode == mode,
+                            onClick = { onDisplayModeChange(mode) },
+                            label = { Text(mode.label, fontSize = 11.sp) },
+                        )
+                    }
+                }
+                // 帧率选择
                 Text("目标帧率", fontSize = 12.sp, fontWeight = FontWeight.Medium)
                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                     listOf(15 to "15fps", 30 to "30fps", 60 to "60fps").forEach { (v, label) ->
@@ -605,7 +809,7 @@ private fun MonitorSettingsDialog(
                     }
                 }
                 Text(
-                    "提示:码率固定 4Mbps;修改帧率后立即生效,无需重新连接。",
+                    "提示:切换显示模式不会中断视频流;修改帧率后立即生效,无需重新连接。",
                     fontSize = 10.sp,
                     color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
                 )
@@ -615,6 +819,274 @@ private fun MonitorSettingsDialog(
             TextButton(onClick = onDismiss) { Text("完成") }
         },
     )
+}
+
+// ════════════════════════════════════════════════════════════════
+// 虚拟键盘面板(自包含:调用 NativeBridge.sendKeyDown/sendKeyUp 发送按键)
+// 支持:长按上滑=锁定长按(🔒,对标实体键盘按住不放);再次点击=取消锁定
+// ════════════════════════════════════════════════════════════════
+private const val KEY_TAG_MON = "MeowMicMonKey"
+
+@Composable
+private fun MonitorKeyboardPanel(vm: MeowMicViewModel) {
+    // 长按锁定状态:VK code → true(对标实体键盘按住不放,持续 keydown)
+    val lockedKeys = remember { mutableStateMapOf<Int, Boolean>() }
+
+    // 连接断开时清除所有锁定状态(服务端会自行清理,这里只重置 UI)
+    val connectionState by vm.connectionState.collectAsState()
+    LaunchedEffect(connectionState) {
+        if (connectionState !is ConnectionState.Connected) {
+            lockedKeys.clear()
+        }
+    }
+
+    /** 锁定指定键(发送 keydown 并保持,对标实体键盘按住不放) */
+    fun lockKey(keyCode: Int) {
+        if (lockedKeys[keyCode] != true) {
+            if (NativeBridge.sendKeyDown(keyCode)) {
+                lockedKeys[keyCode] = true
+                vm.playFeedbackSound()
+            }
+        }
+    }
+
+    /**
+     * 触发按键:
+     * - 已锁定态的键:单击=解除锁定(仅发 keyup)
+     * - 普通键:发送 keypress(按下+抬起)
+     * 锁定态修饰键会持续 keydown,后续普通键在服务端自然组合(如 Ctrl 锁定后点 C = Ctrl+C)
+     */
+    fun fireKey(keyCode: Int) {
+        if (lockedKeys[keyCode] == true) {
+            if (NativeBridge.sendKeyUp(keyCode)) {
+                lockedKeys.remove(keyCode)
+                vm.playFeedbackSound()
+            }
+            return
+        }
+        if (NativeBridge.sendKeyPress(keyCode)) {
+            vm.playFeedbackSound()
+        }
+    }
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .verticalScroll(rememberScrollState())
+            .padding(horizontal = 8.dp, vertical = 4.dp),
+        verticalArrangement = Arrangement.spacedBy(3.dp),
+    ) {
+        Text(
+            "长按上滑=锁定长按(🔒),再次点击取消",
+            fontSize = 9.sp,
+            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
+        )
+        // 第 1 行:Esc | F1-F4 | F5-F8 | F9-F12
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(3.dp)) {
+            MonitorKeyBtn("Esc", VK.ESCAPE, lockedKeys, ::fireKey, ::lockKey, Modifier.weight(1f), fn = true, small = true)
+            Spacer(Modifier.weight(0.4f))
+            MonitorKeyBtn("F1", VK.F1, lockedKeys, ::fireKey, ::lockKey, Modifier.weight(1f), fn = true, small = true)
+            MonitorKeyBtn("F2", VK.F2, lockedKeys, ::fireKey, ::lockKey, Modifier.weight(1f), fn = true, small = true)
+            MonitorKeyBtn("F3", VK.F3, lockedKeys, ::fireKey, ::lockKey, Modifier.weight(1f), fn = true, small = true)
+            MonitorKeyBtn("F4", VK.F4, lockedKeys, ::fireKey, ::lockKey, Modifier.weight(1f), fn = true, small = true)
+            Spacer(Modifier.weight(0.4f))
+            MonitorKeyBtn("F5", VK.F5, lockedKeys, ::fireKey, ::lockKey, Modifier.weight(1f), fn = true, small = true)
+            MonitorKeyBtn("F6", VK.F6, lockedKeys, ::fireKey, ::lockKey, Modifier.weight(1f), fn = true, small = true)
+            MonitorKeyBtn("F7", VK.F7, lockedKeys, ::fireKey, ::lockKey, Modifier.weight(1f), fn = true, small = true)
+            MonitorKeyBtn("F8", VK.F8, lockedKeys, ::fireKey, ::lockKey, Modifier.weight(1f), fn = true, small = true)
+            Spacer(Modifier.weight(0.4f))
+            MonitorKeyBtn("F9", VK.F9, lockedKeys, ::fireKey, ::lockKey, Modifier.weight(1f), fn = true, small = true)
+            MonitorKeyBtn("F10", VK.F10, lockedKeys, ::fireKey, ::lockKey, Modifier.weight(1f), fn = true, small = true)
+            MonitorKeyBtn("F11", VK.F11, lockedKeys, ::fireKey, ::lockKey, Modifier.weight(1f), fn = true, small = true)
+            MonitorKeyBtn("F12", VK.F12, lockedKeys, ::fireKey, ::lockKey, Modifier.weight(1f), fn = true, small = true)
+        }
+        // 第 2 行:数字行 ` 1-0 - = ⌫
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(3.dp)) {
+            MonitorKeyBtn("`", VK.OEM_3, lockedKeys, ::fireKey, ::lockKey, Modifier.weight(1f))
+            MonitorKeyBtn("1", VK.D1, lockedKeys, ::fireKey, ::lockKey, Modifier.weight(1f))
+            MonitorKeyBtn("2", VK.D2, lockedKeys, ::fireKey, ::lockKey, Modifier.weight(1f))
+            MonitorKeyBtn("3", VK.D3, lockedKeys, ::fireKey, ::lockKey, Modifier.weight(1f))
+            MonitorKeyBtn("4", VK.D4, lockedKeys, ::fireKey, ::lockKey, Modifier.weight(1f))
+            MonitorKeyBtn("5", VK.D5, lockedKeys, ::fireKey, ::lockKey, Modifier.weight(1f))
+            MonitorKeyBtn("6", VK.D6, lockedKeys, ::fireKey, ::lockKey, Modifier.weight(1f))
+            MonitorKeyBtn("7", VK.D7, lockedKeys, ::fireKey, ::lockKey, Modifier.weight(1f))
+            MonitorKeyBtn("8", VK.D8, lockedKeys, ::fireKey, ::lockKey, Modifier.weight(1f))
+            MonitorKeyBtn("9", VK.D9, lockedKeys, ::fireKey, ::lockKey, Modifier.weight(1f))
+            MonitorKeyBtn("0", VK.D0, lockedKeys, ::fireKey, ::lockKey, Modifier.weight(1f))
+            MonitorKeyBtn("-", VK.OEM_MINUS, lockedKeys, ::fireKey, ::lockKey, Modifier.weight(1f))
+            MonitorKeyBtn("=", VK.OEM_PLUS, lockedKeys, ::fireKey, ::lockKey, Modifier.weight(1f))
+            MonitorKeyBtn("⌫", VK.BACK, lockedKeys, ::fireKey, ::lockKey, Modifier.weight(1.6f), fn = true)
+        }
+        // 第 3 行:QWERTY 行 Tab Q-P [ ] \
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(3.dp)) {
+            MonitorKeyBtn("Tab", VK.TAB, lockedKeys, ::fireKey, ::lockKey, Modifier.weight(1.6f), fn = true)
+            MonitorKeyBtn("Q", VK.Q, lockedKeys, ::fireKey, ::lockKey, Modifier.weight(1f))
+            MonitorKeyBtn("W", VK.W, lockedKeys, ::fireKey, ::lockKey, Modifier.weight(1f))
+            MonitorKeyBtn("E", VK.E, lockedKeys, ::fireKey, ::lockKey, Modifier.weight(1f))
+            MonitorKeyBtn("R", VK.R, lockedKeys, ::fireKey, ::lockKey, Modifier.weight(1f))
+            MonitorKeyBtn("T", VK.T, lockedKeys, ::fireKey, ::lockKey, Modifier.weight(1f))
+            MonitorKeyBtn("Y", VK.Y, lockedKeys, ::fireKey, ::lockKey, Modifier.weight(1f))
+            MonitorKeyBtn("U", VK.U, lockedKeys, ::fireKey, ::lockKey, Modifier.weight(1f))
+            MonitorKeyBtn("I", VK.I, lockedKeys, ::fireKey, ::lockKey, Modifier.weight(1f))
+            MonitorKeyBtn("O", VK.O, lockedKeys, ::fireKey, ::lockKey, Modifier.weight(1f))
+            MonitorKeyBtn("P", VK.P, lockedKeys, ::fireKey, ::lockKey, Modifier.weight(1f))
+            MonitorKeyBtn("[", VK.OEM_4, lockedKeys, ::fireKey, ::lockKey, Modifier.weight(1f))
+            MonitorKeyBtn("]", VK.OEM_6, lockedKeys, ::fireKey, ::lockKey, Modifier.weight(1f))
+            MonitorKeyBtn("\\", VK.OEM_5, lockedKeys, ::fireKey, ::lockKey, Modifier.weight(1f))
+        }
+        // 第 4 行:ASDF 行 Caps A-L ; ' ↵
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(3.dp)) {
+            MonitorKeyBtn("Caps", VK.CAPITAL, lockedKeys, ::fireKey, ::lockKey, Modifier.weight(2.2f), fn = true)
+            MonitorKeyBtn("A", VK.A, lockedKeys, ::fireKey, ::lockKey, Modifier.weight(1f))
+            MonitorKeyBtn("S", VK.S, lockedKeys, ::fireKey, ::lockKey, Modifier.weight(1f))
+            MonitorKeyBtn("D", VK.D, lockedKeys, ::fireKey, ::lockKey, Modifier.weight(1f))
+            MonitorKeyBtn("F", VK.F, lockedKeys, ::fireKey, ::lockKey, Modifier.weight(1f))
+            MonitorKeyBtn("G", VK.G, lockedKeys, ::fireKey, ::lockKey, Modifier.weight(1f))
+            MonitorKeyBtn("H", VK.H, lockedKeys, ::fireKey, ::lockKey, Modifier.weight(1f))
+            MonitorKeyBtn("J", VK.J, lockedKeys, ::fireKey, ::lockKey, Modifier.weight(1f))
+            MonitorKeyBtn("K", VK.K, lockedKeys, ::fireKey, ::lockKey, Modifier.weight(1f))
+            MonitorKeyBtn("L", VK.L, lockedKeys, ::fireKey, ::lockKey, Modifier.weight(1f))
+            MonitorKeyBtn(";", VK.OEM_1, lockedKeys, ::fireKey, ::lockKey, Modifier.weight(1f))
+            MonitorKeyBtn("'", VK.OEM_7, lockedKeys, ::fireKey, ::lockKey, Modifier.weight(1f))
+            MonitorKeyBtn("↵", VK.RETURN, lockedKeys, ::fireKey, ::lockKey, Modifier.weight(2.2f), fn = true)
+        }
+        // 第 5 行:ZXCV 行 ⇧ Z-/ ⇧
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(3.dp)) {
+            MonitorKeyBtn("⇧", VK.LSHIFT, lockedKeys, ::fireKey, ::lockKey, Modifier.weight(2.2f), fn = true)
+            MonitorKeyBtn("Z", VK.Z, lockedKeys, ::fireKey, ::lockKey, Modifier.weight(1f))
+            MonitorKeyBtn("X", VK.X, lockedKeys, ::fireKey, ::lockKey, Modifier.weight(1f))
+            MonitorKeyBtn("C", VK.C, lockedKeys, ::fireKey, ::lockKey, Modifier.weight(1f))
+            MonitorKeyBtn("V", VK.V, lockedKeys, ::fireKey, ::lockKey, Modifier.weight(1f))
+            MonitorKeyBtn("B", VK.B, lockedKeys, ::fireKey, ::lockKey, Modifier.weight(1f))
+            MonitorKeyBtn("N", VK.N, lockedKeys, ::fireKey, ::lockKey, Modifier.weight(1f))
+            MonitorKeyBtn("M", VK.M, lockedKeys, ::fireKey, ::lockKey, Modifier.weight(1f))
+            MonitorKeyBtn(",", VK.OEM_COMMA, lockedKeys, ::fireKey, ::lockKey, Modifier.weight(1f))
+            MonitorKeyBtn(".", VK.OEM_PERIOD, lockedKeys, ::fireKey, ::lockKey, Modifier.weight(1f))
+            MonitorKeyBtn("/", VK.OEM_2, lockedKeys, ::fireKey, ::lockKey, Modifier.weight(1f))
+            MonitorKeyBtn("⇧", VK.RSHIFT, lockedKeys, ::fireKey, ::lockKey, Modifier.weight(2.2f), fn = true)
+        }
+        // 第 6 行:修饰键行 Ctrl Win Alt 空格 Alt Fn Menu Ctrl
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(3.dp)) {
+            MonitorKeyBtn("Ctrl", VK.LCONTROL, lockedKeys, ::fireKey, ::lockKey, Modifier.weight(1f), fn = true)
+            MonitorKeyBtn("Win", VK.LWIN, lockedKeys, ::fireKey, ::lockKey, Modifier.weight(1f), fn = true)
+            MonitorKeyBtn("Alt", VK.LMENU, lockedKeys, ::fireKey, ::lockKey, Modifier.weight(1f), fn = true)
+            MonitorKeyBtn("空格", VK.SPACE, lockedKeys, ::fireKey, ::lockKey, Modifier.weight(5.6f), small = true)
+            MonitorKeyBtn("Alt", VK.RMENU, lockedKeys, ::fireKey, ::lockKey, Modifier.weight(1f), fn = true)
+            MonitorKeyBtn("Fn", VK.FN, lockedKeys, ::fireKey, ::lockKey, Modifier.weight(1f), fn = true)
+            MonitorKeyBtn("Menu", VK.MENU_KEY, lockedKeys, ::fireKey, ::lockKey, Modifier.weight(1f), fn = true)
+            MonitorKeyBtn("Ctrl", VK.RCONTROL, lockedKeys, ::fireKey, ::lockKey, Modifier.weight(1f), fn = true)
+        }
+        // 第 7 行:PrtSc ScrLk Pause | Ins Home PgUp | ↑
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(3.dp)) {
+            MonitorKeyBtn("PrtSc", VK.SNAPSHOT, lockedKeys, ::fireKey, ::lockKey, Modifier.weight(3f), fn = true, small = true)
+            MonitorKeyBtn("ScrLk", VK.SCROLL, lockedKeys, ::fireKey, ::lockKey, Modifier.weight(3f), fn = true, small = true)
+            MonitorKeyBtn("Pause", VK.PAUSE, lockedKeys, ::fireKey, ::lockKey, Modifier.weight(3f), fn = true, small = true)
+            Spacer(Modifier.weight(1f))
+            MonitorKeyBtn("Ins", VK.INSERT, lockedKeys, ::fireKey, ::lockKey, Modifier.weight(1f), fn = true)
+            MonitorKeyBtn("Home", VK.HOME, lockedKeys, ::fireKey, ::lockKey, Modifier.weight(1f), fn = true)
+            MonitorKeyBtn("PgUp", VK.PRIOR, lockedKeys, ::fireKey, ::lockKey, Modifier.weight(1f), fn = true)
+            Spacer(Modifier.weight(0.4f))
+            MonitorKeyBtn("↑", VK.UP, lockedKeys, ::fireKey, ::lockKey, Modifier.weight(1f), fn = true)
+        }
+        // 第 8 行:Del End PgDn | ← ↓ →
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(3.dp)) {
+            MonitorKeyBtn("Del", VK.DELETE, lockedKeys, ::fireKey, ::lockKey, Modifier.weight(3f), fn = true, small = true)
+            MonitorKeyBtn("End", VK.END, lockedKeys, ::fireKey, ::lockKey, Modifier.weight(3f), fn = true, small = true)
+            MonitorKeyBtn("PgDn", VK.NEXT, lockedKeys, ::fireKey, ::lockKey, Modifier.weight(3f), fn = true, small = true)
+            Spacer(Modifier.weight(1f))
+            MonitorKeyBtn("←", VK.LEFT, lockedKeys, ::fireKey, ::lockKey, Modifier.weight(1f), fn = true)
+            MonitorKeyBtn("↓", VK.DOWN, lockedKeys, ::fireKey, ::lockKey, Modifier.weight(1f), fn = true)
+            MonitorKeyBtn("→", VK.RIGHT, lockedKeys, ::fireKey, ::lockKey, Modifier.weight(1f), fn = true)
+        }
+    }
+}
+
+/**
+ * 通用键位按钮(对齐 TouchpadScreen KeyBtn):
+ * - fn=true:功能/修饰键,使用次级背景色 + 较小字号
+ * - 手势:长按 + 向上滑动 → 锁定(发送 keydown 并保持,对标实体键盘按住不放);再次单击 → 解锁
+ * - 普通单击:发送 keypress
+ */
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun MonitorKeyBtn(
+    label: String,
+    vkCode: Int,
+    lockedKeys: SnapshotStateMap<Int, Boolean>,
+    onFireKey: (Int) -> Unit,
+    onLockKey: (Int) -> Unit,
+    modifier: Modifier = Modifier,
+    fn: Boolean = false,
+    small: Boolean = false,
+) {
+    val isLocked = lockedKeys[vkCode] ?: false
+    val bgColor = when {
+        isLocked -> MaterialTheme.colorScheme.tertiary           // 锁定:区别色
+        fn -> MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.7f)
+        else -> MaterialTheme.colorScheme.surfaceVariant
+    }
+    val borderColor = if (isLocked) MaterialTheme.colorScheme.tertiary
+        else MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f)
+    val fgColor = if (isLocked) Color.White else MaterialTheme.colorScheme.onSurfaceVariant
+    val fontSize = when {
+        small -> 9.sp
+        fn -> 10.sp
+        else -> 11.sp
+    }
+    Box(
+        modifier = modifier
+            .height(32.dp)
+            .background(bgColor, RoundedCornerShape(6.dp))
+            .border(
+                if (isLocked) 1.5.dp else 1.dp,
+                borderColor,
+                RoundedCornerShape(6.dp),
+            )
+            .pointerInput(vkCode) {
+                // 手势:长按 + 向上滑动 → 锁定;再次单击 → 解锁
+                val lockThreshold = 24.dp.toPx()  // 向上滑动锁定阈值
+                awaitEachGesture {
+                    val down = awaitFirstDown(requireUnconsumed = false)
+                    val startY = down.position.y
+                    var gestureLocked = false  // 本次手势是否已触发锁定
+                    var done = false
+                    Log.d(KEY_TAG_MON, "down vk=0x${vkCode.toString(16)} startY=${startY.toInt()} alreadyLocked=${lockedKeys[vkCode]}")
+                    while (!done) {
+                        val event = awaitPointerEvent(PointerEventPass.Main)
+                        for (change in event.changes) {
+                            val dy = change.position.y - startY
+                            // 向上滑动超过阈值 → 锁定(仅未锁定时响应)
+                            if (!gestureLocked && dy < -lockThreshold && lockedKeys[vkCode] != true) {
+                                gestureLocked = true
+                                change.consume()
+                                onLockKey(vkCode)
+                                Log.d(KEY_TAG_MON, "lock vk=0x${vkCode.toString(16)} dy=${dy.toInt()}")
+                            }
+                            if (gestureLocked) change.consume()
+                            if (change.changedToUp()) {
+                                done = true
+                                Log.d(KEY_TAG_MON, "up vk=0x${vkCode.toString(16)} gestureLocked=$gestureLocked")
+                            }
+                        }
+                    }
+                    // 抬起后:未触发锁定 → 单击(已锁定则解锁,否则发普通按键)
+                    if (!gestureLocked) {
+                        Log.d(KEY_TAG_MON, "fireKey vk=0x${vkCode.toString(16)} wasLocked=${lockedKeys[vkCode]}")
+                        onFireKey(vkCode)
+                    }
+                }
+            },
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            // 锁定态追加 🔒 视觉提示
+            text = if (isLocked) "$label 🔒" else label,
+            fontSize = fontSize,
+            color = fgColor,
+            fontWeight = if (isLocked) FontWeight.Bold else FontWeight.Medium,
+            maxLines = 1,
+        )
+    }
 }
 
 // ════════════════════════════════════════════════════════════════
