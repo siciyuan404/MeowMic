@@ -12,27 +12,7 @@
 mod dxgi_capturer {
     use std::sync::{Mutex, OnceLock};
 
-    use windows::core::Interface;
-    use windows::Win32::Foundation::HMODULE;
-    use windows::Win32::Graphics::Direct3D::{
-        D3D_DRIVER_TYPE_HARDWARE, D3D_FEATURE_LEVEL_11_0,
-    };
-    use windows::Win32::Graphics::Direct3D11::{
-        D3D11CreateDevice, ID3D11Device, ID3D11DeviceContext, ID3D11Texture2D,
-        D3D11_CREATE_DEVICE_BGRA_SUPPORT, D3D11_MAPPED_SUBRESOURCE, D3D11_MAP_READ,
-        D3D11_SDK_VERSION, D3D11_TEXTURE2D_DESC, D3D11_USAGE_STAGING,
-    };
-    use windows::Win32::Graphics::Dxgi::{
-        IDXGIAdapter, IDXGIDevice, IDXGIOutput, IDXGIOutput1,
-        IDXGIOutputDuplication, IDXGIResource, DXGI_OUTDUPL_FRAME_INFO,
-    };
-    use windows::Win32::Graphics::Dxgi::Common::DXGI_SAMPLE_DESC;
-
-    // DXGI 错误码
-    // AccessLost = duplication 失效(如分辨率变化/锁屏),需重建
-    const DXGI_ERROR_ACCESS_LOST: i32 = 0x887A0026u32 as i32;
-    // WaitTimeout = timeout 内无新帧(桌面静止),需复用上一帧保持视频流活跃
-    const DXGI_ERROR_WAIT_TIMEOUT: i32 = 0x887A0027u32 as i32;
+    use dxgi_capture_rs::{BGRA8, CaptureError, DXGIManager};
 
     /// 采集到的一帧(BGRA 像素)
     #[derive(Clone)]
@@ -42,86 +22,43 @@ mod dxgi_capturer {
         height: u32,
     }
 
-    /// DXGI Desktop Duplication 屏幕采集器(持久化 D3D11 设备 + duplication)
+    /// DXGI Desktop Duplication 屏幕采集器(封装 dxgi-capture-rs crate)
+    ///
+    /// 历史:自研 D3D11 Map 实现在某些驱动下 IDXGISurface1::Map 持续返回 E_INVALIDARG(0x80070057),
+    /// 而 dxgi-capture-rs 的 DXGIManager 能正常工作。改用该 crate 作为底层捕获实现。
     struct ScreenCapturer {
-        device: ID3D11Device,
-        context: ID3D11DeviceContext,
-        duplication: IDXGIOutputDuplication,
-        /// 上一帧 PNG 缓存(画面无变化时返回)
+        manager: DXGIManager,
+        /// 上一帧 PNG 缓存(画面无变化或捕获失败时返回)
         last_png: Option<Vec<u8>>,
-        /// 上一帧像素缓存(桌面静止 WAIT_TIMEOUT 时复用,保持视频流活跃)
+        /// 上一帧像素缓存(桌面静止 Timeout 时复用,保持视频流活跃)
         last_frame: Option<AcquiredFrame>,
-        /// 标记 duplication 失效(如分辨率变化/锁屏),需重建
-        needs_rebuild: bool,
+        /// 失败计数(用于日志限流)
+        fail_count: u32,
     }
 
-    // COM 接口在 windows crate 中已实现 Send/Sync,此处显式声明以防编译器警告
-    unsafe impl Send for ScreenCapturer {}
-
     impl ScreenCapturer {
-        /// 初始化 D3D11 设备 + DXGI Desktop Duplication
         fn new() -> Option<Self> {
-            unsafe {
-                let mut device: Option<ID3D11Device> = None;
-                let mut context: Option<ID3D11DeviceContext> = None;
-                let mut feature_level = D3D_FEATURE_LEVEL_11_0;
-
-                // 创建 D3D11 设备(需要 BGRA 支持,DXGI Desktop Duplication 要求)
-                D3D11CreateDevice(
-                    None,
-                    D3D_DRIVER_TYPE_HARDWARE,
-                    HMODULE::default(),
-                    D3D11_CREATE_DEVICE_BGRA_SUPPORT,
-                    Some(&[D3D_FEATURE_LEVEL_11_0]),
-                    D3D11_SDK_VERSION,
-                    Some(&mut device),
-                    Some(&mut feature_level),
-                    Some(&mut context),
-                )
-                .ok()?;
-
-                let device = device?;
-                let context = context?;
-                let duplication = Self::create_duplication(&device)?;
-
-                Some(Self {
-                    device,
-                    context,
-                    duplication,
-                    last_png: None,
-                    last_frame: None,
-                    needs_rebuild: false,
-                })
-            }
-        }
-
-        /// 创建 IDXGIOutputDuplication(获取第一个输出)
-        unsafe fn create_duplication(device: &ID3D11Device) -> Option<IDXGIOutputDuplication> {
-            let dxgi_device: IDXGIDevice = device.cast().ok()?;
-            let adapter: IDXGIAdapter = dxgi_device.GetParent().ok()?;
-            let output: IDXGIOutput = adapter.EnumOutputs(0).ok()?;
-            let output1: IDXGIOutput1 = output.cast().ok()?;
-            Some(output1.DuplicateOutput(&dxgi_device).ok()?)
-        }
-
-        /// 重建 duplication(ACCESS_LOST 后调用)
-        fn rebuild(&mut self) {
-            if let Some(dup) = unsafe { Self::create_duplication(&self.device) } {
-                self.duplication = dup;
-                self.needs_rebuild = false;
+            match DXGIManager::new(200) {
+                Ok(manager) => {
+                    let (w, h) = manager.geometry();
+                    tracing::info!("ScreenCapturer: 初始化成功 (dxgi-capture-rs, {}x{})", w, h);
+                    Some(Self {
+                        manager,
+                        last_png: None,
+                        last_frame: None,
+                        fail_count: 0,
+                    })
+                }
+                Err(e) => {
+                    tracing::error!("ScreenCapturer: DXGIManager::new 失败: {:?}", e);
+                    None
+                }
             }
         }
 
         /// 抓取屏幕并编码 PNG
         fn capture_png(&mut self, quality: u8, scale: f32) -> Option<Vec<u8>> {
-            if self.needs_rebuild {
-                self.rebuild();
-                if self.needs_rebuild {
-                    return self.last_png.clone();
-                }
-            }
-
-            match unsafe { self.acquire_frame() } {
+            match self.acquire_frame() {
                 Some(frame) => {
                     let png = unsafe { self.encode_frame(&frame, quality, scale) };
                     if let Some(ref png) = png {
@@ -135,19 +72,37 @@ mod dxgi_capturer {
 
         /// 抓取屏幕并编码 NALU(H.264 或 HEVC,取决于 codec 参数)
         fn capture(&mut self, frame_rate: u32, bitrate: u32, codec: crate::encoder::Codec) -> Option<Vec<u8>> {
-            if self.needs_rebuild {
-                self.rebuild();
-                if self.needs_rebuild {
-                    return None;
-                }
-            }
-
-            match unsafe { self.acquire_frame() } {
+            match self.acquire_frame() {
                 Some(frame) => {
+                    // 分辨率规整:Media Foundation H.264 编码器对非标准分辨率(如 2048x1536)支持有限,
+                    // 很多硬件编码器最大只支持 1920x1080。超过此限制时缩放到 1920x1080(保持纵横比)。
+                    // 参考 Sunshine:encoder_base.cpp 会将输入帧缩放到编码器支持的最大分辨率。
+                    const MAX_ENC_WIDTH: u32 = 1920;
+                    const MAX_ENC_HEIGHT: u32 = 1080;
+
+                    let (enc_w, enc_h, enc_pixels) = if frame.width > MAX_ENC_WIDTH || frame.height > MAX_ENC_HEIGHT {
+                        let (nw, nh, np) = scale_bgra_down(
+                            &frame.pixels,
+                            frame.width,
+                            frame.height,
+                            MAX_ENC_WIDTH,
+                            MAX_ENC_HEIGHT,
+                        );
+                        if self.fail_count < 3 {
+                            tracing::info!(
+                                "capture: 缩放 {}x{} → {}x{} (编码器分辨率限制)",
+                                frame.width, frame.height, nw, nh
+                            );
+                        }
+                        (nw, nh, np)
+                    } else {
+                        (frame.width, frame.height, frame.pixels.clone())
+                    };
+
                     let nalu = crate::encoder::encode_frame_with_codec(
-                        &frame.pixels,
-                        frame.width,
-                        frame.height,
+                        &enc_pixels,
+                        enc_w,
+                        enc_h,
                         frame_rate,
                         bitrate,
                         codec,
@@ -155,7 +110,7 @@ mod dxgi_capturer {
                     if nalu.is_none() {
                         tracing::warn!(
                             "编码器返回 None: {}x{} {:?} bitrate={}",
-                            frame.width, frame.height, codec, bitrate
+                            enc_w, enc_h, codec, bitrate
                         );
                     }
                     nalu
@@ -164,107 +119,37 @@ mod dxgi_capturer {
             }
         }
 
-        /// AcquireNextFrame 获取新帧(200ms timeout)
-        unsafe fn acquire_frame(&mut self) -> Option<AcquiredFrame> {
-            let mut frame_info = DXGI_OUTDUPL_FRAME_INFO::default();
-            let mut resource: Option<IDXGIResource> = None;
-
-            let result = self
-                .duplication
-                .AcquireNextFrame(200, &mut frame_info, &mut resource);
-
-            match result {
-                Ok(()) => {
-                    // 注意:不再因 LastPresentTime == 0 跳过帧。
-                    // DXGI Desktop Duplication 在画面无变化时(如桌面静止)返回 LastPresentTime=0,
-                    // 如果跳过会导致客户端永远收不到视频流(解码器无 SPS/PPS/IDR,一直转圈)。
-                    // 参考 Sunshine:即使无变化也处理当前 texture,编码器会输出 P 帧/重复帧保持视频流活跃。
-                    // 鼠标移动会通过 PointerPosition 更新,但当前实现未单独处理鼠标层。
-
-                    let resource = resource?;
-                    let texture: ID3D11Texture2D = resource.cast().ok()?;
-                    let mut desc = D3D11_TEXTURE2D_DESC::default();
-                    texture.GetDesc(&mut desc);
-
-                    // 创建 staging texture(CPU 可读)
-                    let mut staging_desc = D3D11_TEXTURE2D_DESC::default();
-                    staging_desc.Width = desc.Width;
-                    staging_desc.Height = desc.Height;
-                    staging_desc.MipLevels = 1;
-                    staging_desc.ArraySize = 1;
-                    staging_desc.Format = desc.Format;
-                    staging_desc.SampleDesc = DXGI_SAMPLE_DESC {
-                        Count: 1,
-                        Quality: 0,
+        /// 通过 dxgi-capture-rs 捕获一帧
+        fn acquire_frame(&mut self) -> Option<AcquiredFrame> {
+            match self.manager.capture_frame() {
+                Ok((pixels, (w, h))) => {
+                    self.fail_count = 0;
+                    // BGRA8 数组 → u8 字节流(BGRA 顺序,编码器期望的格式)
+                    let pixels_bytes: Vec<u8> = unsafe {
+                        std::slice::from_raw_parts(
+                            pixels.as_ptr() as *const u8,
+                            pixels.len() * std::mem::size_of::<BGRA8>(),
+                        )
+                        .to_vec()
                     };
-                    staging_desc.Usage = D3D11_USAGE_STAGING;
-                    staging_desc.CPUAccessFlags = 0x10000; // D3D11_CPU_ACCESS_READ
-
-                    let mut staging: Option<ID3D11Texture2D> = None;
-                    if self
-                        .device
-                        .CreateTexture2D(&staging_desc, None, Some(&mut staging))
-                        .is_err()
-                    {
-                        let _ = self.duplication.ReleaseFrame();
-                        return None;
-                    }
-                    let staging = staging?;
-
-                    // GPU → staging texture
-                    self.context.CopyResource(&staging, &texture);
-
-                    // staging → CPU 内存
-                    let mut mapped = D3D11_MAPPED_SUBRESOURCE::default();
-                    let _ = self
-                        .context
-                        .Map(&staging, 0, D3D11_MAP_READ, 0, Some(&mut mapped));
-
-                    if mapped.pData.is_null() {
-                        let _ = self.duplication.ReleaseFrame();
-                        return None;
-                    }
-
-                    let width = desc.Width;
-                    let height = desc.Height;
-                    let row_pitch = mapped.RowPitch as usize;
-                    let mut pixels = vec![0u8; (width as usize) * (height as usize) * 4];
-
-                    let src = mapped.pData as *const u8;
-                    for y in 0..height as usize {
-                        let src_row = src.add(y * row_pitch);
-                        let dst_offset = y * width as usize * 4;
-                        std::ptr::copy_nonoverlapping(
-                            src_row,
-                            pixels[dst_offset..].as_mut_ptr(),
-                            width as usize * 4,
-                        );
-                    }
-
-                    self.context.Unmap(&staging, 0);
-                    let _ = self.duplication.ReleaseFrame();
-
                     let frame = AcquiredFrame {
-                        pixels,
-                        width,
-                        height,
+                        pixels: pixels_bytes,
+                        width: w as u32,
+                        height: h as u32,
                     };
-                    // 缓存上一帧:桌面静止(WAIT_TIMEOUT)时复用,保持视频流活跃
                     self.last_frame = Some(frame.clone());
                     Some(frame)
                 }
+                Err(CaptureError::Timeout) => {
+                    // 桌面静止无新帧,复用上一帧让编码器输出 P 帧/重复帧
+                    self.last_frame.clone()
+                }
                 Err(e) => {
-                    let code = e.code().0;
-                    // WAIT_TIMEOUT: 桌面静止无新帧,复用上一帧让编码器输出 P 帧/重复帧
-                    // 这是解决"解码器就绪后一直转圈"的关键 —— 没有这个分支,桌面静止时
-                    // capture_screen 返回 None,服务端不发包,客户端解码器收不到任何数据
-                    if code == DXGI_ERROR_WAIT_TIMEOUT {
-                        return self.last_frame.clone();
+                    self.fail_count += 1;
+                    if self.fail_count <= 5 || self.fail_count % 100 == 0 {
+                        tracing::warn!("acquire_frame: capture_frame 失败 (count={}): {:?}", self.fail_count, e);
                     }
-                    if code == DXGI_ERROR_ACCESS_LOST {
-                        self.needs_rebuild = true;
-                    }
-                    None
+                    self.last_frame.clone()
                 }
             }
         }
@@ -308,6 +193,41 @@ mod dxgi_capturer {
             rgba[i * 4 + 3] = 255; // A
         }
         rgba
+    }
+
+    /// 缩放 BGRA 帧到不超过 (max_w, max_h) 的最大尺寸(保持纵横比,最近邻)
+    /// 返回 (new_width, new_height, new_pixels)
+    fn scale_bgra_down(
+        src: &[u8],
+        sw: u32,
+        sh: u32,
+        max_w: u32,
+        max_h: u32,
+    ) -> (u32, u32, Vec<u8>) {
+        // 计算缩放比例,取宽高中较小的比例,确保两者都不超限
+        let scale = (max_w as f64 / sw as f64).min(max_h as f64 / sh as f64).min(1.0);
+        let dw = ((sw as f64) * scale).round() as u32;
+        let dh = ((sh as f64) * scale).round() as u32;
+        // 确保偶数(H.264 要求宽高为偶数)
+        let dw = if dw % 2 == 1 { dw - 1 } else { dw };
+        let dh = if dh % 2 == 1 { dh - 1 } else { dh };
+        let dw = dw.max(2);
+        let dh = dh.max(2);
+
+        let mut out = vec![0u8; (dw as usize) * (dh as usize) * 4];
+        for y in 0..dh as usize {
+            for x in 0..dw as usize {
+                let sx = (x * sw as usize) / dw as usize;
+                let sy = (y * sh as usize) / dh as usize;
+                let si = (sy * sw as usize + sx) * 4;
+                let di = (y * dw as usize + x) * 4;
+                out[di] = src[si]; // B
+                out[di + 1] = src[si + 1]; // G
+                out[di + 2] = src[si + 2]; // R
+                out[di + 3] = src[si + 3]; // A
+            }
+        }
+        (dw, dh, out)
     }
 
     /// 最近邻缩放 BGRA → RGBA

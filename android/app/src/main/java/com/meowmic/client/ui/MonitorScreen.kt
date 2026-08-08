@@ -206,6 +206,14 @@ fun MonitorScreen(
         // 4. NALU 拉取 + 渲染循环
         // 关键修复:用 try/finally 保证循环退出(正常 break / 异常 / Coroutine 取消)时必释放 codec,
         // 否则 Surface 残留占用会导致下次 configure "already connected" 错误
+        //
+        // 诊断计数器(每秒打印一次,帮助定位"看不到画面"问题)
+        var naluReceived = 0L
+        var naluFed = 0L
+        var naluDroppedInputFull = 0L
+        var naluDroppedTooLarge = 0L
+        var framesDecoded = 0L
+        var lastDiagTime = System.currentTimeMillis()
         try {
             while (isActive) {
                 // 每轮检查连接状态
@@ -226,40 +234,73 @@ fun MonitorScreen(
                     delay(10)
                     continue
                 }
-                if (nalu != null && nalu.isNotEmpty()) {
-                    try {
-                        val idx = mediaCodec?.dequeueInputBuffer(5_000) ?: -1
-                        if (idx >= 0) {
-                            val buf = mediaCodec?.getInputBuffer(idx) ?: continue
-                            buf.clear()
-                            if (nalu.size <= buf.capacity()) {
-                                buf.put(nalu)
-                                mediaCodec?.queueInputBuffer(idx, 0, nalu.size, System.nanoTime() / 1000, 0)
-                            }
-                        }
-                        val info = MediaCodec.BufferInfo()
-                        while (true) {
-                            val outIdx = mediaCodec?.dequeueOutputBuffer(info, 0) ?: -1
-                            when {
-                                outIdx >= 0 -> {
-                                    mediaCodec?.releaseOutputBuffer(outIdx, true)
-                                    if (!hasFirstFrame) {
-                                        hasFirstFrame = true
-                                        decoderStatus = null
-                                    }
-                                    frameCount++
-                                }
-                                outIdx == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> {
-                                    Log.i(TAG_DEC, "输出格式变化: ${mediaCodec?.outputFormat}")
-                                }
-                                else -> break
-                            }
-                        }
-                    } catch (e: Exception) {
-                        Log.w(TAG_DEC, "解码 feed 失败: ${e.message}")
-                    }
-                } else {
+                if (nalu == null || nalu.isEmpty()) {
                     delay(5)
+                    continue
+                }
+                naluReceived++
+
+                try {
+                    // 关键修复:dequeueInputBuffer 超时返回 -1 时,不要丢弃 nalu!
+                    // 旧逻辑:nalu 已从 native 队列 poll 出来,但 idx<0 时直接跳过,
+                    // 导致关键帧被静默丢弃,解码器永远收不到 SPS/PPS/IDR → 无画面。
+                    // 新逻辑:idx<0 时短暂 delay 后把 nalu 重新放回解码循环(本地重试队列)。
+                    // 但 MediaCodec 无 pushBack,所以用增大超时 + 限流日志的方式:
+                    // 超时 10ms(从 5ms 提升),如果仍满则记日志并丢弃(避免无限阻塞)。
+                    val idx = mediaCodec?.dequeueInputBuffer(10_000) ?: -1
+                    if (idx < 0) {
+                        naluDroppedInputFull++
+                        // 不立即丢弃:延迟 2ms 后重试一次
+                        delay(2)
+                        val idx2 = mediaCodec?.dequeueInputBuffer(10_000) ?: -1
+                        if (idx2 < 0) {
+                            // 两次都满,确实解码器繁忙,丢弃此帧(记日志)
+                            if (naluDroppedInputFull <= 3 || naluDroppedInputFull % 100 == 0L) {
+                                Log.w(TAG_DEC, "输入队列满,nalu 被丢弃 count=$naluDroppedInputFull size=${nalu.size}")
+                            }
+                        } else {
+                            feedNaluToCodec(nalu, idx2)
+                            naluFed++
+                        }
+                    } else {
+                        feedNaluToCodec(nalu, idx)
+                        naluFed++
+                    }
+
+                    // drain 输出
+                    val info = MediaCodec.BufferInfo()
+                    while (true) {
+                        val outIdx = mediaCodec?.dequeueOutputBuffer(info, 0) ?: -1
+                        when {
+                            outIdx >= 0 -> {
+                                mediaCodec?.releaseOutputBuffer(outIdx, true)
+                                framesDecoded++
+                                if (!hasFirstFrame) {
+                                    hasFirstFrame = true
+                                    decoderStatus = null
+                                    Log.i(TAG_DEC, "首帧解码成功! framesDecoded=$framesDecoded")
+                                }
+                                frameCount++
+                            }
+                            outIdx == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> {
+                                Log.i(TAG_DEC, "输出格式变化: ${mediaCodec?.outputFormat}")
+                            }
+                            else -> break
+                        }
+                    }
+                } catch (e: Exception) {
+                    Log.w(TAG_DEC, "解码 feed 失败: ${e.message}")
+                }
+
+                // 每秒打印一次诊断统计
+                val now = System.currentTimeMillis()
+                if (now - lastDiagTime >= 1000) {
+                    Log.i(TAG_DEC, "诊断: recv=$naluReceived fed=$naluFed droppedFull=$naluDroppedInputFull droppedLarge=$naluDroppedTooLarge decoded=$framesDecoded")
+                    naluReceived = 0
+                    naluFed = 0
+                    naluDroppedInputFull = 0
+                    naluDroppedTooLarge = 0
+                    lastDiagTime = now
                 }
             }
         } finally {
@@ -581,6 +622,26 @@ private fun MonitorSettingsDialog(
 // ════════════════════════════════════════════════════════════════
 
 private const val TAG_DEC = "H264Decoder"
+
+/**
+ * 把 NALU 喂给 MediaCodec 输入队列(带容量检查)
+ * - nalu 超过 buffer 容量时记日志并跳过(不应发生,1080p IDR 通常 < 256KB)
+ * - 时间戳用系统纳秒(MediaCodec 期望微秒)
+ */
+private fun feedNaluToCodec(codec: MediaCodec?, nalu: ByteArray, idx: Int) {
+    if (codec == null) return
+    val buf = codec.getInputBuffer(idx) ?: return
+    buf.clear()
+    if (nalu.size > buf.capacity()) {
+        // 超大 NALU,记日志(限流由调用方处理)
+        Log.w(TAG_DEC, "NALU 超大 ${nalu.size} > ${buf.capacity()},截断")
+        buf.put(nalu, 0, buf.capacity())
+        codec.queueInputBuffer(idx, 0, buf.capacity(), System.nanoTime() / 1000, 0)
+    } else {
+        buf.put(nalu)
+        codec.queueInputBuffer(idx, 0, nalu.size, System.nanoTime() / 1000, 0)
+    }
+}
 
 /**
  * H.264 硬解码器(MediaCodec + ImageReader)
