@@ -72,6 +72,12 @@ impl VideoStreamer {
             // 每 60 帧强制 keyframe (约 1 秒 @ 60fps)
             const KEYFRAME_INTERVAL: u32 = 60;
 
+            // 诊断:每秒打印发送/丢包统计,帮助定位"解码器转圈"问题
+            let mut sent_fragments: u32 = 0;
+            let mut sent_frames: u32 = 0;
+            let mut empty_captures: u32 = 0;
+            let mut last_stats_time = std::time::Instant::now();
+
             loop {
                 if !running_clone.load(Ordering::Relaxed) {
                     break;
@@ -83,6 +89,7 @@ impl VideoStreamer {
                 let nalu = screen::capture_screen(fps, cur_bitrate, codec);
 
                 if let Some(nalu_bytes) = nalu {
+                    sent_frames = sent_frames.saturating_add(1);
                     // 判断是否为关键帧:HEVC 用 IDR_W_RADL (type=19/20),H.264 用 IDR (type=5)
                     let is_keyframe = is_keyframe_nalu(&nalu_bytes, codec);
 
@@ -107,6 +114,7 @@ impl VideoStreamer {
                             tracing::warn!("视频分片发送失败: {}", e);
                             break;
                         }
+                        sent_fragments = sent_fragments.saturating_add(1);
                     }
 
                     // 3. FEC:对多分片 NALU 追加 1 个 XOR 冗余包(单包丢失恢复)
@@ -117,12 +125,27 @@ impl VideoStreamer {
                             send_buf.extend_from_slice(&fec_payload);
                             if let Err(e) = video_sock.send_to(&send_buf, client_addr).await {
                                 tracing::warn!("FEC 包发送失败: {}", e);
+                            } else {
+                                sent_fragments = sent_fragments.saturating_add(1);
                             }
                         }
                     }
+                } else {
+                    empty_captures = empty_captures.saturating_add(1);
                 }
 
-                // 4. 帧节奏控制
+                // 4. 帧节奏控制 + 每秒发送统计
+                let now = std::time::Instant::now();
+                if now.duration_since(last_stats_time) >= std::time::Duration::from_secs(1) {
+                    tracing::info!(
+                        "视频发送统计: {} 帧/秒 {} 分片/秒 (空采集={})",
+                        sent_frames, sent_fragments, empty_captures
+                    );
+                    sent_frames = 0;
+                    sent_fragments = 0;
+                    empty_captures = 0;
+                    last_stats_time = now;
+                }
                 tokio::time::sleep(interval).await;
             }
 

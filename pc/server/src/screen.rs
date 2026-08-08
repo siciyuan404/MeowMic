@@ -28,10 +28,14 @@ mod dxgi_capturer {
     };
     use windows::Win32::Graphics::Dxgi::Common::DXGI_SAMPLE_DESC;
 
-    // DXGI 错误码(AccessLost = duplication 失效,需重建)
+    // DXGI 错误码
+    // AccessLost = duplication 失效(如分辨率变化/锁屏),需重建
     const DXGI_ERROR_ACCESS_LOST: i32 = 0x887A0026u32 as i32;
+    // WaitTimeout = timeout 内无新帧(桌面静止),需复用上一帧保持视频流活跃
+    const DXGI_ERROR_WAIT_TIMEOUT: i32 = 0x887A0027u32 as i32;
 
     /// 采集到的一帧(BGRA 像素)
+    #[derive(Clone)]
     struct AcquiredFrame {
         pixels: Vec<u8>,
         width: u32,
@@ -45,6 +49,8 @@ mod dxgi_capturer {
         duplication: IDXGIOutputDuplication,
         /// 上一帧 PNG 缓存(画面无变化时返回)
         last_png: Option<Vec<u8>>,
+        /// 上一帧像素缓存(桌面静止 WAIT_TIMEOUT 时复用,保持视频流活跃)
+        last_frame: Option<AcquiredFrame>,
         /// 标记 duplication 失效(如分辨率变化/锁屏),需重建
         needs_rebuild: bool,
     }
@@ -83,6 +89,7 @@ mod dxgi_capturer {
                     context,
                     duplication,
                     last_png: None,
+                    last_frame: None,
                     needs_rebuild: false,
                 })
             }
@@ -229,14 +236,23 @@ mod dxgi_capturer {
                     self.context.Unmap(&staging, 0);
                     let _ = self.duplication.ReleaseFrame();
 
-                    Some(AcquiredFrame {
+                    let frame = AcquiredFrame {
                         pixels,
                         width,
                         height,
-                    })
+                    };
+                    // 缓存上一帧:桌面静止(WAIT_TIMEOUT)时复用,保持视频流活跃
+                    self.last_frame = Some(frame.clone());
+                    Some(frame)
                 }
                 Err(e) => {
                     let code = e.code().0;
+                    // WAIT_TIMEOUT: 桌面静止无新帧,复用上一帧让编码器输出 P 帧/重复帧
+                    // 这是解决"解码器就绪后一直转圈"的关键 —— 没有这个分支,桌面静止时
+                    // capture_screen 返回 None,服务端不发包,客户端解码器收不到任何数据
+                    if code == DXGI_ERROR_WAIT_TIMEOUT {
+                        return self.last_frame.clone();
+                    }
                     if code == DXGI_ERROR_ACCESS_LOST {
                         self.needs_rebuild = true;
                     }
