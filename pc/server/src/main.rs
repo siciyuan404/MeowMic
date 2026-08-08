@@ -23,6 +23,7 @@ use meowmic_net::{MdnsAdvertiser, NetError, PairingManager, PortLayout, Server, 
 
 mod touch_inject;
 mod audio_play;
+mod audio_jitter;
 mod stats;
 mod apps;
 mod windows;
@@ -174,7 +175,59 @@ async fn run_server(bind: &str, port: u16, output_device: Option<&str>) -> Resul
         info!("音频输出设备: 默认");
     }
     let audio_player = Arc::new(audio_play::AudioPlayer::new(audio_cfg, muted, output_device.map(|s| s.to_string())).await?);
-    let decoder = Arc::new(Mutex::new(meowmic_audio::make_decoder(&audio_cfg)));
+
+    // 音频抖动缓冲 + 丢包检测 + PLC 链路(借鉴 Sunshine/Moonlight 客户端 jitter buffer)
+    // 事件循环 push 包到 channel,独立 task 每 20ms pop 解码播放,平滑网络抖动
+    let (audio_pkt_tx, mut audio_pkt_rx) = tokio::sync::mpsc::channel::<(u16, u32, Vec<u8>)>(128);
+    let audio_player_for_jitter = audio_player.clone();
+    let audio_cfg_for_jitter = audio_cfg;
+    let stats_for_jitter = stats.clone();
+    tokio::spawn(async move {
+        let mut jitter = audio_jitter::AudioJitterBuffer::new(3, 10); // 60ms 延迟,200ms 上限
+        let mut decoder = meowmic_audio::make_decoder(&audio_cfg_for_jitter);
+        let mut pcm = vec![0i16; audio_cfg_for_jitter.samples_per_frame() * 2];
+        let mut interval = tokio::time::interval(std::time::Duration::from_millis(
+            audio_cfg_for_jitter.frame_ms as u64,
+        ));
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        // 统计日志(每 10s 打印一次)
+        let mut stats_interval = tokio::time::interval(std::time::Duration::from_secs(10));
+        let mut last_stats = audio_jitter::JitterStats::default();
+        loop {
+            tokio::select! {
+                Some((seq, ts_ns, opus)) = audio_pkt_rx.recv() => {
+                    jitter.push(seq, opus);
+                    let recv_ns = meowmic_protocol::monotonic_ns() as u32;
+                    let latency_ns = recv_ns.wrapping_sub(ts_ns);
+                    stats_for_jitter.lock().await.record_audio(latency_ns);
+                }
+                _ = interval.tick() => {
+                    if jitter.is_ready() {
+                        match jitter.pop(&mut *decoder, &mut pcm) {
+                            audio_jitter::PopResult::Decoded(n) => {
+                                audio_player_for_jitter.play(&pcm[..n]).await;
+                            }
+                            audio_jitter::PopResult::Error(e) => {
+                                tracing::warn!("音频解码失败: {}", e);
+                            }
+                            audio_jitter::PopResult::NotStarted => {}
+                        }
+                    }
+                }
+                _ = stats_interval.tick() => {
+                    let s = jitter.stats();
+                    let delta = JitterStatsDelta::from(&s, &last_stats);
+                    last_stats = s;
+                    if delta.received > 0 || delta.lost > 0 {
+                        tracing::info!(
+                            "jitter: recv={} lost={} late={} dup={} overflow={} depth={}",
+                            delta.received, delta.lost, delta.late, delta.duplicate, delta.overflow, jitter.depth()
+                        );
+                    }
+                }
+            }
+        }
+    });
 
     // 启动 HTTP /stats 服务(监听 127.0.0.1:{base_port + 3})
     // 同时提供 /mute?on=1|0 接口,供 PC 控制台运行时切换外放静音
@@ -280,24 +333,8 @@ async fn run_server(bind: &str, port: u16, output_device: Option<&str>) -> Resul
                 );
             }
             ServerEvent::Audio { seq, ts_ns, opus, .. } => {
-                let recv_ns = meowmic_protocol::monotonic_ns() as u32;
-                let latency_ns = recv_ns.wrapping_sub(ts_ns);
-                let mut dec = decoder.lock().await;
-                let mut pcm = vec![0i16; audio_cfg.samples_per_frame() * 2];
-                match dec.decode(&opus, &mut pcm) {
-                    Ok(n) => {
-                        audio_player.play(&pcm[..n]).await;
-                        stats.lock().await.record_audio(latency_ns);
-                        tracing::trace!(
-                            "audio seq={} opus={}B pcm={}smp lat={:.2}ms",
-                            seq,
-                            opus.len(),
-                            n,
-                            latency_ns as f64 / 1e6
-                        );
-                    }
-                    Err(e) => warn!("音频解码失败: {}", e),
-                }
+                // push 到 jitter buffer task(由独立 task 按 20ms 节拍解码播放)
+                let _ = audio_pkt_tx.send((seq, ts_ns, opus)).await;
             }
             ServerEvent::ClientDisconnected { client_id, .. } => {
                 info!("✗ 客户端断开 id={}", client_id);
@@ -1250,5 +1287,26 @@ fn hostname_string() -> String {
         "MeowMic-Host".to_string()
     } else {
         s.into_owned()
+    }
+}
+
+/// 抖动缓冲统计增量(两次采样的差值,用于周期日志)
+struct JitterStatsDelta {
+    received: u64,
+    lost: u64,
+    late: u64,
+    duplicate: u64,
+    overflow: u64,
+}
+
+impl JitterStatsDelta {
+    fn from(cur: &audio_jitter::JitterStats, last: &audio_jitter::JitterStats) -> Self {
+        Self {
+            received: cur.received.saturating_sub(last.received),
+            lost: cur.lost.saturating_sub(last.lost),
+            late: cur.late.saturating_sub(last.late),
+            duplicate: cur.duplicate.saturating_sub(last.duplicate),
+            overflow: cur.overflow.saturating_sub(last.overflow),
+        }
     }
 }
