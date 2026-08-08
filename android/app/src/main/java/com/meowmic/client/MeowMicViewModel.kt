@@ -1411,7 +1411,15 @@ class MeowMicViewModel : ViewModel() {
         addCustomQuickItem(type, name, command, args, "", onResult)
     }
 
-    /** 根据 type 构造 PC 端 command/args */
+    /**
+     * 根据 type 构造 PC 端 command/args
+     *
+     * SCRIPT 类型支持两种形式:
+     * 1. 脚本路径(.bat/.cmd/.ps1):自动包裹 cmd /c 或 powershell -File
+     * 2. 命令行(如 `code C:\project`、`claude .`、`opencode ~/repo`):
+     *    按双引号感知的 shell 风格拆分,第一个 token 为 command,其余为 args。
+     *    用于支持 VSCode/Claude Code/Opencode/Cursor 等 CLI 工具直接打开项目。
+     */
     private fun buildCommandForType(type: QuickItemType, target: String): Pair<String, List<String>> = when (type) {
         QuickItemType.APP -> target to emptyList()
         QuickItemType.SCRIPT -> {
@@ -1421,11 +1429,42 @@ class MeowMicViewModel : ViewModel() {
                     "cmd.exe" to listOf("/c", target)
                 lower.endsWith(".ps1") ->
                     "powershell.exe" to listOf("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", target)
-                else -> target to emptyList()
+                else -> parseCommandLine(target)
             }
         }
         QuickItemType.WEBSITE -> "explorer.exe" to listOf(target)
         QuickItemType.OBSIDIAN -> "explorer.exe" to listOf(target)
+    }
+
+    /**
+     * 简单的命令行解析:按空格拆分,双引号内的空格保留,引号本身剥离。
+     *
+     * 示例:
+     * - `code C:\project` → ("code", ["C:\\project"])
+     * - `"C:\Program Files\app.exe" --flag value` → ("C:\Program Files\app.exe", ["--flag", "value"])
+     * - `claude` → ("claude", [])
+     *
+     * 第一个 token 作为 command,其余作为 args。无内容时返回 (target, [])。
+     */
+    private fun parseCommandLine(target: String): Pair<String, List<String>> {
+        val tokens = ArrayList<String>()
+        val current = StringBuilder()
+        var inQuotes = false
+        for (ch in target) {
+            when {
+                ch == '"' -> inQuotes = !inQuotes
+                ch.isWhitespace() && !inQuotes -> {
+                    if (current.isNotEmpty()) {
+                        tokens.add(current.toString())
+                        current.clear()
+                    }
+                }
+                else -> current.append(ch)
+            }
+        }
+        if (current.isNotEmpty()) tokens.add(current.toString())
+        if (tokens.isEmpty()) return target to emptyList()
+        return tokens.first() to tokens.drop(1)
     }
 
     /** 内部:调用 PC /add_app 注册自定义应用,成功后创建 QuickItem 放入第一个空位 */

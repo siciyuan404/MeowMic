@@ -388,9 +388,15 @@ fn list_dir_contents(path: &str) -> std::io::Result<(String, Option<String>, Vec
 }
 
 /// 启动指定应用(非阻塞,spawn 后立即返回)
+///
+/// Windows 下 `code`/`claude`/`opencode`/`cursor` 等 CLI 工具实际是 PATH 上的
+/// `.cmd`/`.bat` shim,`std::process::Command::new("code")` 会因找不到可执行文件而失败。
+/// 因此对于不含路径分隔符的裸命令,先用 `which` 风格在 PATH + PATHEXT 中解析真实路径,
+/// 解析失败再回退原命令(让 spawn 报出原始错误)。
 pub fn launch_app(app: &AppEntry) -> std::io::Result<()> {
     let command = expand_env(&app.command);
-    let mut cmd = std::process::Command::new(&command);
+    let resolved = resolve_command(&command);
+    let mut cmd = std::process::Command::new(&resolved);
     cmd.args(&app.args);
     if !app.working_dir.is_empty() {
         cmd.current_dir(expand_env(&app.working_dir));
@@ -403,8 +409,56 @@ pub fn launch_app(app: &AppEntry) -> std::io::Result<()> {
         cmd.creation_flags(CREATE_NO_WINDOW);
     }
     cmd.spawn().map(|_| {
-        tracing::info!("已启动应用: {} ({})", app.name, command);
+        if resolved != command {
+            tracing::info!("已启动应用: {} ({} → {})", app.name, command, resolved);
+        } else {
+            tracing::info!("已启动应用: {} ({})", app.name, command);
+        }
     })
+}
+
+/// 在 PATH 中解析裸命令的真实路径(Windows 专属,借鉴 `which` 语义)
+///
+/// - 命令含路径分隔符(`/`、`\`)或已有扩展名 → 直接返回原值,交给系统处理
+/// - 否则遍历 PATH 各目录,按 PATHEXT 顺序尝试拼接扩展名,命中即返回完整路径
+/// - 全部未命中 → 返回原命令(spawn 时报 NotFound,错误信息更直观)
+#[cfg(windows)]
+fn resolve_command(command: &str) -> String {
+    // 已含路径分隔符或扩展名,直接返回
+    let has_sep = command.contains('/') || command.contains('\\');
+    let has_ext = std::path::Path::new(command)
+        .extension()
+        .is_some();
+    if has_sep || has_ext {
+        return command.to_string();
+    }
+
+    let path_env = match std::env::var("PATH") {
+        Ok(v) => v,
+        Err(_) => return command.to_string(),
+    };
+    let pathext_env = std::env::var("PATHEXT").unwrap_or_else(|_| ".EXE;.CMD;.BAT;.COM".into());
+
+    for dir in path_env.split(';') {
+        if dir.is_empty() {
+            continue;
+        }
+        for ext in pathext_env.split(';') {
+            if ext.is_empty() {
+                continue;
+            }
+            let candidate = format!("{}\\{}{}", dir, command, ext);
+            if std::path::Path::new(&candidate).is_file() {
+                return candidate;
+            }
+        }
+    }
+    command.to_string()
+}
+
+#[cfg(not(windows))]
+fn resolve_command(command: &str) -> String {
+    command.to_string()
 }
 
 /// 从 exe 提取图标并编码为 PNG(Windows 专属)

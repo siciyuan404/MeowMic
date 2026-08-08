@@ -173,21 +173,16 @@ fun LauncherScreen(
                 landscape = landscape,
             )
 
-            // 2. 顶部操作栏:页面切换组 + 上下文开关组 + 断开按钮
-            ActionBar(
+            // 2. 顶部操作栏(合并为一行:页面切换 + 编辑工具 + 上下文,横向可滚动)
+            TopBar(
                 landscape = landscape,
+                editMode = editMode,
+                locked = locked,
+                gridCols = gridCols,
                 onBack = onBack,
                 onNavigate = onNavigate,
                 onDisconnect = onDisconnect,
                 onRefresh = { vm.loadAppList() },
-            )
-
-            // 3. 快捷启动编辑工具栏(编辑/添加/锁定/翻转)
-            EditToolbar(
-                locked = locked,
-                editMode = editMode,
-                landscape = landscape,
-                gridCols = gridCols,
                 onToggleEdit = { editMode = !editMode },
                 onAdd = { showAddDialog = true },
                 onToggleLock = {
@@ -198,7 +193,7 @@ fun LauncherScreen(
                 onGridColsChange = { gridCols = it },
             )
 
-            // 4. 分页网格
+            // 3. 分页网格
             Box(modifier = Modifier.weight(1f)) {
                 when (appListState) {
                     is AppListState.Loading -> {
@@ -240,12 +235,12 @@ fun LauncherScreen(
                 }
             }
 
-            // 5. 页面指示器(多页时显示)
+            // 4. 页面指示器(多页时显示,圆点可点击切换页面)
             if (pageCount > 1) {
                 PageIndicator(pagerState = pagerState, pageCount = pageCount)
             }
 
-            // 6. 底部任务栏:运行中应用窗口 + 服务开关(借鉴 Windows 任务栏)
+            // 5. 底部任务栏:运行中应用窗口 + 服务开关(借鉴 Windows 任务栏)
             Taskbar(vm = vm)
         }
 
@@ -356,71 +351,26 @@ internal fun ConnBar(
 }
 
 /**
- * 顶部操作栏:页面切换组 + 上下文开关组 + 断开按钮
+ * 顶部操作栏(单行合并版):页面切换 + 编辑工具 + 上下文开关 + 断开
  *
- * 对齐设计稿 mm-actionbar:
- * - 左侧:返回 + 分隔线 + 触控/快捷启动/语音/键盘/显示器/文件 6 个页面按钮
- * - 弹性间距
- * - 右侧上下文(快捷启动页 = 刷新)+ 分隔线 + 断开(红色)
+ * 对齐设计稿 mm-actionbar,把原 ActionBar + EditToolbar 两行合并为一行,横向可滚动兜底窄屏。
+ * 顺序:返回 + 6 页面切换 | 编辑/添加/锁定 | 翻转/列数/刷新 | 断开
+ *
+ * @param landscape    是否横屏(决定按钮尺寸)
+ * @param editMode     是否编辑模式(编辑按钮高亮)
+ * @param locked       是否锁定(锁定时禁用编辑/添加)
+ * @param gridCols     当前列数设置
  */
 @Composable
-private fun ActionBar(
+private fun TopBar(
     landscape: Boolean,
+    editMode: Boolean,
+    locked: Boolean,
+    gridCols: GridCols,
     onBack: () -> Unit,
     onNavigate: (String) -> Unit,
     onDisconnect: () -> Unit,
     onRefresh: () -> Unit,
-) {
-    val btnSize = if (landscape) 22.dp else 24.dp
-    val icSize = if (landscape) 12.dp else 14.dp
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.spacedBy(3.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        // ── 左侧:页面切换组(复用共享组件) ──
-        PageSwitcher(
-            currentView = "launcher",
-            onBack = onBack,
-            onNavigate = onNavigate,
-            btnSize = btnSize,
-            iconSize = icSize,
-        )
-
-        Spacer(Modifier.weight(1f))
-
-        // ── 右侧上下文:快捷启动页 = 刷新 ──
-        IconButtonSmall(
-            icon = Icons.Default.Refresh,
-            contentDescription = "刷新应用库",
-            onClick = onRefresh,
-            buttonSize = btnSize,
-            iconSize = icSize,
-        )
-        ActionBarDivider()
-        // 断开连接(红色)
-        IconButtonSmall(
-            icon = Icons.Default.Logout,
-            contentDescription = "断开连接",
-            onClick = onDisconnect,
-            isDanger = true,
-            buttonSize = btnSize,
-            iconSize = icSize,
-        )
-    }
-}
-
-/**
- * 快捷启动编辑工具栏:编辑/添加/锁定/翻转
- *
- * 设计稿 mm-style-toggle 风格的小尺寸图标按钮组,横向排列
- */
-@Composable
-private fun EditToolbar(
-    locked: Boolean,
-    editMode: Boolean,
-    landscape: Boolean,
-    gridCols: GridCols,
     onToggleEdit: () -> Unit,
     onAdd: () -> Unit,
     onToggleLock: () -> Unit,
@@ -431,12 +381,53 @@ private fun EditToolbar(
     val icSize = if (landscape) 12.dp else 14.dp
     var showColsMenu by remember { mutableStateOf(false) }
     Row(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier
+            .fillMaxWidth()
+            .horizontalScroll(rememberScrollState()),
         horizontalArrangement = Arrangement.spacedBy(3.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        // ── 左侧:翻转 + 列数下拉(对齐设计稿 mm-actionbar 右侧布局) ──
-        // 翻转按钮:RotateCw 图标,横屏时品牌色高亮
+        // ── 左侧:页面切换组(返回 + 6 页面) ──
+        PageSwitcher(
+            currentView = "launcher",
+            onBack = onBack,
+            onNavigate = onNavigate,
+            btnSize = btnSize,
+            iconSize = icSize,
+        )
+
+        ActionBarDivider()
+
+        // ── 中间:编辑工具组(编辑/添加/锁定) ──
+        ToggleButtonSmall(
+            icon = if (editMode) Icons.Default.Check else Icons.Default.Edit,
+            contentDescription = "编辑",
+            isOn = editMode,
+            onClick = onToggleEdit,
+            tintOff = if (locked) MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.35f)
+            else MaterialTheme.colorScheme.onSurfaceVariant,
+            buttonSize = btnSize,
+            iconSize = icSize,
+        )
+        IconButtonSmall(
+            icon = Icons.Default.Add,
+            contentDescription = "添加",
+            onClick = onAdd,
+            buttonSize = btnSize,
+            iconSize = icSize,
+        )
+        ToggleButtonSmall(
+            icon = if (locked) Icons.Default.Lock else Icons.Default.LockOpen,
+            contentDescription = if (locked) "解锁" else "锁定",
+            isOn = locked,
+            onClick = onToggleLock,
+            buttonSize = btnSize,
+            iconSize = icSize,
+        )
+
+        ActionBarDivider()
+
+        // ── 右侧:翻转 + 列数 + 刷新 + 断开 ──
         ToggleButtonSmall(
             icon = Icons.Default.RotateRight,
             contentDescription = if (landscape) "切回竖屏" else "切换横屏",
@@ -472,38 +463,22 @@ private fun EditToolbar(
                 }
             }
         }
-        ActionBarDivider()
-        // ── 右侧:编辑/添加/锁定 ──
-        // 编辑按钮:ghost 风格,激活时主色,锁定时禁用
-        ToggleButtonSmall(
-            icon = if (editMode) Icons.Default.Check else Icons.Default.Edit,
-            contentDescription = "编辑",
-            isOn = editMode,
-            onClick = onToggleEdit,
-            tintOff = if (locked) MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.35f)
-            else MaterialTheme.colorScheme.onSurfaceVariant,
-            buttonSize = btnSize,
-            iconSize = icSize,
-        )
-        // 添加按钮:ghost 风格,锁定时禁用
         IconButtonSmall(
-            icon = Icons.Default.Add,
-            contentDescription = "添加",
-            onClick = onAdd,
+            icon = Icons.Default.Refresh,
+            contentDescription = "刷新应用库",
+            onClick = onRefresh,
             buttonSize = btnSize,
             iconSize = icSize,
         )
-        Spacer(Modifier.width(2.dp))
-        // 锁定按钮:激活时品牌色高亮
-        ToggleButtonSmall(
-            icon = if (locked) Icons.Default.Lock else Icons.Default.LockOpen,
-            contentDescription = if (locked) "解锁" else "锁定",
-            isOn = locked,
-            onClick = onToggleLock,
+        ActionBarDivider()
+        IconButtonSmall(
+            icon = Icons.Default.Logout,
+            contentDescription = "断开连接",
+            onClick = onDisconnect,
+            isDanger = true,
             buttonSize = btnSize,
             iconSize = icSize,
         )
-        Spacer(Modifier.weight(1f))
     }
 }
 
@@ -638,7 +613,9 @@ private fun PagerGrid(
                 ) {
                     for (row in 1..rows) {
                         Row(
-                            modifier = Modifier.fillMaxWidth(),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .weight(1f),
                             horizontalArrangement = Arrangement.spacedBy(8.dp),
                         ) {
                             for (col in 1..columns) {
@@ -647,6 +624,7 @@ private fun PagerGrid(
                                 Box(
                                     modifier = Modifier
                                         .weight(1f)
+                                        .fillMaxHeight()
                                         .onGloballyPositioned { coords ->
                                             cellBounds[posKey] = coords.boundsInRoot()
                                         }
@@ -704,7 +682,7 @@ private fun QuickItemCell(
 ) {
     Column(
         modifier = Modifier
-            .fillMaxWidth()
+            .fillMaxSize()
             .graphicsLayer {
                 // 拖动中:轻微放大 + 提高透明度(视觉反馈)
                 if (isDragging) {
@@ -714,11 +692,14 @@ private fun QuickItemCell(
                 }
             }
             .clickable { onLaunch(item) }
-            .padding(start = 2.dp, end = 2.dp, top = 4.dp),
+            .padding(start = 2.dp, end = 2.dp, top = 4.dp, bottom = 2.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.spacedBy(4.dp),
+        verticalArrangement = Arrangement.Center,
     ) {
-        Box(contentAlignment = Alignment.Center) {
+        Box(
+            modifier = Modifier.fillMaxWidth(),
+            contentAlignment = Alignment.Center,
+        ) {
             // 图标容器:APP 类型用 PC 真实图标;其他类型用类型对应图标
             TypeIconBox(item = item, vm = vm)
             // 类型徽标色点(右上角,仅非 APP 类型显示)
@@ -745,6 +726,7 @@ private fun QuickItemCell(
                 }
             }
         }
+        Spacer(Modifier.height(4.dp))
         Text(
             item.name,
             fontSize = 10.sp,
@@ -752,12 +734,16 @@ private fun QuickItemCell(
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
             textAlign = TextAlign.Center,
+            modifier = Modifier.fillMaxWidth(),
         )
     }
 }
 
 /**
  * 类型图标容器:APP 用 PC 真实图标;SCRIPT/WEBSITE/OBSIDIAN 用对应 Material 图标。
+ *
+ * 图标容器随 cell 宽度等比缩放(AspectRatio 1f 保持正方形),避免列数增加时撑大布局或被压缩。
+ * 尺寸上下限:36dp ≤ 容器 ≤ 64dp,图标尺寸 = 容器 × 0.55。
  *
  * 图标颜色(对齐设计稿):
  * - SCRIPT:   品牌色(primary)
@@ -772,9 +758,10 @@ private fun TypeIconBox(item: QuickItem, vm: MeowMicViewModel) {
         QuickItemType.WEBSITE -> MaterialTheme.colorScheme.primary
         QuickItemType.OBSIDIAN -> MaterialTheme.colorScheme.secondary
     }
-    Box(
+    BoxWithConstraints(
         modifier = Modifier
-            .size(56.dp)
+            .fillMaxWidth()
+            .aspectRatio(1f)
             .background(MaterialTheme.colorScheme.surface, RoundedCornerShape(14.dp))
             .border(
                 1.dp,
@@ -783,24 +770,31 @@ private fun TypeIconBox(item: QuickItem, vm: MeowMicViewModel) {
             ),
         contentAlignment = Alignment.Center,
     ) {
+        // 容器尺寸随 cell 宽度变化,限制在 36~64dp,图标占容器 55%
+        val containerSize = maxWidth.coerceIn(36.dp, 64.dp)
+        val iconSize = (containerSize.value * 0.55f).dp
         when (item.type) {
-            QuickItemType.APP -> AppIconContent(appId = item.appId, vm = vm)
+            QuickItemType.APP -> AppIconContent(
+                appId = item.appId,
+                vm = vm,
+                iconSize = (containerSize.value * 0.78f).dp,
+            )
             QuickItemType.SCRIPT -> Icon(
                 Icons.Default.Terminal,
                 contentDescription = null,
-                modifier = Modifier.size(24.dp),
+                modifier = Modifier.size(iconSize),
                 tint = iconTint,
             )
             QuickItemType.WEBSITE -> Icon(
                 Icons.Default.Public,
                 contentDescription = null,
-                modifier = Modifier.size(24.dp),
+                modifier = Modifier.size(iconSize),
                 tint = iconTint,
             )
             QuickItemType.OBSIDIAN -> Icon(
                 Icons.Default.MenuBook,
                 contentDescription = null,
-                modifier = Modifier.size(24.dp),
+                modifier = Modifier.size(iconSize),
                 tint = iconTint,
             )
         }
@@ -809,7 +803,7 @@ private fun TypeIconBox(item: QuickItem, vm: MeowMicViewModel) {
 
 /** APP 类型图标内容:PC 真实图标或占位 */
 @Composable
-private fun AppIconContent(appId: String, vm: MeowMicViewModel) {
+private fun AppIconContent(appId: String, vm: MeowMicViewModel, iconSize: androidx.compose.ui.unit.Dp = 44.dp) {
     val v by vm.iconVersion.collectAsState() // 订阅图标更新
     val bmp: Bitmap? = vm.iconCache[appId]
     if (bmp != null) {
@@ -817,14 +811,14 @@ private fun AppIconContent(appId: String, vm: MeowMicViewModel) {
             bitmap = bmp.asImageBitmap(),
             contentDescription = appId,
             contentScale = androidx.compose.ui.layout.ContentScale.Fit,
-            modifier = Modifier.size(44.dp),
+            modifier = Modifier.size(iconSize),
         )
     } else {
         LaunchedEffect(appId) { vm.loadIcon(appId) }
         Icon(
             Icons.Default.Apps,
             contentDescription = null,
-            modifier = Modifier.size(28.dp),
+            modifier = Modifier.size(iconSize * 0.7f),
             tint = MaterialTheme.colorScheme.primary.copy(alpha = 0.6f),
         )
     }
@@ -885,6 +879,9 @@ private fun Modifier.dashedBorder(
 /**
  * 空位"添加"格子(虚线边框 + 加号图标)。
  * 拖动悬停时 is-drop-target 高亮(品牌色边框 + 品牌色淡背景)。
+ *
+ * 图标容器随 cell 宽度等比缩放(AspectRatio 1f 保持正方形),与 TypeIconBox 尺寸一致,
+ * 避免空位与已填充格子尺寸不一致导致布局跳动。
  */
 @Composable
 private fun AddCell(
@@ -904,16 +901,17 @@ private fun AddCell(
     )
     Column(
         modifier = Modifier
-            .fillMaxWidth()
+            .fillMaxSize()
             .alpha(if (locked) 0.3f else 1f)
             .clickable(enabled = !locked) { onClick() }
-            .padding(start = 2.dp, end = 2.dp, top = 4.dp),
+            .padding(start = 2.dp, end = 2.dp, top = 4.dp, bottom = 2.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.spacedBy(4.dp),
+        verticalArrangement = Arrangement.Center,
     ) {
-        Box(
+        BoxWithConstraints(
             modifier = Modifier
-                .size(48.dp)
+                .fillMaxWidth()
+                .aspectRatio(1f)
                 .background(bgColor, RoundedCornerShape(12.dp))
                 .dashedBorder(
                     width = 1.dp,
@@ -922,19 +920,25 @@ private fun AddCell(
                 ),
             contentAlignment = Alignment.Center,
         ) {
+            // 图标尺寸与 TypeIconBox 同步:容器 × 0.4(添加图标更小,视觉轻量)
+            val containerSize = maxWidth.coerceIn(36.dp, 64.dp)
+            val iconSize = (containerSize.value * 0.4f).dp
             Icon(
                 Icons.Default.Add,
                 contentDescription = "添加",
-                modifier = Modifier.size(18.dp),
+                modifier = Modifier.size(iconSize),
                 tint = if (isDropTarget) MaterialTheme.colorScheme.primary
                 else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f),
             )
         }
+        Spacer(Modifier.height(4.dp))
         Text(
             "添加",
             fontSize = 10.sp,
             color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
             maxLines = 1,
+            modifier = Modifier.fillMaxWidth(),
+            textAlign = TextAlign.Center,
         )
     }
 }
@@ -1003,7 +1007,7 @@ private fun NewPagePlaceholder(
     }
 }
 
-/** 页面指示器:圆点,active 拉长(与 PagerGrid 共享 pagerState) */
+/** 页面指示器:圆点,active 拉长(与 PagerGrid 共享 pagerState)。圆点可点击切换页面。 */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun PageIndicator(
@@ -1011,23 +1015,34 @@ private fun PageIndicator(
     pageCount: Int,
 ) {
     val currentPage = pagerState.currentPage
+    val scope = androidx.compose.runtime.rememberCoroutineScope()
     Row(
         modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.spacedBy(4.dp, Alignment.CenterHorizontally),
+        horizontalArrangement = Arrangement.spacedBy(2.dp, Alignment.CenterHorizontally),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         repeat(pageCount) { i ->
             val active = i == currentPage
+            // 外层:扩大点击区域(24×24dp),内层:视觉圆点
             Box(
                 modifier = Modifier
-                    .height(6.dp)
-                    .width(if (active) 16.dp else 6.dp)
-                    .background(
-                        if (active) MaterialTheme.colorScheme.primary
-                        else MaterialTheme.colorScheme.outlineVariant,
-                        CircleShape,
-                    )
-            )
+                    .size(24.dp)
+                    .clickable {
+                        scope.launch { pagerState.animateScrollToPage(i) }
+                    },
+                contentAlignment = Alignment.Center,
+            ) {
+                Box(
+                    modifier = Modifier
+                        .height(6.dp)
+                        .width(if (active) 16.dp else 6.dp)
+                        .background(
+                            if (active) MaterialTheme.colorScheme.primary
+                            else MaterialTheme.colorScheme.outlineVariant,
+                            CircleShape,
+                        )
+                )
+            }
         }
     }
 }
@@ -1626,6 +1641,16 @@ private fun AddAppDialog(
                         }
                     }
                     QuickItemType.SCRIPT, QuickItemType.WEBSITE, QuickItemType.OBSIDIAN -> {
+                        // SCRIPT 类型:在表单上方显示预设模板快捷按钮(点击自动填表)
+                        if (selectedType == QuickItemType.SCRIPT) {
+                            PresetTemplates(
+                                onPick = { name, target ->
+                                    manualName = name
+                                    manualTarget = target
+                                },
+                            )
+                            Spacer(Modifier.height(8.dp))
+                        }
                         CustomTypeForm(
                             type = selectedType,
                             name = manualName,
@@ -1706,6 +1731,60 @@ private fun AddAppDialog(
             },
             onDismiss = { showDirBrowser = false },
         )
+    }
+}
+
+/**
+ * 预设模板(仅 SCRIPT 类型):一键填充 name + target,快速添加 CLI 工具快捷启动。
+ *
+ * 覆盖 VSCode/Claude Code/Opencode/Cursor/Windsurf/Gemini CLI/Copilot 等常见开发工具,
+ * target 形如 `code <项目路径>`,用户填表后替换 <项目路径> 为实际路径(或保留 . 打开当前目录)。
+ * PC 端 buildCommandForType 会按命令行解析为 command + args。
+ */
+@Composable
+private fun PresetTemplates(onPick: (name: String, target: String) -> Unit) {
+    val presets = remember {
+        listOf(
+            "VSCode" to "code .",
+            "Claude Code" to "claude .",
+            "Opencode" to "opencode .",
+            "Cursor" to "cursor .",
+            "Windsurf" to "windsurf .",
+            "Gemini CLI" to "gemini .",
+            "Copilot" to "copilot .",
+            "PowerShell" to "powershell -NoExit",
+            "CMD" to "cmd /k",
+        )
+    }
+    Column(modifier = Modifier.fillMaxWidth()) {
+        Text(
+            "预设模板(点击填充,把 . 换成项目路径)",
+            fontSize = 10.sp,
+            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+        )
+        Spacer(Modifier.height(4.dp))
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            presets.forEach { (name, target) ->
+                AssistChip(
+                    onClick = { onPick(name, target) },
+                    label = { Text(name, fontSize = 11.sp) },
+                    leadingIcon = {
+                        Icon(
+                            Icons.Default.Terminal,
+                            contentDescription = null,
+                            modifier = Modifier.size(12.dp),
+                            tint = MaterialTheme.colorScheme.primary,
+                        )
+                    },
+                )
+            }
+        }
     }
 }
 
@@ -1833,19 +1912,19 @@ private fun CustomTypeForm(
     submitting: Boolean,
 ) {
     val targetLabel = when (type) {
-        QuickItemType.SCRIPT -> "脚本路径"
+        QuickItemType.SCRIPT -> "脚本路径或命令行"
         QuickItemType.WEBSITE -> "网址 URL"
         QuickItemType.OBSIDIAN -> "Obsidian URI"
         else -> "目标"
     }
     val targetPlaceholder = when (type) {
-        QuickItemType.SCRIPT -> "C:\\scripts\\clean.bat"
+        QuickItemType.SCRIPT -> "code C:\\project 或 C:\\scripts\\clean.bat"
         QuickItemType.WEBSITE -> "https://github.com"
         QuickItemType.OBSIDIAN -> "obsidian://open?vault=MyVault&file=Inbox"
         else -> ""
     }
     val targetHint = when (type) {
-        QuickItemType.SCRIPT -> ".bat/.cmd 自动包 cmd /c;.ps1 自动包 powershell -File"
+        QuickItemType.SCRIPT -> ".bat/.cmd 自动包 cmd /c;.ps1 自动包 powershell;其他按命令行解析(如 code C:\\proj → command=code, args=[C:\\proj])"
         QuickItemType.WEBSITE -> "通过默认浏览器打开 URL"
         QuickItemType.OBSIDIAN -> "通过 Obsidian 客户端打开 URI"
         else -> ""
