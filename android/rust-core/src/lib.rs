@@ -1409,35 +1409,36 @@ pub extern "system" fn Java_com_meowmic_client_NativeBridge_nativeStartVideo(
     ) {
         Ok(()) => {
             log::info!("nativeStartVideo: StartVideo 已发送,等待 VideoStarted ACK");
-            // 等待 VideoStarted ACK 携带的 codec(轮询,最多 500ms)
-            // 注意:ACK 仅用于日志/统计,Kotlin 端固定用 H.264 解码
-            let codec = {
-                let mut got: i32 = -1;
+            // 关键修复:ACK 等待循环 + VideoReceiver::start 必须在同一个 block_on 上下文内,
+            // 否则 tokio::time::sleep / tokio::spawn 会 panic
+            // "there is no reactor running" → abort → SIGABRT
+            // (Handle::block_on 每次 call 都需要重新进入 runtime 上下文,
+            //  在循环里反复 block_on 单个 sleep 会有 reactor 丢失问题)
+            let rx = rt_handle.block_on(async {
+                // 等待 VideoStarted ACK 携带的 codec(轮询,最多 500ms)
+                // 注意:ACK 仅用于日志/统计,Kotlin 端固定用 H.264 解码
+                let mut codec: i32 = -1;
                 for _ in 0..50 {
                     let c = client.video_started_codec();
                     if c != 255 {
-                        got = c as i32;
+                        codec = c as i32;
                         break;
                     }
-                    rt_handle.block_on(tokio::time::sleep(std::time::Duration::from_millis(10)));
+                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
                 }
-                got
-            };
-            // 启动视频接收循环
-            // 关键修复:必须在 runtime 上下文内 spawn,否则 tokio::spawn panic
-            // "there is no reactor running, must be called from the context of a Tokio 1.x runtime"
-            // → abort → SIGABRT(之前 v0.30.8 闪退的根因)
-            let rx = rt_handle.block_on(async { VideoReceiver::start(client) });
+                if codec < 0 {
+                    log::warn!("nativeStartVideo: VideoStarted ACK 超时(500ms),默认 H.264");
+                } else {
+                    log::info!("nativeStartVideo: VideoStarted ACK codec={}", codec);
+                }
+                // 启动视频接收循环(在 runtime 上下文内,tokio::spawn 安全)
+                VideoReceiver::start(client)
+            });
             let mut video_guard = lock_or_recover(video_rx());
             if let Some(old) = video_guard.as_mut() {
                 old.stop();
             }
             *video_guard = Some(rx);
-            if codec < 0 {
-                log::warn!("nativeStartVideo: VideoStarted ACK 超时(500ms),默认 H.264");
-            } else {
-                log::info!("nativeStartVideo: VideoStarted ACK codec={}", codec);
-            }
             JNI_TRUE
         }
         Err(e) => {
