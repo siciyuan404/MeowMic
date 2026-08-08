@@ -251,26 +251,18 @@ mod mf_encoder {
 
         /// 配置编码器输入/输出类型
         ///
+        /// 关键:Media Foundation 编码器必须**先设置输出类型,再设置输入类型**。
+        /// 参考 MSDN "Implementing a Codec MFT":
+        ///   1. SetOutputType(编码格式,如 H.264)
+        ///   2. GetInputAvailableType(获取兼容的输入类型列表)
+        ///   3. SetInputType(设置未压缩输入格式,如 NV12)
+        ///
+        /// 顺序反了会导致 SetInputType 返回 MF_E_INVALIDMEDIATYPE (0xc00d6d77),
+        /// 因为编码器在不知道输出格式的情况下无法确定支持哪些输入格式。
+        ///
         /// 输入格式尝试顺序:NV12(硬件编码器首选)→ RGB32(软件编码器回退)
-        /// 不同编码器 MFT 支持的输入格式不同,逐个尝试直到 SetInputType 成功。
         unsafe fn configure(&mut self) -> Option<()> {
-            // 尝试多种输入格式:NV12 → RGB32
-            let formats = [InputFormat::Nv12, InputFormat::Rgb32];
-            let mut configured_format = None;
-            for fmt in &formats {
-                match self.try_set_input_type(*fmt) {
-                    Some(()) => {
-                        configured_format = Some(*fmt);
-                        break;
-                    }
-                    None => continue,
-                }
-            }
-            let input_format = configured_format?;
-            self.input_format = input_format;
-            tracing::info!("configure: 输入格式 = {:?}", input_format);
-
-            // 输出类型:根据 codec 选 H.264 或 HEVC
+            // 1. 先设置输出类型(编码格式:H.264 或 HEVC)
             let output_subtype = match self.codec {
                 Codec::H264 => MFVideoFormat_H264,
                 Codec::Hevc => MFVideoFormat_HEVC,
@@ -309,7 +301,23 @@ mod mf_encoder {
                 }
             }
 
-            // 通知流开始
+            // 2. 设置输出类型后,再尝试输入格式:NV12 → RGB32
+            let formats = [InputFormat::Nv12, InputFormat::Rgb32];
+            let mut configured_format = None;
+            for fmt in &formats {
+                match self.try_set_input_type(*fmt) {
+                    Some(()) => {
+                        configured_format = Some(*fmt);
+                        break;
+                    }
+                    None => continue,
+                }
+            }
+            let input_format = configured_format?;
+            self.input_format = input_format;
+            tracing::info!("configure: 输入格式 = {:?}", input_format);
+
+            // 3. 通知流开始
             match self.transform.ProcessMessage(MFT_MESSAGE_NOTIFY_BEGIN_STREAMING, 0) {
                 Ok(()) => {}
                 Err(e) => {
