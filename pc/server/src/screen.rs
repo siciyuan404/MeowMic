@@ -160,11 +160,11 @@ mod dxgi_capturer {
 
             match result {
                 Ok(()) => {
-                    // LastPresentTime == 0 表示没有新画面(如只有鼠标移动)
-                    if frame_info.LastPresentTime == 0 {
-                        let _ = self.duplication.ReleaseFrame();
-                        return None;
-                    }
+                    // 注意:不再因 LastPresentTime == 0 跳过帧。
+                    // DXGI Desktop Duplication 在画面无变化时(如桌面静止)返回 LastPresentTime=0,
+                    // 如果跳过会导致客户端永远收不到视频流(解码器无 SPS/PPS/IDR,一直转圈)。
+                    // 参考 Sunshine:即使无变化也处理当前 texture,编码器会输出 P 帧/重复帧保持视频流活跃。
+                    // 鼠标移动会通过 PointerPosition 更新,但当前实现未单独处理鼠标层。
 
                     let resource = resource?;
                     let texture: ID3D11Texture2D = resource.cast().ok()?;
