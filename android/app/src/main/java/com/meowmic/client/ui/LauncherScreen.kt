@@ -1,5 +1,6 @@
 package com.meowmic.client.ui
 
+import android.app.Activity
 import android.graphics.Bitmap
 import org.json.JSONObject
 import androidx.compose.animation.animateColorAsState
@@ -36,6 +37,7 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.boundsInRoot
@@ -54,6 +56,9 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.Popup
 import androidx.compose.ui.window.PopupPositionProvider
 import androidx.compose.ui.window.PopupProperties
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import com.meowmic.client.AppListState
 import com.meowmic.client.ConnectionState
 import com.meowmic.client.DirListing
@@ -114,6 +119,10 @@ fun LauncherScreen(
     var locked by remember { mutableStateOf(false) }
     var landscape by remember { mutableStateOf(false) }
     var connExpanded by remember { mutableStateOf(false) }
+    // 全屏模式:隐藏系统栏与页面 chrome,网格铺满整屏
+    var isFullscreen by remember { mutableStateOf(false) }
+    val context = LocalContext.current
+    val activity = context as? Activity
     // 列数从 ViewModel 读取(持久化),切换页面/重启后保留
     val gridColsName by vm.gridColsName.collectAsState()
     val gridCols = remember(gridColsName) {
@@ -145,6 +154,26 @@ fun LauncherScreen(
         }
     }
 
+    // 全屏模式:隐藏状态栏/导航栏(immersive sticky);退出或离开页面时恢复
+    // (与 MonitorScreen 全屏同款模式;不锁定方向,横竖屏仍由"翻转"按钮控制)
+    DisposableEffect(isFullscreen) {
+        val win = activity?.window
+        val controller = win?.let { WindowInsetsControllerCompat(it, it.decorView) }
+        if (isFullscreen) {
+            win?.let { WindowCompat.setDecorFitsSystemWindows(it, false) }
+            controller?.hide(WindowInsetsCompat.Type.systemBars())
+            controller?.systemBarsBehavior =
+                WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+        } else {
+            win?.let { WindowCompat.setDecorFitsSystemWindows(it, true) }
+            controller?.show(WindowInsetsCompat.Type.systemBars())
+        }
+        onDispose {
+            win?.let { WindowCompat.setDecorFitsSystemWindows(it, true) }
+            controller?.show(WindowInsetsCompat.Type.systemBars())
+        }
+    }
+
     val addr = (connectionState as? ConnectionState.Connected)?.serverAddr ?: ""
 
     // 统计数据(用于连接栏展开详情)
@@ -164,38 +193,43 @@ fun LauncherScreen(
 
     Box(modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
         Column(
-            modifier = Modifier.fillMaxSize().padding(12.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp),
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(if (isFullscreen) 0.dp else 12.dp),
+            verticalArrangement = Arrangement.spacedBy(if (isFullscreen) 0.dp else 8.dp),
         ) {
-            // 1. 可折叠连接栏(默认收起,点击展开详情)
-            ConnBar(
-                addr = addr,
-                expanded = connExpanded,
-                onToggle = { connExpanded = !connExpanded },
-                touchSent = touchSent,
-                audioSent = audioSent,
-                landscape = landscape,
-            )
+            // 1. 可折叠连接栏(默认收起,点击展开详情;全屏时隐藏)
+            if (!isFullscreen) {
+                ConnBar(
+                    addr = addr,
+                    expanded = connExpanded,
+                    onToggle = { connExpanded = !connExpanded },
+                    touchSent = touchSent,
+                    audioSent = audioSent,
+                    landscape = landscape,
+                )
 
-            // 2. 顶部操作栏(合并为一行:页面切换 + 编辑工具 + 上下文,横向可滚动)
-            TopBar(
-                landscape = landscape,
-                editMode = editMode,
-                locked = locked,
-                gridCols = gridCols,
-                onBack = onBack,
-                onNavigate = onNavigate,
-                onDisconnect = onDisconnect,
-                onRefresh = { vm.loadAppList() },
-                onToggleEdit = { editMode = !editMode },
-                onAdd = { showAddDialog = true },
-                onToggleLock = {
-                    if (!locked) editMode = false
-                    locked = !locked
-                },
-                onToggleLandscape = { landscape = !landscape },
-                onGridColsChange = { vm.setGridCols(it.name) },
-            )
+                // 2. 顶部操作栏(合并为一行:页面切换 + 编辑工具 + 上下文,横向可滚动)
+                TopBar(
+                    landscape = landscape,
+                    editMode = editMode,
+                    locked = locked,
+                    gridCols = gridCols,
+                    onBack = onBack,
+                    onNavigate = onNavigate,
+                    onDisconnect = onDisconnect,
+                    onRefresh = { vm.loadAppList() },
+                    onToggleEdit = { editMode = !editMode },
+                    onAdd = { showAddDialog = true },
+                    onToggleLock = {
+                        if (!locked) editMode = false
+                        locked = !locked
+                    },
+                    onToggleLandscape = { landscape = !landscape },
+                    onGridColsChange = { vm.setGridCols(it.name) },
+                    onToggleFullscreen = { isFullscreen = true },
+                )
+            }
 
             // 3. 分页网格
             Box(modifier = Modifier.weight(1f)) {
@@ -239,13 +273,25 @@ fun LauncherScreen(
                 }
             }
 
-            // 4. 页面指示器(多页时显示,圆点可点击切换页面)
-            if (pageCount > 1) {
+            // 4. 页面指示器(多页时显示,圆点可点击切换页面;全屏时隐藏)
+            if (!isFullscreen && pageCount > 1) {
                 PageIndicator(pagerState = pagerState, pageCount = pageCount)
             }
 
-            // 5. 底部任务栏:运行中应用窗口 + 服务开关(借鉴 Windows 任务栏)
-            Taskbar(vm = vm)
+            // 5. 底部任务栏:运行中应用窗口 + 服务开关(借鉴 Windows 任务栏;全屏时隐藏)
+            if (!isFullscreen) {
+                Taskbar(vm = vm)
+            }
+        }
+
+        // 全屏模式:右上角浮动退出按钮(半透明黑底,对齐 MonitorScreen 样式)
+        if (isFullscreen) {
+            LauncherFloatingButton(
+                icon = Icons.Default.FullscreenExit,
+                contentDescription = "退出全屏",
+                onClick = { isFullscreen = false },
+                modifier = Modifier.align(Alignment.TopEnd).padding(12.dp),
+            )
         }
 
         // Snackbar 固定底部
@@ -358,7 +404,7 @@ internal fun ConnBar(
  * 顶部操作栏(单行合并版):页面切换 + 编辑工具 + 上下文开关 + 断开
  *
  * 对齐设计稿 mm-actionbar,把原 ActionBar + EditToolbar 两行合并为一行,横向可滚动兜底窄屏。
- * 顺序:返回 + 6 页面切换 | 编辑/添加/锁定 | 翻转/列数/刷新 | 断开
+ * 顺序:返回 + 6 页面切换 | 编辑/添加/锁定 | 翻转/全屏/列数/刷新 | 断开
  *
  * @param landscape    是否横屏(决定按钮尺寸)
  * @param editMode     是否编辑模式(编辑按钮高亮)
@@ -380,6 +426,7 @@ private fun TopBar(
     onToggleLock: () -> Unit,
     onToggleLandscape: () -> Unit,
     onGridColsChange: (GridCols) -> Unit,
+    onToggleFullscreen: () -> Unit,
 ) {
     val btnSize = if (landscape) 22.dp else 24.dp
     val icSize = if (landscape) 12.dp else 14.dp
@@ -431,12 +478,20 @@ private fun TopBar(
 
         ActionBarDivider()
 
-        // ── 右侧:翻转 + 列数 + 刷新 + 断开 ──
+        // ── 右侧:翻转 + 全屏 + 列数 + 刷新 + 断开 ──
         ToggleButtonSmall(
             icon = Icons.Default.RotateRight,
             contentDescription = if (landscape) "切回竖屏" else "切换横屏",
             isOn = landscape,
             onClick = onToggleLandscape,
+            buttonSize = btnSize,
+            iconSize = icSize,
+        )
+        // 全屏:隐藏系统栏 + 连接栏/操作栏/任务栏,网格铺满整屏
+        IconButtonSmall(
+            icon = Icons.Default.Fullscreen,
+            contentDescription = "全屏",
+            onClick = onToggleFullscreen,
             buttonSize = btnSize,
             iconSize = icSize,
         )
@@ -483,6 +538,27 @@ private fun TopBar(
             buttonSize = btnSize,
             iconSize = icSize,
         )
+    }
+}
+
+/** 全屏模式浮动圆形按钮(半透明黑底 + 白色图标,与 MonitorScreen 样式一致) */
+@Composable
+private fun LauncherFloatingButton(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    contentDescription: String,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    size: androidx.compose.ui.unit.Dp = 40.dp,
+    iconSize: androidx.compose.ui.unit.Dp = 20.dp,
+) {
+    Box(
+        modifier = modifier
+            .size(size)
+            .background(Color.Black.copy(alpha = 0.5f), CircleShape)
+            .clickable(onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) {
+        Icon(icon, contentDescription, Modifier.size(iconSize), tint = Color.White)
     }
 }
 
