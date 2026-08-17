@@ -12,6 +12,8 @@
 //! - POST /file/rename?from=<path>&to=<path>&pubkey=<b64>  重命名/移动
 
 use serde::Serialize;
+use sha2::{Digest, Sha256};
+use std::io::Read;
 use std::path::Path;
 
 /// 文件条目(用于文件传输页列表)
@@ -159,4 +161,23 @@ pub fn write_file(path: &str, data: &[u8]) -> std::io::Result<()> {
         }
     }
     std::fs::write(p, data)
+}
+
+/// 计算文件 SHA-256(流式读取,hex 小写返回)
+///
+/// 用于文件传输完整性校验:上传后服务端计算并比对客户端提供的 hash;
+/// 下载前客户端可调用 /file/hash 获取预期值,下载后再本地计算比对。
+pub fn sha256_file(path: &str) -> std::io::Result<String> {
+    let f = std::fs::File::open(path)?;
+    let mut reader = std::io::BufReader::with_capacity(64 * 1024, f);
+    let mut hasher = Sha256::new();
+    let mut buf = [0u8; 64 * 1024];
+    loop {
+        let n = reader.read(&mut buf)?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buf[..n]);
+    }
+    Ok(hex::encode(hasher.finalize()))
 }

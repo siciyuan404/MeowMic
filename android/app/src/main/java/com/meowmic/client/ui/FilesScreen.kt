@@ -81,29 +81,58 @@ fun FilesScreen(
     // 重命名对话框
     var showRenameDialog by remember { mutableStateOf(false) }
     var renameTo by remember { mutableStateOf("") }
-    // 上传/下载状态
+    // 上传/下载状态(null=无传输;错误消息显示在状态条)
     var transferStatus by remember { mutableStateOf<String?>(null) }
+    // 传输失败后的重试动作(仅可重试错误设置;确定性错误为 null 不显示按钮)
+    var pendingRetry by remember { mutableStateOf<(() -> Unit)?>(null) }
 
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
+
+    // 上传执行(含完整性校验;失败时记录可重试动作)
+    fun performUpload(uri: Uri) {
+        scope.launch {
+            pendingRetry = null
+            when (val r = uploadFromUri(context, addr, vm.clientPubkeyB64(), uri, currentPath) { msg ->
+                transferStatus = msg
+            }) {
+                is LauncherRepository.FileTransferResult.UploadSuccess -> {
+                    transferStatus = if (r.serverHash != null) "上传完成(已校验)" else "上传完成"
+                    refresh(addr, vm, currentPath) { l, e ->
+                        listing = l; errorMsg = e; loading = false
+                    }
+                }
+                is LauncherRepository.FileTransferResult.Failed -> {
+                    transferStatus = "上传失败:${r.message}"
+                    pendingRetry = if (r.reason.retryable()) ({ performUpload(uri) }) else null
+                }
+                else -> {}
+            }
+        }
+    }
 
     // 文件选择器(上传)
     val uploadLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.OpenDocument()
     ) { uri ->
-        uri?.let {
-            scope.launch {
-                val ok = uploadFromUri(context, addr, vm.clientPubkeyB64(), it, currentPath) { msg ->
-                    transferStatus = msg
+        uri?.let { performUpload(it) }
+    }
+
+    // 下载执行(含完整性校验;hash 不一致不写本地文件)
+    fun performDownload(srcPath: String, targetUri: Uri) {
+        scope.launch {
+            pendingRetry = null
+            when (val r = downloadToUri(context, addr, vm.clientPubkeyB64(), srcPath, targetUri) { msg ->
+                transferStatus = msg
+            }) {
+                is LauncherRepository.FileTransferResult.DownloadSuccess -> {
+                    transferStatus = if (r.verified) "下载完成(已校验)" else "下载完成(未校验)"
                 }
-                if (ok) {
-                    transferStatus = "上传完成"
-                    refresh(addr, vm, currentPath) { l, e ->
-                        listing = l; errorMsg = e; loading = false
-                    }
-                } else {
-                    transferStatus = "上传失败"
+                is LauncherRepository.FileTransferResult.Failed -> {
+                    transferStatus = "下载失败:${r.message}"
+                    pendingRetry = if (r.reason.retryable()) ({ performDownload(srcPath, targetUri) }) else null
                 }
+                else -> {}
             }
         }
     }
@@ -113,14 +142,7 @@ fun FilesScreen(
         ActivityResultContracts.CreateDocument("application/octet-stream")
     ) { uri ->
         val srcPath = selectedPath ?: return@rememberLauncherForActivityResult
-        uri?.let {
-            scope.launch {
-                val ok = downloadToUri(context, addr, vm.clientPubkeyB64(), srcPath, it) { msg ->
-                    transferStatus = msg
-                }
-                transferStatus = if (ok) "下载完成" else "下载失败"
-            }
-        }
+        uri?.let { performDownload(srcPath, it) }
         selectedPath = null
     }
 
@@ -231,7 +253,20 @@ fun FilesScreen(
                         horizontalArrangement = Arrangement.spacedBy(6.dp),
                     ) {
                         Icon(Icons.Default.Info, contentDescription = null, modifier = Modifier.size(14.dp))
-                        Text(transferStatus!!, fontSize = 11.sp, color = MaterialTheme.colorScheme.onPrimaryContainer)
+                        Text(
+                            transferStatus!!,
+                            fontSize = 11.sp,
+                            color = MaterialTheme.colorScheme.onPrimaryContainer,
+                            modifier = Modifier.weight(1f),
+                        )
+                        if (pendingRetry != null) {
+                            TextButton(
+                                onClick = { pendingRetry?.invoke() },
+                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
+                            ) {
+                                Text("重试", fontSize = 11.sp)
+                            }
+                        }
                     }
                 }
             }
@@ -637,6 +672,12 @@ private fun fileIcon(entry: LauncherRepository.FileEntry): androidx.compose.ui.g
 
 // ── 上传/下载实现(挂起函数,在协程中调用) ──
 
+/** 失败原因是否值得重试(临时性/可恢复故障) */
+private fun LauncherRepository.FailureReason.retryable(): Boolean =
+    this == LauncherRepository.FailureReason.NETWORK_ERROR
+        || this == LauncherRepository.FailureReason.HASH_MISMATCH
+        || this == LauncherRepository.FailureReason.SERVER_ERROR
+
 private suspend fun uploadFromUri(
     context: Context,
     serverAddr: String,
@@ -644,7 +685,7 @@ private suspend fun uploadFromUri(
     uri: Uri,
     targetDir: String,
     onProgress: (String) -> Unit,
-): Boolean = withContext(Dispatchers.IO) {
+): LauncherRepository.FileTransferResult = withContext(Dispatchers.IO) {
     val resolver = context.contentResolver
     // 从 URI 获取文件名
     var fileName = ""
@@ -657,8 +698,12 @@ private suspend fun uploadFromUri(
     if (fileName.isBlank()) fileName = "upload_${System.currentTimeMillis()}"
     val targetPath = if (targetDir.isBlank()) fileName else "$targetDir\\$fileName"
     onProgress("上传中: $fileName")
-    val data = resolver.openInputStream(uri)?.use { it.readBytes() } ?: return@withContext false
-    LauncherRepository.uploadFile(serverAddr, targetPath, data, pubkey)
+    val data = resolver.openInputStream(uri)?.use { it.readBytes() }
+        ?: return@withContext LauncherRepository.FileTransferResult.Failed(
+            LauncherRepository.FailureReason.UNKNOWN, "无法读取所选文件",
+        )
+    // uploadFileVerified:本地 SHA-256 随请求发送,服务端写入后重算比对(460=不一致)
+    LauncherRepository.uploadFileVerified(serverAddr, targetPath, data, pubkey)
 }
 
 private suspend fun downloadToUri(
@@ -668,12 +713,20 @@ private suspend fun downloadToUri(
     srcPath: String,
     targetUri: Uri,
     onProgress: (String) -> Unit,
-): Boolean = withContext(Dispatchers.IO) {
+): LauncherRepository.FileTransferResult = withContext(Dispatchers.IO) {
     val name = srcPath.substringAfterLast('\\').substringAfterLast('/')
     onProgress("下载中: $name")
-    val data = LauncherRepository.downloadFile(serverAddr, srcPath, pubkey) ?: return@withContext false
-    context.contentResolver.openOutputStream(targetUri)?.use { it.write(data) } ?: return@withContext false
-    true
+    // downloadFileVerified:先取服务端 hash,下载后本地比对;不一致不写本地文件
+    when (val r = LauncherRepository.downloadFileVerified(serverAddr, srcPath, pubkey)) {
+        is LauncherRepository.FileTransferResult.DownloadSuccess -> {
+            context.contentResolver.openOutputStream(targetUri)?.use { it.write(r.data) }
+                ?: return@withContext LauncherRepository.FileTransferResult.Failed(
+                    LauncherRepository.FailureReason.UNKNOWN, "无法写入目标位置",
+                )
+            r
+        }
+        else -> r
+    }
 }
 
 /** 刷新当前目录(供对话框操作后调用) */

@@ -4,12 +4,15 @@ import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.util.Log
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
+import java.io.IOException
 import java.net.HttpURLConnection
 import java.net.URL
 import java.net.URLEncoder
+import java.security.MessageDigest
 
 /**
  * 快捷启动应用库条目(从 PC 端 /applist 拉取)
@@ -190,6 +193,42 @@ object LauncherRepository {
         // URLEncoder.encode 把空格编码为 '+',但 PC 端 url_decode 不解码 '+'
         // (base64 的 '+' 应保留)。改用 %20 编码空格,与服务端兼容。
         URLEncoder.encode(s, "UTF-8").replace("+", "%20")
+
+    /**
+     * 计算 ByteArray 的 SHA-256(hex 小写),用于文件传输完整性校验。
+     * 与 PC 端 files::sha256_file 算法一致,两端 hash 可直接比对。
+     */
+    fun sha256Hex(data: ByteArray): String {
+        val digest = MessageDigest.getInstance("SHA-256").digest(data)
+        return digest.joinToString("") { "%02x".format(it) }
+    }
+
+    /**
+     * 网络重试包装:仅对 [IOException](超时/连接重置等临时故障)重试,
+     * HTTP 4xx/5xx 业务错误不重试(确定性错误,重试无意义)。
+     * 默认 3 次,退避 500ms 起步每次加倍。
+     */
+    private suspend fun <T> retryIO(
+        maxAttempts: Int = 3,
+        baseBackoffMs: Long = 500L,
+        block: suspend () -> T,
+    ): T {
+        var lastErr: IOException? = null
+        var backoff = baseBackoffMs
+        repeat(maxAttempts) { attempt ->
+            try {
+                return block()
+            } catch (e: IOException) {
+                lastErr = e
+                Log.w(TAG, "retryIO 第 ${attempt + 1}/$maxAttempts 次失败: ${e.message}")
+                if (attempt < maxAttempts - 1) {
+                    delay(backoff)
+                    backoff *= 2
+                }
+            }
+        }
+        throw lastErr ?: IOException("retryIO exhausted")
+    }
 
     /**
      * 拉取 PC 端应用库。
@@ -741,6 +780,48 @@ object LauncherRepository {
     // 文件传输(file)端点
     // ════════════════════════════════════════════════════════════════
 
+    /**
+     * 文件传输失败原因分类。UI 据此决定是否提供"重试"按钮:
+     * NETWORK_ERROR / HASH_MISMATCH / SERVER_ERROR 可重试;
+     * NOT_PAIRED / PATH_INVALID / TOO_LARGE 不可重试。
+     */
+    enum class FailureReason {
+        NOT_PAIRED,
+        PATH_INVALID,
+        HASH_MISMATCH,
+        SERVER_ERROR,
+        NETWORK_ERROR,
+        TOO_LARGE,
+        UNKNOWN,
+    }
+
+    /**
+     * 文件传输结果。
+     * - [UploadSuccess]: 上传成功,serverHash 为服务端回写的 SHA-256(若有)
+     * - [DownloadSuccess]: 下载成功,verified=true 表示已通过 hash 比对
+     * - [Failed]: 失败,reason 给出结构化分类,message 用于 UI 显示
+     */
+    sealed class FileTransferResult {
+        data class UploadSuccess(val serverHash: String?) : FileTransferResult()
+        data class DownloadSuccess(val data: ByteArray, val verified: Boolean) : FileTransferResult()
+        data class Failed(val reason: FailureReason, val message: String) : FileTransferResult()
+    }
+
+    /** 在 retryIO 内抛出的"非网络"中止异常(4xx/5xx),让 retryIO 不重试直接结束。 */
+    private class HashVerifyAbortException(
+        val reason: FailureReason,
+        message: String,
+    ) : RuntimeException(message)
+
+    /** 读取 HttpURLConnection 响应体(200 走 inputStream,否则走 errorStream;失败返回空串)。 */
+    private fun HttpURLConnection.readRespBody(): String =
+        try {
+            (if (responseCode == 200) inputStream else errorStream)
+                ?.bufferedReader()?.use { it.readText() } ?: ""
+        } catch (e: Exception) {
+            ""
+        }
+
     /** 文件条目(用于文件传输页列表) */
     data class FileEntry(
         val name: String,
@@ -802,33 +883,134 @@ object LauncherRepository {
             }
         }
 
-    /** 下载文件字节流 */
-    suspend fun downloadFile(serverAddr: String, path: String, pubkey: String): ByteArray? =
+    /**
+     * 拉取 PC 端文件 SHA-256(用于上传后/下载前比对完整性)。
+     * @return hex 字符串;失败返回 null(不阻断主流程)
+     */
+    suspend fun fetchFileHash(serverAddr: String, path: String, pubkey: String): String? =
         withContext(Dispatchers.IO) {
-            val url = "${httpBaseUrl(serverAddr)}/file/download?path=${encodeParam(path)}&pubkey=${encodeParam(pubkey)}"
+            val url = "${httpBaseUrl(serverAddr)}/file/hash?path=${encodeParam(path)}&pubkey=${encodeParam(pubkey)}"
             try {
+                retryIO {
+                    val conn = (URL(url).openConnection() as HttpURLConnection).apply {
+                        connectTimeout = CONNECT_TIMEOUT_MS
+                        readTimeout = READ_TIMEOUT_MS
+                        useCaches = false
+                    }
+                    try {
+                        if (conn.responseCode == 200) {
+                            JSONObject(conn.inputStream.bufferedReader().use { it.readText() })
+                                .optString("hash").takeIf { it.isNotBlank() }
+                        } else {
+                            Log.w(TAG, "fetchFileHash HTTP ${conn.responseCode}")
+                            null
+                        }
+                    } finally {
+                        conn.disconnect()
+                    }
+                }
+            } catch (e: IOException) {
+                Log.w(TAG, "fetchFileHash 重试用尽: ${e.message}")
+                null
+            }
+        }
+
+    /** 下载文件字节流(向后兼容入口,无 hash 校验)。新代码应优先 [downloadFileVerified]。 */
+    suspend fun downloadFile(serverAddr: String, path: String, pubkey: String): ByteArray? =
+        when (val r = downloadFileVerified(serverAddr, path, pubkey)) {
+            is FileTransferResult.DownloadSuccess -> r.data
+            else -> null
+        }
+
+    /**
+     * 下载文件并做完整性校验:
+     * 1. /file/hash 拉取服务端 SHA-256(retryIO 抗网络抖动)
+     * 2. 下载字节流(retryIO)
+     * 3. 本地计算 SHA-256 比对,不一致返回 HASH_MISMATCH(可重试)
+     */
+    suspend fun downloadFileVerified(
+        serverAddr: String,
+        path: String,
+        pubkey: String,
+    ): FileTransferResult = withContext(Dispatchers.IO) {
+        val expectedHash = fetchFileHash(serverAddr, path, pubkey)
+        val data: ByteArray = try {
+            retryIO {
+                val url = "${httpBaseUrl(serverAddr)}/file/download?path=${encodeParam(path)}&pubkey=${encodeParam(pubkey)}"
                 val conn = (URL(url).openConnection() as HttpURLConnection).apply {
                     connectTimeout = CONNECT_TIMEOUT_MS
                     readTimeout = FILE_READ_TIMEOUT_MS
                 }
                 try {
-                    if (conn.responseCode == 200) {
-                        conn.inputStream.use { it.readBytes() }
-                    } else null
+                    val code = conn.responseCode
+                    when {
+                        code == 200 -> conn.inputStream.use { it.readBytes() }
+                        code == 403 -> throw HashVerifyAbortException(
+                            FailureReason.NOT_PAIRED, "未配对,无法访问文件",
+                        )
+                        code == 400 -> throw HashVerifyAbortException(
+                            FailureReason.PATH_INVALID, "路径无效: ${conn.readRespBody()}",
+                        )
+                        code in 500..599 -> throw HashVerifyAbortException(
+                            FailureReason.SERVER_ERROR, "服务端错误 $code",
+                        )
+                        else -> throw HashVerifyAbortException(
+                            FailureReason.UNKNOWN, "下载失败 HTTP $code",
+                        )
+                    }
                 } finally {
                     conn.disconnect()
                 }
-            } catch (e: Exception) {
-                Log.w(TAG, "downloadFile 失败: ${e.message}")
-                null
             }
+        } catch (e: HashVerifyAbortException) {
+            return@withContext FileTransferResult.Failed(e.reason, e.message ?: "")
+        } catch (e: IOException) {
+            Log.w(TAG, "downloadFileVerified 重试用尽: ${e.message}")
+            return@withContext FileTransferResult.Failed(
+                FailureReason.NETWORK_ERROR, "网络错误: ${e.message ?: "下载失败"}",
+            )
         }
 
-    /** 上传文件字节流到 PC 指定路径 */
-    suspend fun uploadFile(serverAddr: String, path: String, data: ByteArray, pubkey: String): Boolean =
-        withContext(Dispatchers.IO) {
-            val url = "${httpBaseUrl(serverAddr)}/file/upload?path=${encodeParam(path)}&pubkey=${encodeParam(pubkey)}"
-            try {
+        if (expectedHash != null) {
+            val actual = sha256Hex(data)
+            if (actual != expectedHash) {
+                Log.w(TAG, "download hash mismatch: expected=$expectedHash actual=$actual")
+                return@withContext FileTransferResult.Failed(
+                    FailureReason.HASH_MISMATCH, "完整性校验失败:本地与 PC 端 hash 不一致",
+                )
+            }
+            FileTransferResult.DownloadSuccess(data, verified = true)
+        } else {
+            FileTransferResult.DownloadSuccess(data, verified = false)
+        }
+    }
+
+    /** 上传文件(向后兼容入口,无 hash 校验)。新代码应优先 [uploadFileVerified]。 */
+    suspend fun uploadFile(
+        serverAddr: String,
+        path: String,
+        data: ByteArray,
+        pubkey: String,
+    ): Boolean = uploadFileVerified(serverAddr, path, data, pubkey) is FileTransferResult.UploadSuccess
+
+    /**
+     * 上传文件并做完整性校验:
+     * 1. 本地计算 SHA-256,随 query 参数 sha256=<hex> 发送
+     * 2. 服务端写入后重算文件 hash 与之比对:一致 200;不一致删除损坏文件并返回 460
+     * 3. 网络层错误经 retryIO 重试;HTTP 业务错误(403/400/413/460/5xx)不重试
+     */
+    suspend fun uploadFileVerified(
+        serverAddr: String,
+        path: String,
+        data: ByteArray,
+        pubkey: String,
+    ): FileTransferResult = withContext(Dispatchers.IO) {
+        val localHash = sha256Hex(data)
+        val url = "${httpBaseUrl(serverAddr)}/file/upload?path=${encodeParam(path)}" +
+            "&pubkey=${encodeParam(pubkey)}&sha256=${encodeParam(localHash)}"
+
+        val (code, respBody) = try {
+            retryIO<Pair<Int, String>> {
                 val conn = (URL(url).openConnection() as HttpURLConnection).apply {
                     connectTimeout = CONNECT_TIMEOUT_MS
                     readTimeout = FILE_READ_TIMEOUT_MS
@@ -839,15 +1021,40 @@ object LauncherRepository {
                 }
                 try {
                     conn.outputStream.use { it.write(data) }
-                    conn.responseCode == 200
+                    Pair(conn.responseCode, conn.readRespBody())
                 } finally {
                     conn.disconnect()
                 }
-            } catch (e: Exception) {
-                Log.w(TAG, "uploadFile 失败: ${e.message}")
-                false
             }
+        } catch (e: HashVerifyAbortException) {
+            return@withContext FileTransferResult.Failed(e.reason, e.message ?: "")
+        } catch (e: IOException) {
+            Log.w(TAG, "uploadFileVerified 重试用尽: ${e.message}")
+            return@withContext FileTransferResult.Failed(
+                FailureReason.NETWORK_ERROR, "网络错误: ${e.message ?: "上传失败"}",
+            )
         }
+
+        when {
+            code == 200 -> {
+                val hash = try {
+                    JSONObject(respBody).optString("hash")
+                } catch (e: Exception) {
+                    ""
+                }
+                FileTransferResult.UploadSuccess(hash.takeIf { it.isNotBlank() })
+            }
+            code == 403 -> FileTransferResult.Failed(FailureReason.NOT_PAIRED, "未配对,无法写入文件")
+            code == 460 -> FileTransferResult.Failed(
+                FailureReason.HASH_MISMATCH,
+                "完整性校验失败:PC 端写入后 hash 与上传前不一致(可能传输损坏)",
+            )
+            code == 413 -> FileTransferResult.Failed(FailureReason.TOO_LARGE, "文件过大,超出服务端上传上限")
+            code == 400 -> FileTransferResult.Failed(FailureReason.PATH_INVALID, "路径无效: $respBody")
+            code in 500..599 -> FileTransferResult.Failed(FailureReason.SERVER_ERROR, "服务端错误 $code")
+            else -> FileTransferResult.Failed(FailureReason.UNKNOWN, "上传失败 HTTP $code")
+        }
+    }
 
     /** 新建目录 */
     suspend fun mkdir(serverAddr: String, path: String, pubkey: String): Boolean =

@@ -13,14 +13,14 @@
         "layoutSnapshot": {
           "version": 1,
           "contentHeight": 901,
-          "viewportWidth": 799,
+          "viewportWidth": 785,
           "sourceHash": "fnv1a-c660a821",
-          "measuredAt": 1785782914673
+          "measuredAt": 1785993128426
         },
         "deviceType": "freeSize",
         "windowSize": {
-          "width": 799,
-          "height": 888
+          "width": 785,
+          "height": 1063
         }
       },
       "devMetadata": {
@@ -34,30 +34,6 @@
       }
     },
     {
-      "id": "page-android-touchpad-portrait",
-      "title": "安卓 · 触控板 竖屏",
-      "type": "page",
-      "version": 1,
-      "createdAt": 1785705600000,
-      "canvasData": {
-        "x": 433,
-        "y": 289,
-        "group": 0,
-        "deviceType": "desktop",
-        "layoutSnapshot": {
-          "version": 1,
-          "contentHeight": 901,
-          "viewportWidth": 1440,
-          "sourceHash": "fnv1a-8543b489",
-          "measuredAt": 1785913046655
-        }
-      },
-      "devMetadata": {
-        "htmlSrc": "pages/android-touchpad-portrait.html",
-        "interactions": []
-      }
-    },
-    {
       "id": "page-android-touchpad-portrait-quicklaunch",
       "title": "安卓 · 触控板 竖屏 - 快捷启动",
       "type": "page",
@@ -67,13 +43,17 @@
         "x": 433,
         "y": 289,
         "group": 0,
-        "deviceType": "desktop",
+        "deviceType": "freeSize",
+        "windowSize": {
+          "width": 799,
+          "height": 860
+        },
         "layoutSnapshot": {
           "version": 1,
-          "contentHeight": 901,
-          "viewportWidth": 1440,
+          "contentHeight": 1187,
+          "viewportWidth": 799,
           "sourceHash": "fnv1a-d58d26c4",
-          "measuredAt": 1785913046655
+          "measuredAt": 1785956538883
         }
       },
       "devMetadata": {
@@ -85,7 +65,7 @@
           },
           {
             "domId": "quick-launch-btn",
-            "targetPageId": "page-android-quicklaunch-desktop",
+            "targetPageId": "page-android-quicklaunch-desktop-v2",
             "transitionLabel": "快捷启动"
           },
           {
@@ -288,23 +268,166 @@
         "x": 1044,
         "y": 289,
         "group": 0,
-        "deviceType": "desktop",
+        "deviceType": "freeSize",
+        "windowSize": {
+          "width": 799,
+          "height": 860
+        },
         "layoutSnapshot": {
           "version": 1,
           "contentHeight": 901,
-          "viewportWidth": 1440,
-          "sourceHash": "fnv1a-2e5abb62",
-          "measuredAt": 1785916102357
+          "viewportWidth": 799,
+          "sourceHash": "fnv1a-5a79add2",
+          "measuredAt": 1785993128426
         }
       },
       "devMetadata": {
         "htmlSrc": "pages/android-quicklaunch-desktop.html",
+        "interactions": []
+      }
+    },
+    {
+      "id": "page-android-quicklaunch-desktop-v2",
+      "title": "安卓 · 快捷启动桌面 v2(自由布局)",
+      "type": "page",
+      "version": 1,
+      "createdAt": 1786022400000,
+      "canvasData": {
+        "x": 1844,
+        "y": 289,
+        "group": 0,
+        "deviceType": "freeSize",
+        "windowSize": {
+          "width": 799,
+          "height": 860
+        },
+        "layoutSnapshot": {
+          "version": 1,
+          "contentHeight": 901,
+          "viewportWidth": 799,
+          "sourceHash": "fnv1a-2f329898",
+          "measuredAt": 1786076903783
+        }
+      },
+      "devMetadata": {
+        "htmlSrc": "pages/android-quicklaunch-desktop-v2.html",
         "interactions": [
           {
             "domId": "back-btn",
             "targetPageId": "page-android-touchpad-portrait-quicklaunch",
             "hideEdge": true,
             "transitionLabel": "返回触控板"
+          }
+        ]
+      }
+    },
+    {
+      "id": "page-android-touchpad-portrait-v2",
+      "title": "安卓 · 触控板 竖屏 v2(代码同步)",
+      "type": "page",
+      "version": 1,
+      "createdAt": 1785900000000,
+      "canvasData": {
+        "x": 1452,
+        "y": 768,
+        "group": 0,
+        "deviceType": "freeSize",
+        "layoutSnapshot": {
+          "version": 1,
+          "contentHeight": 901,
+          "viewportWidth": 621,
+          "sourceHash": "fnv1a-d7f53dd8",
+          "measuredAt": 1785993128426
+        },
+        "windowSize": {
+          "width": 621,
+          "height": 898
+        }
+      },
+      "devMetadata": {
+        "htmlSrc": "pages/android-touchpad-portrait-v2.html",
+        "interactions": [
+          {
+            "domId": "back-btn",
+            "targetPageId": "page-android-connect"
+          },
+          {
+            "domId": "rotate-btn",
+            "targetPageId": "page-android-touchpad-landscape-v2"
+          }
+        ]
+      }
+    },
+    {
+      "id": "page-android-touchpad-landscape-v2",
+      "title": "安卓 · 触控板 横屏 v2(代码同步)",
+      "type": "page",
+      "version": 1,
+      "createdAt": 1785900001000,
+      "canvasData": {
+        "x": 1900,
+        "y": -96,
+        "group": 0,
+        "deviceType": "freeSize",
+        "layoutSnapshot": {
+          "version": 1,
+          "contentHeight": 901,
+          "viewportWidth": 1416,
+          "sourceHash": "fnv1a-846f75fe",
+          "measuredAt": 1785993128426
+        },
+        "windowSize": {
+          "width": 1416,
+          "height": 929
+        }
+      },
+      "devMetadata": {
+        "htmlSrc": "pages/android-touchpad-landscape-v2.html",
+        "interactions": [
+          {
+            "domId": "back-btn",
+            "targetPageId": "page-android-connect"
+          },
+          {
+            "domId": "rotate-btn",
+            "targetPageId": "page-android-touchpad-portrait-v2"
+          }
+        ]
+      }
+    },
+    {
+      "id": "page-android-touchpad-portrait-v3",
+      "title": "安卓 · 触控板 竖屏 v3(左右分栏)",
+      "type": "page",
+      "version": 1,
+      "createdAt": 1785990000000,
+      "canvasData": {
+        "x": 2600,
+        "y": 289,
+        "group": 0,
+        "deviceType": "freeSize",
+        "windowSize": {
+          "width": 621,
+          "height": 898
+        },
+        "layoutSnapshot": {
+          "version": 1,
+          "contentHeight": 901,
+          "viewportWidth": 621,
+          "sourceHash": "fnv1a-bf8b67dd",
+          "measuredAt": 1786076903783
+        }
+      },
+      "devMetadata": {
+        "htmlSrc": "pages/android-touchpad-portrait-v3.html",
+        "interactions": [
+          {
+            "domId": "back-btn",
+            "targetPageId": "page-android-connect"
+          },
+          {
+            "domId": "rotate-btn",
+            "targetPageId": "page-android-touchpad-landscape-v2"
           }
         ]
       }
@@ -321,7 +444,7 @@
       "path": "c:\\Users\\62744\\.trae-cn\\design_libraries\\dl_builtin_trae_work",
       "versionSource": "metadata.json"
     },
-    "showEdge": false,
+    "showEdge": true,
     "visualEditorEnabled": false
   }
 }

@@ -22,6 +22,21 @@ const RUN_REGISTRY_KEY: &str = "Software\\Microsoft\\Windows\\CurrentVersion\\Ru
 /// 注册表中开机启动项的名称
 const AUTOSTART_REG_NAME: &str = "MeowMicConsole";
 
+/// Windows 下隐藏子进程的命令行窗口(CREATE_NO_WINDOW = 0x08000000)。
+/// 控制台程序(netsh/powershell/server 等)若不加此标志,从 GUI 应用启动时会闪出黑色 cmd 窗口。
+fn hide_console_window(cmd: &mut Command) {
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = cmd;
+    }
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct AppConfig {
     pub base_port: u16,
@@ -262,13 +277,7 @@ impl ServiceManager {
         cmd.stdin(Stdio::null());
 
         // Windows 下隐藏 meowmic-server 子进程的命令行窗口
-        // CREATE_NO_WINDOW = 0x08000000,避免控制台程序弹出黑色 cmd 窗口
-        #[cfg(target_os = "windows")]
-        {
-            use std::os::windows::process::CommandExt;
-            const CREATE_NO_WINDOW: u32 = 0x08000000;
-            cmd.creation_flags(CREATE_NO_WINDOW);
-        }
+        hide_console_window(&mut cmd);
 
         match cmd.spawn() {
             Ok(mut child) => {
@@ -958,8 +967,11 @@ fn hide_main_window(app: tauri::AppHandle) -> Result<(), String> {
 fn check_firewall_rule() -> Result<bool, String> {
     #[cfg(target_os = "windows")]
     {
-        let output = Command::new("netsh")
-            .args(["advfirewall", "firewall", "show", "rule", "name=MeowMic Server"])
+        let mut cmd = Command::new("netsh");
+        cmd.args(["advfirewall", "firewall", "show", "rule", "name=MeowMic Server"]);
+        // 前台每 30s 轮询一次,必须隐藏窗口,否则会反复闪出 cmd 黑框
+        hide_console_window(&mut cmd);
+        let output = cmd
             .output()
             .map_err(|e| format!("执行 netsh 失败: {}", e))?;
         // netsh show rule 在规则不存在时退出码非 0
@@ -1012,18 +1024,19 @@ fn fix_firewall_rule() -> Result<String, String> {
         fs::write(&bat_path, bat_content).map_err(|e| format!("写临时 bat 失败: {}", e))?;
 
         // 用 PowerShell Start-Process -Verb RunAs 提权运行 bat(弹 UAC)
+        // -WindowStyle Hidden 隐藏提权后 bat 的控制台窗口
         let bat_str = bat_path.to_string_lossy().to_string();
         let ps_cmd = format!(
-            "Start-Process -FilePath '{}' -Verb RunAs -Wait",
+            "Start-Process -FilePath '{}' -Verb RunAs -Wait -WindowStyle Hidden",
             bat_str
         );
-        let output = Command::new("powershell")
-            .args(["-NoProfile", "-Command", &ps_cmd])
-            .output()
-            .map_err(|e| {
-                let _ = fs::remove_file(&bat_path);
-                format!("启动 PowerShell 失败: {}", e)
-            })?;
+        let mut cmd = Command::new("powershell");
+        cmd.args(["-NoProfile", "-Command", &ps_cmd]);
+        hide_console_window(&mut cmd);
+        let output = cmd.output().map_err(|e| {
+            let _ = fs::remove_file(&bat_path);
+            format!("启动 PowerShell 失败: {}", e)
+        })?;
 
         let _ = fs::remove_file(&bat_path);
 

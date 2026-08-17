@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>MeowMic 快捷启动</title>
+    <title>MeowMic 快捷启动 · 自由布局</title>
     <style id="theme-vars">
 /**
  * TraeWork design library tokens
@@ -785,6 +785,7 @@ pre {
             transform: scale(0.92);
         }
         .quick-cell__icon {
+            position: relative;
             width: 48px;
             height: 48px;
             display: flex;
@@ -840,6 +841,107 @@ pre {
             opacity: 0.7;
             color: var(--icon-brand);
         }
+
+        /* ── 类型徽标:脚本 / 网站 / Obsidian ── */
+        .quick-cell--script .quick-cell__icon::after,
+        .quick-cell--website .quick-cell__icon::after,
+        .quick-cell--obsidian .quick-cell__icon::after {
+            content: '';
+            position: absolute;
+            top: 3px;
+            right: 3px;
+            width: 10px;
+            height: 10px;
+            border-radius: var(--radius-full);
+            z-index: 1;
+        }
+        .quick-cell--script .quick-cell__icon::after {
+            background: var(--bg-brand);
+            border: 1.5px solid var(--bg-base-default);
+        }
+        .quick-cell--website .quick-cell__icon::after {
+            background: var(--bg-overlay-l2);
+            border: 1.5px solid var(--border-neutral-l2);
+        }
+        .quick-cell--obsidian .quick-cell__icon::after {
+            background: var(--text-secondary);
+            border: 1.5px solid var(--bg-base-default);
+        }
+        /* 类型图标颜色区分 */
+        .quick-cell--script .quick-cell__icon i,
+        .quick-cell--script .quick-cell__icon svg { color: var(--icon-brand); }
+        .quick-cell--website .quick-cell__icon i,
+        .quick-cell--website .quick-cell__icon svg { color: var(--accent-blue); }
+        .quick-cell--obsidian .quick-cell__icon i,
+        .quick-cell--obsidian .quick-cell__icon svg { color: var(--accent-violet); }
+
+        /* ── 拖拽状态 ── */
+        .quick-cell[draggable="true"] { cursor: grab; }
+        .quick-cell[draggable="true"]:active {
+            cursor: grabbing;
+            opacity: 0.6;
+        }
+        .quick-cell--empty.is-drop-target .quick-cell__icon {
+            border-color: var(--border-brand);
+            background: var(--bg-brand-popup);
+        }
+        .quick-cell--empty.is-drop-target .quick-cell__icon i,
+        .quick-cell--empty.is-drop-target .quick-cell__icon svg {
+            color: var(--icon-brand);
+            opacity: 0.8;
+        }
+
+        /* ── 拖到边缘新建页面 ── */
+        .page-add-new {
+            flex: 0 0 80px;
+            scroll-snap-align: end;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .page-add-new__inner {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 6px;
+            padding: 16px;
+            border: 2px dashed var(--border-neutral-l2);
+            border-radius: var(--radius-12);
+            color: var(--text-tertiary);
+            cursor: pointer;
+            transition: border-color 0.15s, color 0.15s, background 0.15s;
+        }
+        .page-add-new__inner i,
+        .page-add-new__inner svg {
+            width: 24px;
+            height: 24px;
+        }
+        .page-add-new__inner span {
+            font-size: 10px;
+            text-align: center;
+            white-space: nowrap;
+        }
+        .page-add-new:hover .page-add-new__inner {
+            border-color: var(--border-brand);
+            color: var(--icon-brand);
+        }
+        .page-add-new.is-drop-target .page-add-new__inner {
+            border-color: var(--border-brand);
+            background: var(--bg-brand-popup);
+        }
+
+        /* ── 类型选择器色点 ── */
+        .mm-type-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: var(--radius-full);
+            flex-shrink: 0;
+            margin-left: auto;
+        }
+        .mm-type-dot--app { background: var(--icon-tertiary); }
+        .mm-type-dot--script { background: var(--bg-brand); }
+        .mm-type-dot--website { background: var(--bg-overlay-l2); border: 1px solid var(--border-neutral-l2); }
+        .mm-type-dot--obsidian { background: var(--text-secondary); }
 
         /* 页面指示器 */
         .page-indicator {
@@ -1307,9 +1409,33 @@ pre {
                     <button class="mm-icon-btn" id="editBtn" aria-label="编辑" title="编辑">
                         <i data-lucide="pencil" class="icon"></i>
                     </button>
-                    <button class="mm-icon-btn" id="addBtn" aria-label="添加" title="添加">
-                        <i data-lucide="plus" class="icon"></i>
-                    </button>
+                    <div style="position: relative;">
+                        <button class="mm-icon-btn" id="addBtn" aria-label="添加" title="添加">
+                            <i data-lucide="plus" class="icon"></i>
+                        </button>
+                        <div class="mm-dropdown" id="addTypeMenu" style="display: none;">
+                            <div class="mm-dropdown-item" data-type="app">
+                                <i data-lucide="layout-grid" style="width: 14px; height: 14px;"></i>
+                                <span>应用</span>
+                                <span class="mm-type-dot mm-type-dot--app"></span>
+                            </div>
+                            <div class="mm-dropdown-item" data-type="script">
+                                <i data-lucide="terminal" style="width: 14px; height: 14px;"></i>
+                                <span>脚本</span>
+                                <span class="mm-type-dot mm-type-dot--script"></span>
+                            </div>
+                            <div class="mm-dropdown-item" data-type="website">
+                                <i data-lucide="globe" style="width: 14px; height: 14px;"></i>
+                                <span>网站</span>
+                                <span class="mm-type-dot mm-type-dot--website"></span>
+                            </div>
+                            <div class="mm-dropdown-item" data-type="obsidian">
+                                <i data-lucide="book-open" style="width: 14px; height: 14px;"></i>
+                                <span>Obsidian</span>
+                                <span class="mm-type-dot mm-type-dot--obsidian"></span>
+                            </div>
+                        </div>
+                    </div>
                     <button class="mm-icon-btn" id="lockBtn" aria-label="锁定" title="锁定" aria-pressed="false">
                         <i data-lucide="lock-open" class="icon" id="lockIcon"></i>
                     </button>
@@ -1320,139 +1446,147 @@ pre {
                     <div class="pages-scroll no-scrollbar flex-1" id="pagesScroll" style="min-height: 0;">
                         <div class="pages-track">
 
-                            <!-- 第 1 页 -->
+                            <!-- 第 1 页 · 自由布局 -->
                             <div class="page-grid">
-                                <button class="quick-cell"><div class="quick-cell__icon"><i data-lucide="browser"></i></div><span class="quick-cell__name">Chrome</span></button>
-                                <button class="quick-cell"><div class="quick-cell__icon"><i data-lucide="code"></i></div><span class="quick-cell__name">VS Code</span></button>
-                                <button class="quick-cell"><div class="quick-cell__icon"><i data-lucide="terminal"></i></div><span class="quick-cell__name">终端</span></button>
-                                <button class="quick-cell"><div class="quick-cell__icon"><i data-lucide="folder"></i></div><span class="quick-cell__name">文件管理器</span></button>
-                                <button class="quick-cell"><div class="quick-cell__icon"><i data-lucide="settings"></i></div><span class="quick-cell__name">设置</span></button>
+                                <button class="quick-cell" style="grid-column: 1; grid-row: 1;" draggable="true"><div class="quick-cell__icon"><i data-lucide="browser"></i></div><span class="quick-cell__name">Chrome</span></button>
+                                <button class="quick-cell quick-cell--empty" style="grid-column: 2; grid-row: 1;"><div class="quick-cell__icon"><i data-lucide="plus"></i></div><span class="quick-cell__name">添加</span></button>
+                                <button class="quick-cell" style="grid-column: 3; grid-row: 1;" draggable="true"><div class="quick-cell__icon"><i data-lucide="code"></i></div><span class="quick-cell__name">VS Code</span></button>
+                                <button class="quick-cell quick-cell--empty" style="grid-column: 4; grid-row: 1;"><div class="quick-cell__icon"><i data-lucide="plus"></i></div><span class="quick-cell__name">添加</span></button>
+                                <button class="quick-cell quick-cell--script" style="grid-column: 5; grid-row: 1;" draggable="true"><div class="quick-cell__icon"><i data-lucide="file-code"></i></div><span class="quick-cell__name">清理脚本</span></button>
 
-                                <button class="quick-cell"><div class="quick-cell__icon"><i data-lucide="music"></i></div><span class="quick-cell__name">网易云音乐</span></button>
-                                <button class="quick-cell"><div class="quick-cell__icon"><i data-lucide="message-circle"></i></div><span class="quick-cell__name">微信</span></button>
-                                <button class="quick-cell"><div class="quick-cell__icon"><i data-lucide="send"></i></div><span class="quick-cell__name">QQ</span></button>
-                                <button class="quick-cell"><div class="quick-cell__icon"><i data-lucide="gamepad-2"></i></div><span class="quick-cell__name">Steam</span></button>
-                                <button class="quick-cell"><div class="quick-cell__icon"><i data-lucide="music-2"></i></div><span class="quick-cell__name">Spotify</span></button>
+                                <button class="quick-cell quick-cell--website" style="grid-column: 1; grid-row: 2;" draggable="true"><div class="quick-cell__icon"><i data-lucide="globe"></i></div><span class="quick-cell__name">GitHub</span></button>
+                                <button class="quick-cell quick-cell--empty" style="grid-column: 2; grid-row: 2;"><div class="quick-cell__icon"><i data-lucide="plus"></i></div><span class="quick-cell__name">添加</span></button>
+                                <button class="quick-cell" style="grid-column: 3; grid-row: 2;" draggable="true"><div class="quick-cell__icon"><i data-lucide="terminal"></i></div><span class="quick-cell__name">终端</span></button>
+                                <button class="quick-cell" style="grid-column: 4; grid-row: 2;" draggable="true"><div class="quick-cell__icon"><i data-lucide="folder"></i></div><span class="quick-cell__name">文件管理器</span></button>
+                                <button class="quick-cell quick-cell--empty" style="grid-column: 5; grid-row: 2;"><div class="quick-cell__icon"><i data-lucide="plus"></i></div><span class="quick-cell__name">添加</span></button>
 
-                                <button class="quick-cell"><div class="quick-cell__icon"><i data-lucide="calculator"></i></div><span class="quick-cell__name">计算器</span></button>
-                                <button class="quick-cell"><div class="quick-cell__icon"><i data-lucide="file-text"></i></div><span class="quick-cell__name">记事本</span></button>
-                                <button class="quick-cell"><div class="quick-cell__icon"><i data-lucide="camera"></i></div><span class="quick-cell__name">截图</span></button>
-                                <button class="quick-cell"><div class="quick-cell__icon"><i data-lucide="video"></i></div><span class="quick-cell__name">录屏</span></button>
-                                <button class="quick-cell"><div class="quick-cell__icon"><i data-lucide="palette"></i></div><span class="quick-cell__name">画图</span></button>
+                                <button class="quick-cell quick-cell--empty" style="grid-column: 1; grid-row: 3;"><div class="quick-cell__icon"><i data-lucide="plus"></i></div><span class="quick-cell__name">添加</span></button>
+                                <button class="quick-cell quick-cell--obsidian" style="grid-column: 2; grid-row: 3;" draggable="true"><div class="quick-cell__icon"><i data-lucide="book-open"></i></div><span class="quick-cell__name">项目笔记</span></button>
+                                <button class="quick-cell" style="grid-column: 3; grid-row: 3;" draggable="true"><div class="quick-cell__icon"><i data-lucide="settings"></i></div><span class="quick-cell__name">设置</span></button>
+                                <button class="quick-cell quick-cell--empty" style="grid-column: 4; grid-row: 3;"><div class="quick-cell__icon"><i data-lucide="plus"></i></div><span class="quick-cell__name">添加</span></button>
+                                <button class="quick-cell quick-cell--website" style="grid-column: 5; grid-row: 3;" draggable="true"><div class="quick-cell__icon"><i data-lucide="globe"></i></div><span class="quick-cell__name">YouTube</span></button>
 
-                                <button class="quick-cell"><div class="quick-cell__icon"><i data-lucide="mail"></i></div><span class="quick-cell__name">邮件</span></button>
-                                <button class="quick-cell"><div class="quick-cell__icon"><i data-lucide="calendar"></i></div><span class="quick-cell__name">日历</span></button>
-                                <button class="quick-cell"><div class="quick-cell__icon"><i data-lucide="clock"></i></div><span class="quick-cell__name">时钟</span></button>
-                                <button class="quick-cell"><div class="quick-cell__icon"><i data-lucide="cloud-sun"></i></div><span class="quick-cell__name">天气</span></button>
-                                <button class="quick-cell"><div class="quick-cell__icon"><i data-lucide="map"></i></div><span class="quick-cell__name">地图</span></button>
+                                <button class="quick-cell quick-cell--script" style="grid-column: 1; grid-row: 4;" draggable="true"><div class="quick-cell__icon"><i data-lucide="terminal"></i></div><span class="quick-cell__name">构建脚本</span></button>
+                                <button class="quick-cell" style="grid-column: 2; grid-row: 4;" draggable="true"><div class="quick-cell__icon"><i data-lucide="message-circle"></i></div><span class="quick-cell__name">微信</span></button>
+                                <button class="quick-cell quick-cell--empty" style="grid-column: 3; grid-row: 4;"><div class="quick-cell__icon"><i data-lucide="plus"></i></div><span class="quick-cell__name">添加</span></button>
+                                <button class="quick-cell quick-cell--empty" style="grid-column: 4; grid-row: 4;"><div class="quick-cell__icon"><i data-lucide="plus"></i></div><span class="quick-cell__name">添加</span></button>
+                                <button class="quick-cell quick-cell--obsidian" style="grid-column: 5; grid-row: 4;" draggable="true"><div class="quick-cell__icon"><i data-lucide="sticky-note"></i></div><span class="quick-cell__name">每日日志</span></button>
 
-                                <button class="quick-cell"><div class="quick-cell__icon"><i data-lucide="image"></i></div><span class="quick-cell__name">相册</span></button>
-                                <button class="quick-cell"><div class="quick-cell__icon"><i data-lucide="film"></i></div><span class="quick-cell__name">视频</span></button>
-                                <button class="quick-cell"><div class="quick-cell__icon"><i data-lucide="music-3"></i></div><span class="quick-cell__name">音乐</span></button>
-                                <button class="quick-cell"><div class="quick-cell__icon"><i data-lucide="download"></i></div><span class="quick-cell__name">下载</span></button>
-                                <button class="quick-cell"><div class="quick-cell__icon"><i data-lucide="trash-2"></i></div><span class="quick-cell__name">回收站</span></button>
+                                <button class="quick-cell quick-cell--empty" style="grid-column: 1; grid-row: 5;"><div class="quick-cell__icon"><i data-lucide="plus"></i></div><span class="quick-cell__name">添加</span></button>
+                                <button class="quick-cell quick-cell--empty" style="grid-column: 2; grid-row: 5;"><div class="quick-cell__icon"><i data-lucide="plus"></i></div><span class="quick-cell__name">添加</span></button>
+                                <button class="quick-cell" style="grid-column: 3; grid-row: 5;" draggable="true"><div class="quick-cell__icon"><i data-lucide="send"></i></div><span class="quick-cell__name">QQ</span></button>
+                                <button class="quick-cell quick-cell--empty" style="grid-column: 4; grid-row: 5;"><div class="quick-cell__icon"><i data-lucide="plus"></i></div><span class="quick-cell__name">添加</span></button>
+                                <button class="quick-cell quick-cell--empty" style="grid-column: 5; grid-row: 5;"><div class="quick-cell__icon"><i data-lucide="plus"></i></div><span class="quick-cell__name">添加</span></button>
 
-                                <button class="quick-cell quick-cell--empty"><div class="quick-cell__icon"><i data-lucide="plus"></i></div><span class="quick-cell__name">添加</span></button>
-                                <button class="quick-cell quick-cell--empty"><div class="quick-cell__icon"><i data-lucide="plus"></i></div><span class="quick-cell__name">添加</span></button>
-                                <button class="quick-cell quick-cell--empty"><div class="quick-cell__icon"><i data-lucide="plus"></i></div><span class="quick-cell__name">添加</span></button>
-                                <button class="quick-cell quick-cell--empty"><div class="quick-cell__icon"><i data-lucide="plus"></i></div><span class="quick-cell__name">添加</span></button>
-                                <button class="quick-cell quick-cell--empty"><div class="quick-cell__icon"><i data-lucide="plus"></i></div><span class="quick-cell__name">添加</span></button>
+                                <button class="quick-cell quick-cell--empty" style="grid-column: 1; grid-row: 6;"><div class="quick-cell__icon"><i data-lucide="plus"></i></div><span class="quick-cell__name">添加</span></button>
+                                <button class="quick-cell quick-cell--empty" style="grid-column: 2; grid-row: 6;"><div class="quick-cell__icon"><i data-lucide="plus"></i></div><span class="quick-cell__name">添加</span></button>
+                                <button class="quick-cell quick-cell--empty" style="grid-column: 3; grid-row: 6;"><div class="quick-cell__icon"><i data-lucide="plus"></i></div><span class="quick-cell__name">添加</span></button>
+                                <button class="quick-cell quick-cell--empty" style="grid-column: 4; grid-row: 6;"><div class="quick-cell__icon"><i data-lucide="plus"></i></div><span class="quick-cell__name">添加</span></button>
+                                <button class="quick-cell quick-cell--empty" style="grid-column: 5; grid-row: 6;"><div class="quick-cell__icon"><i data-lucide="plus"></i></div><span class="quick-cell__name">添加</span></button>
 
-                                <button class="quick-cell quick-cell--empty"><div class="quick-cell__icon"><i data-lucide="plus"></i></div><span class="quick-cell__name">添加</span></button>
-                                <button class="quick-cell quick-cell--empty"><div class="quick-cell__icon"><i data-lucide="plus"></i></div><span class="quick-cell__name">添加</span></button>
-                                <button class="quick-cell quick-cell--empty"><div class="quick-cell__icon"><i data-lucide="plus"></i></div><span class="quick-cell__name">添加</span></button>
-                                <button class="quick-cell quick-cell--empty"><div class="quick-cell__icon"><i data-lucide="plus"></i></div><span class="quick-cell__name">添加</span></button>
-                                <button class="quick-cell quick-cell--empty"><div class="quick-cell__icon"><i data-lucide="plus"></i></div><span class="quick-cell__name">添加</span></button>
+                                <button class="quick-cell quick-cell--empty" style="grid-column: 1; grid-row: 7;"><div class="quick-cell__icon"><i data-lucide="plus"></i></div><span class="quick-cell__name">添加</span></button>
+                                <button class="quick-cell quick-cell--empty" style="grid-column: 2; grid-row: 7;"><div class="quick-cell__icon"><i data-lucide="plus"></i></div><span class="quick-cell__name">添加</span></button>
+                                <button class="quick-cell quick-cell--empty" style="grid-column: 3; grid-row: 7;"><div class="quick-cell__icon"><i data-lucide="plus"></i></div><span class="quick-cell__name">添加</span></button>
+                                <button class="quick-cell quick-cell--empty" style="grid-column: 4; grid-row: 7;"><div class="quick-cell__icon"><i data-lucide="plus"></i></div><span class="quick-cell__name">添加</span></button>
+                                <button class="quick-cell quick-cell--empty" style="grid-column: 5; grid-row: 7;"><div class="quick-cell__icon"><i data-lucide="plus"></i></div><span class="quick-cell__name">添加</span></button>
                             </div>
 
-                            <!-- 第 2 页 -->
+                            <!-- 第 2 页 · 自由布局 -->
                             <div class="page-grid">
-                                <button class="quick-cell"><div class="quick-cell__icon"><i data-lucide="file-text"></i></div><span class="quick-cell__name">Word</span></button>
-                                <button class="quick-cell"><div class="quick-cell__icon"><i data-lucide="table"></i></div><span class="quick-cell__name">Excel</span></button>
-                                <button class="quick-cell"><div class="quick-cell__icon"><i data-lucide="presentation"></i></div><span class="quick-cell__name">PPT</span></button>
-                                <button class="quick-cell"><div class="quick-cell__icon"><i data-lucide="notebook-pen"></i></div><span class="quick-cell__name">Notion</span></button>
-                                <button class="quick-cell"><div class="quick-cell__icon"><i data-lucide="pen-tool"></i></div><span class="quick-cell__name">Figma</span></button>
+                                <button class="quick-cell quick-cell--script" style="grid-column: 1; grid-row: 1;" draggable="true"><div class="quick-cell__icon"><i data-lucide="terminal"></i></div><span class="quick-cell__name">部署脚本</span></button>
+                                <button class="quick-cell quick-cell--empty" style="grid-column: 2; grid-row: 1;"><div class="quick-cell__icon"><i data-lucide="plus"></i></div><span class="quick-cell__name">添加</span></button>
+                                <button class="quick-cell quick-cell--website" style="grid-column: 3; grid-row: 1;" draggable="true"><div class="quick-cell__icon"><i data-lucide="browser"></i></div><span class="quick-cell__name">Google</span></button>
+                                <button class="quick-cell" style="grid-column: 4; grid-row: 1;" draggable="true"><div class="quick-cell__icon"><i data-lucide="notebook-pen"></i></div><span class="quick-cell__name">Notion</span></button>
+                                <button class="quick-cell quick-cell--empty" style="grid-column: 5; grid-row: 1;"><div class="quick-cell__icon"><i data-lucide="plus"></i></div><span class="quick-cell__name">添加</span></button>
 
-                                <button class="quick-cell"><div class="quick-cell__icon"><i data-lucide="image"></i></div><span class="quick-cell__name">Photoshop</span></button>
-                                <button class="quick-cell"><div class="quick-cell__icon"><i data-lucide="sparkles"></i></div><span class="quick-cell__name">Illustrator</span></button>
-                                <button class="quick-cell"><div class="quick-cell__icon"><i data-lucide="container"></i></div><span class="quick-cell__name">Docker</span></button>
-                                <button class="quick-cell"><div class="quick-cell__icon"><i data-lucide="git-branch"></i></div><span class="quick-cell__name">Git</span></button>
-                                <button class="quick-cell"><div class="quick-cell__icon"><i data-lucide="database"></i></div><span class="quick-cell__name">数据库</span></button>
+                                <button class="quick-cell quick-cell--empty" style="grid-column: 1; grid-row: 2;"><div class="quick-cell__icon"><i data-lucide="plus"></i></div><span class="quick-cell__name">添加</span></button>
+                                <button class="quick-cell quick-cell--obsidian" style="grid-column: 2; grid-row: 2;" draggable="true"><div class="quick-cell__icon"><i data-lucide="book-open"></i></div><span class="quick-cell__name">会议记录</span></button>
+                                <button class="quick-cell quick-cell--empty" style="grid-column: 3; grid-row: 2;"><div class="quick-cell__icon"><i data-lucide="plus"></i></div><span class="quick-cell__name">添加</span></button>
+                                <button class="quick-cell" style="grid-column: 4; grid-row: 2;" draggable="true"><div class="quick-cell__icon"><i data-lucide="pen-tool"></i></div><span class="quick-cell__name">Figma</span></button>
+                                <button class="quick-cell" style="grid-column: 5; grid-row: 2;" draggable="true"><div class="quick-cell__icon"><i data-lucide="container"></i></div><span class="quick-cell__name">Docker</span></button>
 
-                                <button class="quick-cell"><div class="quick-cell__icon"><i data-lucide="send"></i></div><span class="quick-cell__name">Postman</span></button>
-                                <button class="quick-cell"><div class="quick-cell__icon"><i data-lucide="languages"></i></div><span class="quick-cell__name">翻译</span></button>
-                                <button class="quick-cell quick-cell--empty"><div class="quick-cell__icon"><i data-lucide="plus"></i></div><span class="quick-cell__name">添加</span></button>
-                                <button class="quick-cell quick-cell--empty"><div class="quick-cell__icon"><i data-lucide="plus"></i></div><span class="quick-cell__name">添加</span></button>
-                                <button class="quick-cell quick-cell--empty"><div class="quick-cell__icon"><i data-lucide="plus"></i></div><span class="quick-cell__name">添加</span></button>
+                                <button class="quick-cell" style="grid-column: 1; grid-row: 3;" draggable="true"><div class="quick-cell__icon"><i data-lucide="table"></i></div><span class="quick-cell__name">Excel</span></button>
+                                <button class="quick-cell" style="grid-column: 2; grid-row: 3;" draggable="true"><div class="quick-cell__icon"><i data-lucide="file-text"></i></div><span class="quick-cell__name">Word</span></button>
+                                <button class="quick-cell quick-cell--empty" style="grid-column: 3; grid-row: 3;"><div class="quick-cell__icon"><i data-lucide="plus"></i></div><span class="quick-cell__name">添加</span></button>
+                                <button class="quick-cell" style="grid-column: 4; grid-row: 3;" draggable="true"><div class="quick-cell__icon"><i data-lucide="image"></i></div><span class="quick-cell__name">Photoshop</span></button>
+                                <button class="quick-cell quick-cell--empty" style="grid-column: 5; grid-row: 3;"><div class="quick-cell__icon"><i data-lucide="plus"></i></div><span class="quick-cell__name">添加</span></button>
 
-                                <button class="quick-cell quick-cell--empty"><div class="quick-cell__icon"><i data-lucide="plus"></i></div><span class="quick-cell__name">添加</span></button>
-                                <button class="quick-cell quick-cell--empty"><div class="quick-cell__icon"><i data-lucide="plus"></i></div><span class="quick-cell__name">添加</span></button>
-                                <button class="quick-cell quick-cell--empty"><div class="quick-cell__icon"><i data-lucide="plus"></i></div><span class="quick-cell__name">添加</span></button>
-                                <button class="quick-cell quick-cell--empty"><div class="quick-cell__icon"><i data-lucide="plus"></i></div><span class="quick-cell__name">添加</span></button>
-                                <button class="quick-cell quick-cell--empty"><div class="quick-cell__icon"><i data-lucide="plus"></i></div><span class="quick-cell__name">添加</span></button>
+                                <button class="quick-cell quick-cell--empty" style="grid-column: 1; grid-row: 4;"><div class="quick-cell__icon"><i data-lucide="plus"></i></div><span class="quick-cell__name">添加</span></button>
+                                <button class="quick-cell" style="grid-column: 2; grid-row: 4;" draggable="true"><div class="quick-cell__icon"><i data-lucide="git-branch"></i></div><span class="quick-cell__name">Git</span></button>
+                                <button class="quick-cell" style="grid-column: 3; grid-row: 4;" draggable="true"><div class="quick-cell__icon"><i data-lucide="music-2"></i></div><span class="quick-cell__name">Spotify</span></button>
+                                <button class="quick-cell quick-cell--empty" style="grid-column: 4; grid-row: 4;"><div class="quick-cell__icon"><i data-lucide="plus"></i></div><span class="quick-cell__name">添加</span></button>
+                                <button class="quick-cell" style="grid-column: 5; grid-row: 4;" draggable="true"><div class="quick-cell__icon"><i data-lucide="send"></i></div><span class="quick-cell__name">Postman</span></button>
 
-                                <button class="quick-cell quick-cell--empty"><div class="quick-cell__icon"><i data-lucide="plus"></i></div><span class="quick-cell__name">添加</span></button>
-                                <button class="quick-cell quick-cell--empty"><div class="quick-cell__icon"><i data-lucide="plus"></i></div><span class="quick-cell__name">添加</span></button>
-                                <button class="quick-cell quick-cell--empty"><div class="quick-cell__icon"><i data-lucide="plus"></i></div><span class="quick-cell__name">添加</span></button>
-                                <button class="quick-cell quick-cell--empty"><div class="quick-cell__icon"><i data-lucide="plus"></i></div><span class="quick-cell__name">添加</span></button>
-                                <button class="quick-cell quick-cell--empty"><div class="quick-cell__icon"><i data-lucide="plus"></i></div><span class="quick-cell__name">添加</span></button>
+                                <button class="quick-cell quick-cell--empty" style="grid-column: 1; grid-row: 5;"><div class="quick-cell__icon"><i data-lucide="plus"></i></div><span class="quick-cell__name">添加</span></button>
+                                <button class="quick-cell quick-cell--empty" style="grid-column: 2; grid-row: 5;"><div class="quick-cell__icon"><i data-lucide="plus"></i></div><span class="quick-cell__name">添加</span></button>
+                                <button class="quick-cell quick-cell--empty" style="grid-column: 3; grid-row: 5;"><div class="quick-cell__icon"><i data-lucide="plus"></i></div><span class="quick-cell__name">添加</span></button>
+                                <button class="quick-cell quick-cell--empty" style="grid-column: 4; grid-row: 5;"><div class="quick-cell__icon"><i data-lucide="plus"></i></div><span class="quick-cell__name">添加</span></button>
+                                <button class="quick-cell quick-cell--empty" style="grid-column: 5; grid-row: 5;"><div class="quick-cell__icon"><i data-lucide="plus"></i></div><span class="quick-cell__name">添加</span></button>
 
-                                <button class="quick-cell quick-cell--empty"><div class="quick-cell__icon"><i data-lucide="plus"></i></div><span class="quick-cell__name">添加</span></button>
-                                <button class="quick-cell quick-cell--empty"><div class="quick-cell__icon"><i data-lucide="plus"></i></div><span class="quick-cell__name">添加</span></button>
-                                <button class="quick-cell quick-cell--empty"><div class="quick-cell__icon"><i data-lucide="plus"></i></div><span class="quick-cell__name">添加</span></button>
-                                <button class="quick-cell quick-cell--empty"><div class="quick-cell__icon"><i data-lucide="plus"></i></div><span class="quick-cell__name">添加</span></button>
-                                <button class="quick-cell quick-cell--empty"><div class="quick-cell__icon"><i data-lucide="plus"></i></div><span class="quick-cell__name">添加</span></button>
+                                <button class="quick-cell quick-cell--empty" style="grid-column: 1; grid-row: 6;"><div class="quick-cell__icon"><i data-lucide="plus"></i></div><span class="quick-cell__name">添加</span></button>
+                                <button class="quick-cell quick-cell--empty" style="grid-column: 2; grid-row: 6;"><div class="quick-cell__icon"><i data-lucide="plus"></i></div><span class="quick-cell__name">添加</span></button>
+                                <button class="quick-cell quick-cell--empty" style="grid-column: 3; grid-row: 6;"><div class="quick-cell__icon"><i data-lucide="plus"></i></div><span class="quick-cell__name">添加</span></button>
+                                <button class="quick-cell quick-cell--empty" style="grid-column: 4; grid-row: 6;"><div class="quick-cell__icon"><i data-lucide="plus"></i></div><span class="quick-cell__name">添加</span></button>
+                                <button class="quick-cell quick-cell--empty" style="grid-column: 5; grid-row: 6;"><div class="quick-cell__icon"><i data-lucide="plus"></i></div><span class="quick-cell__name">添加</span></button>
 
-                                <button class="quick-cell quick-cell--empty"><div class="quick-cell__icon"><i data-lucide="plus"></i></div><span class="quick-cell__name">添加</span></button>
-                                <button class="quick-cell quick-cell--empty"><div class="quick-cell__icon"><i data-lucide="plus"></i></div><span class="quick-cell__name">添加</span></button>
-                                <button class="quick-cell quick-cell--empty"><div class="quick-cell__icon"><i data-lucide="plus"></i></div><span class="quick-cell__name">添加</span></button>
-                                <button class="quick-cell quick-cell--empty"><div class="quick-cell__icon"><i data-lucide="plus"></i></div><span class="quick-cell__name">添加</span></button>
-                                <button class="quick-cell quick-cell--empty"><div class="quick-cell__icon"><i data-lucide="plus"></i></div><span class="quick-cell__name">添加</span></button>
+                                <button class="quick-cell quick-cell--empty" style="grid-column: 1; grid-row: 7;"><div class="quick-cell__icon"><i data-lucide="plus"></i></div><span class="quick-cell__name">添加</span></button>
+                                <button class="quick-cell quick-cell--empty" style="grid-column: 2; grid-row: 7;"><div class="quick-cell__icon"><i data-lucide="plus"></i></div><span class="quick-cell__name">添加</span></button>
+                                <button class="quick-cell quick-cell--empty" style="grid-column: 3; grid-row: 7;"><div class="quick-cell__icon"><i data-lucide="plus"></i></div><span class="quick-cell__name">添加</span></button>
+                                <button class="quick-cell quick-cell--empty" style="grid-column: 4; grid-row: 7;"><div class="quick-cell__icon"><i data-lucide="plus"></i></div><span class="quick-cell__name">添加</span></button>
+                                <button class="quick-cell quick-cell--empty" style="grid-column: 5; grid-row: 7;"><div class="quick-cell__icon"><i data-lucide="plus"></i></div><span class="quick-cell__name">添加</span></button>
                             </div>
 
-                            <!-- 第 3 页 -->
+                            <!-- 第 3 页 · 自由布局 -->
                             <div class="page-grid">
-                                <button class="quick-cell"><div class="quick-cell__icon"><i data-lucide="clock"></i></div><span class="quick-cell__name">时钟</span></button>
-                                <button class="quick-cell"><div class="quick-cell__icon"><i data-lucide="alarm-clock"></i></div><span class="quick-cell__name">闹钟</span></button>
-                                <button class="quick-cell"><div class="quick-cell__icon"><i data-lucide="timer"></i></div><span class="quick-cell__name">秒表</span></button>
-                                <button class="quick-cell"><div class="quick-cell__icon"><i data-lucide="calculator"></i></div><span class="quick-cell__name">计算器</span></button>
-                                <button class="quick-cell"><div class="quick-cell__icon"><i data-lucide="mic"></i></div><span class="quick-cell__name">录音</span></button>
+                                <button class="quick-cell quick-cell--empty" style="grid-column: 1; grid-row: 1;"><div class="quick-cell__icon"><i data-lucide="plus"></i></div><span class="quick-cell__name">添加</span></button>
+                                <button class="quick-cell" style="grid-column: 2; grid-row: 1;" draggable="true"><div class="quick-cell__icon"><i data-lucide="calculator"></i></div><span class="quick-cell__name">计算器</span></button>
+                                <button class="quick-cell" style="grid-column: 3; grid-row: 1;" draggable="true"><div class="quick-cell__icon"><i data-lucide="clock"></i></div><span class="quick-cell__name">时钟</span></button>
+                                <button class="quick-cell quick-cell--empty" style="grid-column: 4; grid-row: 1;"><div class="quick-cell__icon"><i data-lucide="plus"></i></div><span class="quick-cell__name">添加</span></button>
+                                <button class="quick-cell" style="grid-column: 5; grid-row: 1;" draggable="true"><div class="quick-cell__icon"><i data-lucide="alarm-clock"></i></div><span class="quick-cell__name">闹钟</span></button>
 
-                                <button class="quick-cell"><div class="quick-cell__icon"><i data-lucide="scan-line"></i></div><span class="quick-cell__name">扫描</span></button>
-                                <button class="quick-cell quick-cell--empty"><div class="quick-cell__icon"><i data-lucide="plus"></i></div><span class="quick-cell__name">添加</span></button>
-                                <button class="quick-cell quick-cell--empty"><div class="quick-cell__icon"><i data-lucide="plus"></i></div><span class="quick-cell__name">添加</span></button>
-                                <button class="quick-cell quick-cell--empty"><div class="quick-cell__icon"><i data-lucide="plus"></i></div><span class="quick-cell__name">添加</span></button>
-                                <button class="quick-cell quick-cell--empty"><div class="quick-cell__icon"><i data-lucide="plus"></i></div><span class="quick-cell__name">添加</span></button>
+                                <button class="quick-cell" style="grid-column: 1; grid-row: 2;" draggable="true"><div class="quick-cell__icon"><i data-lucide="gamepad-2"></i></div><span class="quick-cell__name">Steam</span></button>
+                                <button class="quick-cell quick-cell--empty" style="grid-column: 2; grid-row: 2;"><div class="quick-cell__icon"><i data-lucide="plus"></i></div><span class="quick-cell__name">添加</span></button>
+                                <button class="quick-cell" style="grid-column: 3; grid-row: 2;" draggable="true"><div class="quick-cell__icon"><i data-lucide="video"></i></div><span class="quick-cell__name">录屏</span></button>
+                                <button class="quick-cell" style="grid-column: 4; grid-row: 2;" draggable="true"><div class="quick-cell__icon"><i data-lucide="languages"></i></div><span class="quick-cell__name">翻译</span></button>
+                                <button class="quick-cell quick-cell--empty" style="grid-column: 5; grid-row: 2;"><div class="quick-cell__icon"><i data-lucide="plus"></i></div><span class="quick-cell__name">添加</span></button>
 
-                                <button class="quick-cell quick-cell--empty"><div class="quick-cell__icon"><i data-lucide="plus"></i></div><span class="quick-cell__name">添加</span></button>
-                                <button class="quick-cell quick-cell--empty"><div class="quick-cell__icon"><i data-lucide="plus"></i></div><span class="quick-cell__name">添加</span></button>
-                                <button class="quick-cell quick-cell--empty"><div class="quick-cell__icon"><i data-lucide="plus"></i></div><span class="quick-cell__name">添加</span></button>
-                                <button class="quick-cell quick-cell--empty"><div class="quick-cell__icon"><i data-lucide="plus"></i></div><span class="quick-cell__name">添加</span></button>
-                                <button class="quick-cell quick-cell--empty"><div class="quick-cell__icon"><i data-lucide="plus"></i></div><span class="quick-cell__name">添加</span></button>
+                                <button class="quick-cell" style="grid-column: 1; grid-row: 3;" draggable="true"><div class="quick-cell__icon"><i data-lucide="timer"></i></div><span class="quick-cell__name">秒表</span></button>
+                                <button class="quick-cell" style="grid-column: 2; grid-row: 3;" draggable="true"><div class="quick-cell__icon"><i data-lucide="mic"></i></div><span class="quick-cell__name">录音</span></button>
+                                <button class="quick-cell quick-cell--empty" style="grid-column: 3; grid-row: 3;"><div class="quick-cell__icon"><i data-lucide="plus"></i></div><span class="quick-cell__name">添加</span></button>
+                                <button class="quick-cell quick-cell--empty" style="grid-column: 4; grid-row: 3;"><div class="quick-cell__icon"><i data-lucide="plus"></i></div><span class="quick-cell__name">添加</span></button>
+                                <button class="quick-cell" style="grid-column: 5; grid-row: 3;" draggable="true"><div class="quick-cell__icon"><i data-lucide="scan-line"></i></div><span class="quick-cell__name">扫描</span></button>
 
-                                <button class="quick-cell quick-cell--empty"><div class="quick-cell__icon"><i data-lucide="plus"></i></div><span class="quick-cell__name">添加</span></button>
-                                <button class="quick-cell quick-cell--empty"><div class="quick-cell__icon"><i data-lucide="plus"></i></div><span class="quick-cell__name">添加</span></button>
-                                <button class="quick-cell quick-cell--empty"><div class="quick-cell__icon"><i data-lucide="plus"></i></div><span class="quick-cell__name">添加</span></button>
-                                <button class="quick-cell quick-cell--empty"><div class="quick-cell__icon"><i data-lucide="plus"></i></div><span class="quick-cell__name">添加</span></button>
-                                <button class="quick-cell quick-cell--empty"><div class="quick-cell__icon"><i data-lucide="plus"></i></div><span class="quick-cell__name">添加</span></button>
+                                <button class="quick-cell quick-cell--empty" style="grid-column: 1; grid-row: 4;"><div class="quick-cell__icon"><i data-lucide="plus"></i></div><span class="quick-cell__name">添加</span></button>
+                                <button class="quick-cell" style="grid-column: 2; grid-row: 4;" draggable="true"><div class="quick-cell__icon"><i data-lucide="database"></i></div><span class="quick-cell__name">数据库</span></button>
+                                <button class="quick-cell" style="grid-column: 3; grid-row: 4;" draggable="true"><div class="quick-cell__icon"><i data-lucide="camera"></i></div><span class="quick-cell__name">截图</span></button>
+                                <button class="quick-cell quick-cell--empty" style="grid-column: 4; grid-row: 4;"><div class="quick-cell__icon"><i data-lucide="plus"></i></div><span class="quick-cell__name">添加</span></button>
+                                <button class="quick-cell" style="grid-column: 5; grid-row: 4;" draggable="true"><div class="quick-cell__icon"><i data-lucide="palette"></i></div><span class="quick-cell__name">画图</span></button>
 
-                                <button class="quick-cell quick-cell--empty"><div class="quick-cell__icon"><i data-lucide="plus"></i></div><span class="quick-cell__name">添加</span></button>
-                                <button class="quick-cell quick-cell--empty"><div class="quick-cell__icon"><i data-lucide="plus"></i></div><span class="quick-cell__name">添加</span></button>
-                                <button class="quick-cell quick-cell--empty"><div class="quick-cell__icon"><i data-lucide="plus"></i></div><span class="quick-cell__name">添加</span></button>
-                                <button class="quick-cell quick-cell--empty"><div class="quick-cell__icon"><i data-lucide="plus"></i></div><span class="quick-cell__name">添加</span></button>
-                                <button class="quick-cell quick-cell--empty"><div class="quick-cell__icon"><i data-lucide="plus"></i></div><span class="quick-cell__name">添加</span></button>
+                                <button class="quick-cell quick-cell--empty" style="grid-column: 1; grid-row: 5;"><div class="quick-cell__icon"><i data-lucide="plus"></i></div><span class="quick-cell__name">添加</span></button>
+                                <button class="quick-cell quick-cell--empty" style="grid-column: 2; grid-row: 5;"><div class="quick-cell__icon"><i data-lucide="plus"></i></div><span class="quick-cell__name">添加</span></button>
+                                <button class="quick-cell quick-cell--empty" style="grid-column: 3; grid-row: 5;"><div class="quick-cell__icon"><i data-lucide="plus"></i></div><span class="quick-cell__name">添加</span></button>
+                                <button class="quick-cell quick-cell--empty" style="grid-column: 4; grid-row: 5;"><div class="quick-cell__icon"><i data-lucide="plus"></i></div><span class="quick-cell__name">添加</span></button>
+                                <button class="quick-cell quick-cell--empty" style="grid-column: 5; grid-row: 5;"><div class="quick-cell__icon"><i data-lucide="plus"></i></div><span class="quick-cell__name">添加</span></button>
 
-                                <button class="quick-cell quick-cell--empty"><div class="quick-cell__icon"><i data-lucide="plus"></i></div><span class="quick-cell__name">添加</span></button>
-                                <button class="quick-cell quick-cell--empty"><div class="quick-cell__icon"><i data-lucide="plus"></i></div><span class="quick-cell__name">添加</span></button>
-                                <button class="quick-cell quick-cell--empty"><div class="quick-cell__icon"><i data-lucide="plus"></i></div><span class="quick-cell__name">添加</span></button>
-                                <button class="quick-cell quick-cell--empty"><div class="quick-cell__icon"><i data-lucide="plus"></i></div><span class="quick-cell__name">添加</span></button>
-                                <button class="quick-cell quick-cell--empty"><div class="quick-cell__icon"><i data-lucide="plus"></i></div><span class="quick-cell__name">添加</span></button>
+                                <button class="quick-cell quick-cell--empty" style="grid-column: 1; grid-row: 6;"><div class="quick-cell__icon"><i data-lucide="plus"></i></div><span class="quick-cell__name">添加</span></button>
+                                <button class="quick-cell quick-cell--empty" style="grid-column: 2; grid-row: 6;"><div class="quick-cell__icon"><i data-lucide="plus"></i></div><span class="quick-cell__name">添加</span></button>
+                                <button class="quick-cell quick-cell--empty" style="grid-column: 3; grid-row: 6;"><div class="quick-cell__icon"><i data-lucide="plus"></i></div><span class="quick-cell__name">添加</span></button>
+                                <button class="quick-cell quick-cell--empty" style="grid-column: 4; grid-row: 6;"><div class="quick-cell__icon"><i data-lucide="plus"></i></div><span class="quick-cell__name">添加</span></button>
+                                <button class="quick-cell quick-cell--empty" style="grid-column: 5; grid-row: 6;"><div class="quick-cell__icon"><i data-lucide="plus"></i></div><span class="quick-cell__name">添加</span></button>
 
-                                <button class="quick-cell quick-cell--empty"><div class="quick-cell__icon"><i data-lucide="plus"></i></div><span class="quick-cell__name">添加</span></button>
-                                <button class="quick-cell quick-cell--empty"><div class="quick-cell__icon"><i data-lucide="plus"></i></div><span class="quick-cell__name">添加</span></button>
-                                <button class="quick-cell quick-cell--empty"><div class="quick-cell__icon"><i data-lucide="plus"></i></div><span class="quick-cell__name">添加</span></button>
-                                <button class="quick-cell quick-cell--empty"><div class="quick-cell__icon"><i data-lucide="plus"></i></div><span class="quick-cell__name">添加</span></button>
-                                <button class="quick-cell quick-cell--empty"><div class="quick-cell__icon"><i data-lucide="plus"></i></div><span class="quick-cell__name">添加</span></button>
+                                <button class="quick-cell quick-cell--empty" style="grid-column: 1; grid-row: 7;"><div class="quick-cell__icon"><i data-lucide="plus"></i></div><span class="quick-cell__name">添加</span></button>
+                                <button class="quick-cell quick-cell--empty" style="grid-column: 2; grid-row: 7;"><div class="quick-cell__icon"><i data-lucide="plus"></i></div><span class="quick-cell__name">添加</span></button>
+                                <button class="quick-cell quick-cell--empty" style="grid-column: 3; grid-row: 7;"><div class="quick-cell__icon"><i data-lucide="plus"></i></div><span class="quick-cell__name">添加</span></button>
+                                <button class="quick-cell quick-cell--empty" style="grid-column: 4; grid-row: 7;"><div class="quick-cell__icon"><i data-lucide="plus"></i></div><span class="quick-cell__name">添加</span></button>
+                                <button class="quick-cell quick-cell--empty" style="grid-column: 5; grid-row: 7;"><div class="quick-cell__icon"><i data-lucide="plus"></i></div><span class="quick-cell__name">添加</span></button>
+                            </div>
+
+                            <!-- 拖到边缘新建页面 -->
+                            <div class="page-add-new" id="addNewPage">
+                                <div class="page-add-new__inner">
+                                    <i data-lucide="plus"></i>
+                                    <span>拖到此处新建页面</span>
+                                </div>
                             </div>
 
                         </div>
@@ -1641,6 +1775,30 @@ pre {
                         grid.classList.remove('cols-auto', 'cols-5', 'cols-6', 'cols-7');
                         grid.classList.add('cols-' + cols);
                     });
+                });
+            });
+        })();
+
+        // 添加类型选择菜单
+        (function() {
+            var addBtn = document.getElementById('addBtn');
+            var addTypeMenu = document.getElementById('addTypeMenu');
+            addBtn.addEventListener('click', function(e) {
+                e.stopPropagation();
+                addTypeMenu.style.display = addTypeMenu.style.display === 'none' ? 'block' : 'none';
+            });
+            document.addEventListener('click', function(e) {
+                if (!e.target.closest('#addTypeMenu') && !e.target.closest('#addBtn')) {
+                    addTypeMenu.style.display = 'none';
+                }
+            });
+            addTypeMenu.querySelectorAll('.mm-dropdown-item').forEach(function(item) {
+                item.addEventListener('click', function() {
+                    addTypeMenu.querySelectorAll('.mm-dropdown-item').forEach(function(i) {
+                        i.classList.remove('is-active');
+                    });
+                    this.classList.add('is-active');
+                    addTypeMenu.style.display = 'none';
                 });
             });
         })();

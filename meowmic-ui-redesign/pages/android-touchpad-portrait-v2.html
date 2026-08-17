@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>MeowMic 触控板 竖屏</title>
+    <title>MeowMic 触控板 竖屏 v2(代码同步)</title>
     <style id="theme-vars">
 /**
  * TraeWork design library tokens
@@ -1172,6 +1172,43 @@ pre {
             margin: 0;
         }
     </style>
+    <style id="mm-flat-actionbar">
+/* 扁平化操作栏按钮 */
+.mm-icon-btn { width: 24px; height: 24px; display: flex; align-items: center; justify-content: center; background: var(--bg-overlay-l1); border: 1px solid var(--border-neutral-l1); border-radius: var(--radius-6); cursor: pointer; transition: background 0.15s; flex-shrink: 0; padding: 0; }
+.mm-icon-btn:hover { background: var(--bg-overlay-l2); }
+.mm-icon-btn:active { background: var(--bg-brand-popup); }
+.mm-icon-btn .icon { width: 14px; height: 14px; color: var(--icon-secondary); }
+.mm-icon-btn--danger .icon { color: var(--status-error-default); }
+.mm-toggle-btn { width: 24px; height: 24px; display: flex; align-items: center; justify-content: center; background: var(--bg-overlay-l1); border: 1px solid var(--border-neutral-l1); border-radius: var(--radius-6); cursor: pointer; transition: background 0.15s; flex-shrink: 0; padding: 0; }
+.mm-toggle-btn .icon { width: 14px; height: 14px; color: var(--icon-secondary); }
+.mm-toggle-btn.is-active { background: var(--bg-brand-popup); border-color: var(--bg-brand); }
+.mm-toggle-btn.is-active .icon { color: var(--icon-brand); }
+/* 触控风格双按钮组 */
+.mm-style-toggle { display: flex; align-items: center; height: 24px; background: var(--bg-overlay-l1); border: 1px solid var(--border-neutral-l1); border-radius: var(--radius-6); flex-shrink: 0; overflow: hidden; }
+.mm-style-half { width: 22px; height: 100%; display: flex; align-items: center; justify-content: center; border: none; background: transparent; cursor: pointer; padding: 0; transition: background 0.15s; }
+.mm-style-half.is-active { background: var(--bg-brand); }
+.mm-style-half.is-active i { color: var(--icon-onbrand); }
+.mm-style-half i { color: var(--icon-secondary); }
+.mm-style-divider { width: 1px; height: 16px; background: var(--border-neutral-l1); }
+/* 页面特有开关组(上下文切换) */
+.mm-ctx { display: none; align-items: center; gap: 3px; }
+.mm-ctx.is-visible { display: flex; }
+.mm-actionbar-spacer { flex: 1; }
+.mm-actionbar-divider { width: 1px; height: 20px; background: var(--border-neutral-l1); margin: 0 2px; flex-shrink: 0; }
+/* 可折叠连接栏(默认收起,点击展开) */
+.mm-conn-bar { background: var(--bg-base-default); border: 1px solid var(--border-neutral-l1); border-radius: var(--radius-8); overflow: hidden; flex-shrink: 0; }
+.mm-conn-compact { display: flex; align-items: center; gap: 6px; padding: 4px 10px; cursor: pointer; user-select: none; }
+.mm-conn-dot { width: 8px; height: 8px; border-radius: var(--radius-full); background: var(--status-success-default); flex-shrink: 0; }
+.mm-conn-text { font-size: 11px; font-weight: 500; color: var(--text-default); flex: 1; }
+.mm-conn-chevron { width: 14px; height: 14px; color: var(--icon-tertiary); transition: transform 0.2s ease; }
+.mm-conn-bar.is-expanded .mm-conn-chevron { transform: rotate(180deg); }
+.mm-conn-detail { max-height: 0; overflow: hidden; transition: max-height 0.25s ease; }
+.mm-conn-bar.is-expanded .mm-conn-detail { max-height: 60px; }
+.mm-conn-detail-inner { padding: 0 10px 6px; display: flex; flex-direction: column; gap: 2px; }
+.mm-conn-addr { font-size: 11px; font-weight: 500; color: var(--text-default); }
+.mm-conn-stats { font-size: 10px; color: var(--text-tertiary); display: flex; align-items: center; gap: 6px; }
+.mm-conn-tag { font-size: 9px; height: 16px; padding: 0 4px; display: inline-flex; align-items: center; border-radius: var(--radius-4); background: var(--bg-brand-popup); color: var(--text-brand); font-weight: 500; }
+    </style>
 </head>
 <body class="min-h-screen font-sans antialiased">
     <main class="min-h-screen flex items-center justify-center" style="background: var(--bg-base-secondary); padding: 24px;">
@@ -1180,76 +1217,191 @@ pre {
             <!-- 页面内容 -->
             <div class="flex flex-col h-full" style="padding: 12px; gap: 8px;">
 
-                <!-- 1. 顶部状态栏 -->
-                <div class="ds-card flex items-center" style="padding: 6px 10px; gap: 8px;">
-                    <i data-lucide="mouse" style="width: 16px; height: 16px; color: var(--icon-brand); flex-shrink: 0;"></i>
-                    <div class="flex-1 min-w-0">
-                        <div style="font-size: 11px; font-weight: 500; color: var(--text-default); line-height: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">已连接 · 192.168.1.100:28900</div>
-                        <div style="font-size: 10px; color: var(--text-tertiary); line-height: 14px;">T:1523 A:89 移动·1指</div>
+                <!-- 1. 可折叠连接栏(默认收起,点击展开详情) -->
+                <div class="mm-conn-bar" id="connBar">
+                    <div class="mm-conn-compact" id="connToggle">
+                        <div class="mm-conn-dot"></div>
+                        <span class="mm-conn-text">已连接</span>
+                        <i data-lucide="chevron-down" class="mm-conn-chevron"></i>
                     </div>
-                    <span class="ds-tag ds-tag--brand" style="font-size: 10px; height: 18px; padding: 0 6px; flex-shrink: 0;">竖屏</span>
-                </div>
-
-                <!-- 2. 顶部操作栏 -->
-                <div class="flex items-center" style="gap: 6px;">
-                    <button class="ds-btn ds-btn--secondary ds-btn--sm ds-btn--icon" data-dom-id="back-btn" aria-label="返回">
-                        <i data-lucide="arrow-left" class="icon"></i>
-                    </button>
-                    <div class="mm-more-wrap" style="position: relative; margin-left: auto;">
-                        <button class="ds-btn ds-btn--ghost ds-btn--sm ds-btn--icon" id="moreBtn" aria-label="更多">
-                            <i data-lucide="more-horizontal" class="icon"></i>
-                        </button>
-                        <div class="mm-more-menu" id="moreMenu" style="display: none;">
-                            <button class="mm-more-item" data-dom-id="rotate-btn">
-                                <i data-lucide="rotate-cw" class="icon"></i>
-                                <span>横屏</span>
-                            </button>
-                            <div class="mm-more-divider"></div>
-                            <div class="mm-more-item mm-more-item--toggle" id="micToggle">
-                                <div class="mm-more-label">
-                                    <i data-lucide="mic" class="icon"></i>
-                                    <span>麦克风</span>
-                                </div>
-                                <label class="ds-switch">
-                                    <input type="checkbox">
-                                    <span class="ds-switch__thumb"></span>
-                                </label>
+                    <div class="mm-conn-detail">
+                        <div class="mm-conn-detail-inner">
+                            <div class="mm-conn-addr">192.168.1.100:28900</div>
+                            <div class="mm-conn-stats">
+                                <span>T:1523 A:89 移动·1指</span>
+                                <span class="mm-conn-tag">竖屏</span>
                             </div>
-                            <div class="mm-more-item mm-more-item--toggle" id="speakerToggle">
-                                <div class="mm-more-label">
-                                    <i data-lucide="volume-2" class="icon"></i>
-                                    <span>扬声器</span>
-                                </div>
-                                <label class="ds-switch">
-                                    <input type="checkbox" checked>
-                                    <span class="ds-switch__thumb"></span>
-                                </label>
-                            </div>
-                            <div class="mm-more-item mm-more-item--toggle">
-                                <div class="mm-more-label">
-                                    <i data-lucide="bell" class="icon"></i>
-                                    <span>提示音</span>
-                                </div>
-                                <label class="ds-switch">
-                                    <input type="checkbox">
-                                    <span class="ds-switch__thumb"></span>
-                                </label>
-                            </div>
-                            <div class="mm-more-divider"></div>
-                            <button class="mm-more-item mm-more-item--danger" id="disconnectBtn">
-                                <i data-lucide="log-out" class="icon"></i>
-                                <span>断开连接</span>
-                            </button>
                         </div>
                     </div>
                 </div>
 
+                <!-- 2. 顶部操作栏:左=页面切换组,右=页面特有开关组 -->
+                <div class="flex items-center" style="gap: 4px; flex-wrap: nowrap; overflow: hidden;">
+                    <!-- ── 左侧:页面切换组 ── -->
+                    <button class="mm-icon-btn" data-dom-id="back-btn" aria-label="返回" title="返回">
+                        <i data-lucide="arrow-left" class="icon"></i>
+                    </button>
+                    <div class="mm-actionbar-divider"></div>
+                    <button class="mm-toggle-btn is-active" data-view="touch" aria-label="触控" title="触控">
+                        <i data-lucide="mouse" class="icon"></i>
+                    </button>
+                    <button class="mm-icon-btn" data-view="quicklaunch" aria-label="快捷启动" title="快捷启动">
+                        <i data-lucide="layout-grid" class="icon"></i>
+                    </button>
+                    <button class="mm-toggle-btn" data-view="audio" aria-label="语音" title="语音">
+                        <i data-lucide="audio-lines" class="icon"></i>
+                    </button>
+                    <button class="mm-toggle-btn" data-view="keyboard" aria-label="键盘" title="键盘">
+                        <i data-lucide="keyboard" class="icon"></i>
+                    </button>
+                    <button class="mm-toggle-btn" data-view="monitor" aria-label="显示器" title="显示器">
+                        <i data-lucide="monitor" class="icon"></i>
+                    </button>
+                    <button class="mm-toggle-btn" data-view="files" aria-label="文件" title="文件">
+                        <i data-lucide="folder" class="icon"></i>
+                    </button>
+                    <!-- 弹性间距推开左右两组 -->
+                    <div class="mm-actionbar-spacer"></div>
+                    <!-- ── 右侧:页面特有开关组 ── -->
+                    <!-- Context: Touchpad -->
+                    <div class="mm-ctx is-visible" id="ctx-touch">
+                        <button class="mm-icon-btn" data-dom-id="rotate-btn" aria-label="横屏" title="横屏">
+                            <i data-lucide="rotate-cw" class="icon"></i>
+                        </button>
+                        <div class="mm-style-toggle">
+                            <button class="mm-style-half is-active" aria-label="Mac 触控板风格" title="Mac">
+                                <i data-lucide="mouse" style="width: 14px; height: 14px;"></i>
+                            </button>
+                            <div class="mm-style-divider"></div>
+                            <button class="mm-style-half" aria-label="ThinkPad 小红点风格" title="ThinkPad">
+                                <i data-lucide="circle-dot" style="width: 14px; height: 14px;"></i>
+                            </button>
+                        </div>
+                        <button class="mm-toggle-btn is-active" aria-label="麦克风" title="麦克风">
+                            <i data-lucide="mic" class="icon"></i>
+                        </button>
+                        <button class="mm-toggle-btn is-active" aria-label="扬声器" title="扬声器">
+                            <i data-lucide="volume-2" class="icon"></i>
+                        </button>
+                    </div>
+                    <!-- Context: Quick Launch -->
+                    <div class="mm-ctx" id="ctx-quicklaunch">
+                        <button class="mm-icon-btn" aria-label="刷新" title="刷新">
+                            <i data-lucide="refresh-cw" class="icon"></i>
+                        </button>
+                    </div>
+                    <!-- Context: Audio -->
+                    <div class="mm-ctx" id="ctx-audio">
+                        <button class="mm-toggle-btn is-active" aria-label="麦克风" title="麦克风">
+                            <i data-lucide="mic" class="icon"></i>
+                        </button>
+                        <button class="mm-toggle-btn is-active" aria-label="扬声器" title="扬声器">
+                            <i data-lucide="volume-2" class="icon"></i>
+                        </button>
+                        <button class="mm-toggle-btn" aria-label="提示音" title="提示音">
+                            <i data-lucide="bell" class="icon"></i>
+                        </button>
+                    </div>
+                    <!-- Context: Keyboard -->
+                    <div class="mm-ctx" id="ctx-keyboard">
+                        <button class="mm-toggle-btn is-active" aria-label="麦克风" title="麦克风">
+                            <i data-lucide="mic" class="icon"></i>
+                        </button>
+                        <button class="mm-toggle-btn is-active" aria-label="扬声器" title="扬声器">
+                            <i data-lucide="volume-2" class="icon"></i>
+                        </button>
+                    </div>
+                    <!-- Context: Monitor -->
+                    <div class="mm-ctx" id="ctx-monitor">
+                        <button class="mm-toggle-btn" aria-label="开启远程画面" title="远程画面">
+                            <i data-lucide="video-off" class="icon"></i>
+                        </button>
+                        <button class="mm-toggle-btn is-active" aria-label="麦克风" title="麦克风">
+                            <i data-lucide="mic" class="icon"></i>
+                        </button>
+                        <button class="mm-toggle-btn is-active" aria-label="扬声器" title="扬声器">
+                            <i data-lucide="volume-2" class="icon"></i>
+                        </button>
+                    </div>
+                    <!-- Context: Files -->
+                    <div class="mm-ctx" id="ctx-files">
+                        <button class="mm-toggle-btn" aria-label="上传文件" title="上传">
+                            <i data-lucide="file-up" class="icon"></i>
+                        </button>
+                        <button class="mm-toggle-btn" aria-label="下载文件" title="下载">
+                            <i data-lucide="file-down" class="icon"></i>
+                        </button>
+                        <button class="mm-toggle-btn is-active" aria-label="麦克风" title="麦克风">
+                            <i data-lucide="mic" class="icon"></i>
+                        </button>
+                    </div>
+                    <div class="mm-actionbar-divider"></div>
+                    <button class="mm-icon-btn mm-icon-btn--danger" aria-label="断开连接" title="断开">
+                        <i data-lucide="log-out" class="icon"></i>
+                    </button>
+                </div>
+
+                <!-- 3b. 显示器视图(远程画面,默认隐藏) -->
+                <div class="mm-view" id="view-monitor" style="display: none; flex: 1; flex-direction: column; min-height: 0;">
+                    <div style="flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; background: var(--bg-base-secondary); border: 1px dashed var(--border-neutral-l2); border-radius: var(--radius-16); min-height: 0; overflow: hidden;">
+                        <i data-lucide="monitor" style="width: 64px; height: 64px; color: var(--text-tertiary); opacity: 0.25;"></i>
+                        <div style="font-size: 11px; color: var(--text-tertiary); opacity: 0.5; text-align: center; padding: 0 16px; line-height: 16px;">远程画面未开启 · 点击右上角摄像头开关即可实时查看电脑桌面</div>
+                    </div>
+                </div>
+                <!-- 3c. 文件传输视图(默认隐藏) -->
+                <div class="mm-view" id="view-files" style="display: none; flex: 1; flex-direction: column; min-height: 0;">
+                    <!-- 路径栏 -->
+                    <div style="display: flex; align-items: center; gap: 6px; padding: 6px 10px; background: var(--bg-base-default); border: 1px solid var(--border-neutral-l1); border-radius: var(--radius-8); flex-shrink: 0;">
+                        <i data-lucide="folder" style="width: 14px; height: 14px; color: var(--icon-brand); flex-shrink: 0;"></i>
+                        <span style="font-size: 11px; font-weight: 500; color: var(--text-default); flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">C:\Users</span>
+                        <button class="mm-icon-btn" aria-label="上级目录" title="上级">
+                            <i data-lucide="arrow-up" class="icon"></i>
+                        </button>
+                    </div>
+                    <!-- 文件列表区 -->
+                    <div style="flex: 1; min-height: 0; overflow-y: auto; background: var(--bg-base-secondary); border: 1px dashed var(--border-neutral-l2); border-radius: var(--radius-12); margin-top: 6px;">
+                        <div style="display: flex; flex-direction: column; padding: 4px 0;">
+                            <div style="display: flex; align-items: center; gap: 8px; padding: 8px 12px; cursor: pointer; transition: background 0.15s;" onmouseover="this.style.background='var(--bg-overlay-l1)'" onmouseout="this.style.background='transparent'">
+                                <i data-lucide="folder" style="width: 16px; height: 16px; color: var(--icon-brand); flex-shrink: 0;"></i>
+                                <span style="font-size: 11px; color: var(--text-default);">Desktop</span>
+                            </div>
+                            <div style="display: flex; align-items: center; gap: 8px; padding: 8px 12px; cursor: pointer; transition: background 0.15s;" onmouseover="this.style.background='var(--bg-overlay-l1)'" onmouseout="this.style.background='transparent'">
+                                <i data-lucide="folder" style="width: 16px; height: 16px; color: var(--icon-brand); flex-shrink: 0;"></i>
+                                <span style="font-size: 11px; color: var(--text-default);">Documents</span>
+                            </div>
+                            <div style="display: flex; align-items: center; gap: 8px; padding: 8px 12px; cursor: pointer; transition: background 0.15s;" onmouseover="this.style.background='var(--bg-overlay-l1)'" onmouseout="this.style.background='transparent'">
+                                <i data-lucide="folder" style="width: 16px; height: 16px; color: var(--icon-brand); flex-shrink: 0;"></i>
+                                <span style="font-size: 11px; color: var(--text-default);">Downloads</span>
+                            </div>
+                            <div style="display: flex; align-items: center; gap: 8px; padding: 8px 12px; cursor: pointer; transition: background 0.15s;" onmouseover="this.style.background='var(--bg-overlay-l1)'" onmouseout="this.style.background='transparent'">
+                                <i data-lucide="file" style="width: 16px; height: 16px; color: var(--icon-secondary); flex-shrink: 0;"></i>
+                                <span style="font-size: 11px; color: var(--text-default);">notes.txt</span>
+                            </div>
+                            <div style="display: flex; align-items: center; gap: 8px; padding: 8px 12px; cursor: pointer; transition: background 0.15s;" onmouseover="this.style.background='var(--bg-overlay-l1)'" onmouseout="this.style.background='transparent'">
+                                <i data-lucide="file" style="width: 16px; height: 16px; color: var(--icon-secondary); flex-shrink: 0;"></i>
+                                <span style="font-size: 11px; color: var(--text-default);">config.json</span>
+                            </div>
+                        </div>
+                    </div>
+                    <!-- 底部操作栏:上传/下载 -->
+                    <div style="display: flex; gap: 6px; margin-top: 6px; flex-shrink: 0;">
+                        <button style="flex: 1; height: 36px; display: flex; align-items: center; justify-content: center; gap: 4px; background: var(--bg-brand-popup); border: 1px solid var(--bg-brand); border-radius: var(--radius-8); cursor: pointer; transition: background 0.15s;">
+                            <i data-lucide="file-up" style="width: 14px; height: 14px; color: var(--icon-brand);"></i>
+                            <span style="font-size: 11px; font-weight: 500; color: var(--text-brand);">上传</span>
+                        </button>
+                        <button style="flex: 1; height: 36px; display: flex; align-items: center; justify-content: center; gap: 4px; background: var(--bg-overlay-l1); border: 1px solid var(--border-neutral-l1); border-radius: var(--radius-8); cursor: pointer; transition: background 0.15s;">
+                            <i data-lucide="file-down" style="width: 14px; height: 14px; color: var(--icon-secondary);"></i>
+                            <span style="font-size: 11px; color: var(--text-secondary);">下载</span>
+                        </button>
+                    </div>
+                </div>
+
                 <!-- 3. 触控区域（默认占满剩余空间） -->
-                <div class="flex-1 flex flex-col" style="background: var(--bg-base-secondary); border: 1px dashed var(--border-neutral-l2); border-radius: var(--radius-16); min-height: 0; transition: flex 0.3s ease; overflow: hidden;">
+                <div class="flex-1 flex flex-col" id="view-touch" style="display: flex; background: var(--bg-base-secondary); border: 1px dashed var(--border-neutral-l2); border-radius: var(--radius-16); min-height: 0; transition: flex 0.3s ease; overflow: hidden;">
                     <!-- 触控板手势区 -->
                     <div class="flex-1 flex flex-col items-center justify-center" style="min-height: 0; gap: 10px;">
                         <i data-lucide="mouse" style="width: 64px; height: 64px; color: var(--text-tertiary); opacity: 0.25;"></i>
-                        <div style="font-size: 11px; color: var(--text-tertiary); opacity: 0.5; text-align: center; padding: 0 16px; line-height: 16px;">滑动移动 · 双指右键 · 双指滚动</div>
+                        <div style="font-size: 11px; color: var(--text-tertiary); opacity: 0.5; text-align: center; padding: 0 16px; line-height: 16px;">滑动移动 · 双指滚动 · 捏合缩放 · 三指切桌面 · 自然方向+惯性</div>
                     </div>
                     <!-- 底部鼠标按键栏 -->
                     <div class="flex items-center" style="gap: 1px; padding: 8px 8px; border-top: 1px solid var(--border-neutral-l1); background: var(--bg-base-default); flex-shrink: 0;">
@@ -1267,509 +1419,35 @@ pre {
                         </button>
                     </div>
                 </div>
-
-                <!-- 4. 底部上滑抽屉 -->
-                <div id="bottomDrawer" style="background: var(--bg-base-default); border: 1px solid var(--border-neutral-l1); border-radius: var(--radius-12); overflow: hidden; transition: box-shadow 0.3s ease;">
-
-                    <!-- 抽屉手柄区 -->
-                    <div id="drawerHandle" style="padding: 8px 12px; cursor: pointer; display: flex; flex-direction: column; align-items: center; gap: 4px; user-select: none;">
-                        <!-- 抓取条 -->
-                        <div style="width: 36px; height: 4px; background: var(--bg-overlay-l3); border-radius: var(--radius-full);"></div>
-                        <!-- 提示行 -->
-                        <div class="flex items-center" style="gap: 4px;">
-                            <i data-lucide="chevron-up" id="drawerChevron" style="width: 14px; height: 14px; color: var(--text-tertiary); transition: transform 0.3s ease;"></i>
-                            <span id="drawerLabel" style="font-size: 11px; color: var(--text-tertiary);">点击收起</span>
-                        </div>
-                    </div>
-
-                    <!-- 抽屉内容区（默认收起） -->
-                    <div id="drawerContent" style="max-height: 0; overflow: hidden; transition: max-height 0.35s ease;">
-
-                        <!-- 4a. 语音控制面板 -->
-                        <div style="padding: 0 12px;">
-                            <!-- 面板标题行 -->
-                            
-
-                            <!-- 语音/键盘 Tab 切换 -->
-                            <div class="ds-tabs" style="gap: 16px;">
-                                <button class="ds-tab is-active" id="tabVoice" onclick="switchTab('voice')" style="font-size: 12px; padding: 8px 0; display: inline-flex; align-items: center; gap: 4px;">
-                                    <i data-lucide="audio-lines" style="width: 14px; height: 14px;"></i>
-                                    语音
-                                </button>
-                                <button class="ds-tab" id="tabKeyboard" onclick="switchTab('keyboard')" style="font-size: 12px; padding: 8px 0; display: inline-flex; align-items: center; gap: 4px;">
-                                    <i data-lucide="keyboard" style="width: 14px; height: 14px;"></i>
-                                    键盘
-                                </button>
-                            </div>
-
-                            <!-- Tab 内容: 语音（麦克风+音频合并） -->
-                            <div id="panelVoice" style="margin-top: 10px;">
-                                <style>
-                                    .mm-mic-status { display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 8px 0 10px; }
-                                    .mm-mic-orb { width: 56px; height: 56px; border-radius: var(--radius-full); display: flex; align-items: center; justify-content: center; transition: background 0.2s, box-shadow 0.2s; }
-                                    .mm-mic-orb.is-off { background: var(--bg-overlay-l2); }
-                                    .mm-mic-orb.is-on { background: var(--bg-brand); box-shadow: 0 0 0 4px color-mix(in srgb, var(--bg-brand) 20%, transparent); }
-                                    .mm-mic-orb.is-on i { color: var(--icon-onbrand); }
-                                    .mm-mic-orb.is-off i { color: var(--icon-tertiary); }
-                                    .mm-mic-bars { display: flex; align-items: flex-end; gap: 3px; height: 24px; }
-                                    .mm-mic-bars span { width: 3px; border-radius: var(--radius-full); background: var(--bg-brand); transition: height 0.1s ease; }
-                                    .mm-mic-text { font-size: 11px; color: var(--text-tertiary); }
-                                    .mm-mic-text.is-on { color: var(--text-brand); }
-                                </style>
-                                <!-- 麦克风状态 -->
-                                
-                                <!-- 分割线 -->
-                                <div style="height: 1px; background: var(--border-neutral-l1); margin: 4px 0 10px;"></div>
-                                <!-- 音频源切换 -->
-                                <div class="flex items-center" style="gap: 6px; margin-bottom: 8px;">
-                                    <button class="flex items-center" style="height: 28px; padding: 0 10px; background: var(--bg-brand-popup); border: 1px solid var(--bg-brand); border-radius: var(--radius-full); gap: 4px; font-size: 11px; color: var(--text-brand); cursor: pointer;">
-                                        <i data-lucide="mic" style="width: 12px; height: 12px;"></i>
-                                        <span>录音</span>
-                                    </button>
-                                    <button class="flex items-center" style="height: 28px; padding: 0 10px; background: var(--bg-overlay-l1); border: 1px solid var(--border-neutral-l1); border-radius: var(--radius-full); gap: 4px; font-size: 11px; color: var(--text-secondary); cursor: pointer;">
-                                        <i data-lucide="music" style="width: 12px; height: 12px;"></i>
-                                        <span>音频文件</span>
-                                    </button>
-                                </div>
-                                <!-- 录音按钮（按住说话） -->
-                                <div class="mm-rec-wrap" style="display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 8px 0 10px;">
-                                    <style>
-                                        .mm-rec-btn { -webkit-tap-highlight-color: transparent; touch-action: none; user-select: none; -webkit-user-select: none; }
-                                        .mm-rec-btn.is-recording { transform: scale(1.1); }
-                                        .mm-rec-pulse { position: absolute; inset: 0; border-radius: var(--radius-full); background: var(--status-error-default); opacity: 0; pointer-events: none; }
-                                        .mm-rec-pulse.is-active { animation: mm-pulse 1.2s ease-out infinite; }
-                                        @keyframes mm-pulse { 0% { transform: scale(1); opacity: 0.4; } 100% { transform: scale(1.8); opacity: 0; } }
-                                        .mm-rec-bars { display: flex; align-items: center; gap: 2px; height: 14px; }
-                                        .mm-rec-bars span { width: 2px; border-radius: var(--radius-full); background: var(--status-error-default); height: 3px; transition: height 0.15s ease; }
-                                        .mm-rec-bars.is-active span { animation: mm-bar 0.6s ease-in-out infinite alternate; }
-                                        .mm-rec-bars.is-active span:nth-child(1) { animation-delay: 0s; }
-                                        .mm-rec-bars.is-active span:nth-child(2) { animation-delay: 0.1s; }
-                                        .mm-rec-bars.is-active span:nth-child(3) { animation-delay: 0.2s; }
-                                        .mm-rec-bars.is-active span:nth-child(4) { animation-delay: 0.15s; }
-                                        .mm-rec-bars.is-active span:nth-child(5) { animation-delay: 0.05s; }
-                                        @keyframes mm-bar { 0% { height: 3px; } 100% { height: 12px; } }
-                                    </style>
-                                    <div style="position: relative; width: 56px; height: 56px;">
-                                        <div class="mm-rec-pulse" id="recPulse"></div>
-                                        <button class="mm-rec-btn" id="recBtn" style="position: relative; width: 56px; height: 56px; border-radius: var(--radius-full); border: none; display: flex; align-items: center; justify-content: center; cursor: pointer; transition: transform 0.2s ease, box-shadow 0.2s ease; background: var(--status-error-default); box-shadow: 0 0 0 4px color-mix(in srgb, var(--status-error-default) 15%, transparent);">
-                                            <i data-lucide="mic" style="width: 22px; height: 22px; color: var(--text-white);" id="recBtnIcon"></i>
-                                        </button>
-                                    </div>
-                                    <div class="mm-rec-bars" id="recBars" style="visibility: hidden;">
-                                        <span></span><span></span><span></span><span></span><span></span>
-                                    </div>
-                                    <div class="mm-rec-text" id="recStatusText" style="font-size: 11px; color: var(--text-tertiary);">按住说话</div>
-                                </div>
-                                <!-- 历史播放 -->
-                                <div style="font-size: 10px; color: var(--text-tertiary); margin-bottom: 4px;">历史播放</div>
-                                <div class="flex" style="gap: 4px; flex-wrap: wrap; margin-bottom: 8px;">
-                                    <span class="ds-tag" style="font-size: 10px; height: 20px; padding: 0 6px;">铃声.mp3</span>
-                                    <span class="ds-tag" style="font-size: 10px; height: 20px; padding: 0 6px;">提示音.wav</span>
-                                    <span class="ds-tag" style="font-size: 10px; height: 20px; padding: 0 6px;">bgm.mp3</span>
-                                <span class="ds-tag" style="font-size: 10px; height: 20px; padding: 0 6px;" data-editor-id="editor-copy-msdkf4h7-1">bgm.mp3</span></div>
-                                <!-- 快捷槽位 -->
-                                <div style="font-size: 10px; color: var(--text-tertiary); margin-bottom: 4px;">快捷播放</div>
-                                <div class="grid" style="grid-template-columns: repeat(4, 1fr); gap: 4px;">
-                                    <div class="flex items-center justify-center" style="height: 32px; background: var(--bg-overlay-l1); border: 1px dashed var(--border-neutral-l2); border-radius: var(--radius-6);">
-                                        <i data-lucide="plus" style="width: 14px; height: 14px; color: var(--icon-tertiary);"></i>
-                                    </div>
-                                    <div class="flex items-center justify-center" style="height: 32px; background: var(--bg-overlay-l1); border: 1px dashed var(--border-neutral-l2); border-radius: var(--radius-6);">
-                                        <i data-lucide="plus" style="width: 14px; height: 14px; color: var(--icon-tertiary);"></i>
-                                    </div>
-                                    <div class="flex items-center justify-center" style="height: 32px; background: var(--bg-overlay-l1); border: 1px dashed var(--border-neutral-l2); border-radius: var(--radius-6);">
-                                        <i data-lucide="plus" style="width: 14px; height: 14px; color: var(--icon-tertiary);"></i>
-                                    </div>
-                                    <div class="flex items-center justify-center" style="height: 32px; background: var(--bg-overlay-l1); border: 1px dashed var(--border-neutral-l2); border-radius: var(--radius-6);">
-                                        <i data-lucide="plus" style="width: 14px; height: 14px; color: var(--icon-tertiary);"></i>
-                                    </div>
-                                    <div class="flex items-center justify-center" style="height: 32px; background: var(--bg-overlay-l1); border: 1px dashed var(--border-neutral-l2); border-radius: var(--radius-6);">
-                                        <i data-lucide="plus" style="width: 14px; height: 14px; color: var(--icon-tertiary);"></i>
-                                    </div>
-                                    <div class="flex items-center justify-center" style="height: 32px; background: var(--bg-overlay-l1); border: 1px dashed var(--border-neutral-l2); border-radius: var(--radius-6);">
-                                        <i data-lucide="plus" style="width: 14px; height: 14px; color: var(--icon-tertiary);"></i>
-                                    </div>
-                                    <div class="flex items-center justify-center" style="height: 32px; background: var(--bg-overlay-l1); border: 1px dashed var(--border-neutral-l2); border-radius: var(--radius-6);">
-                                        <i data-lucide="plus" style="width: 14px; height: 14px; color: var(--icon-tertiary);"></i>
-                                    </div>
-                                    <div class="flex items-center justify-center" style="height: 32px; background: var(--bg-overlay-l1); border: 1px dashed var(--border-neutral-l2); border-radius: var(--radius-6);">
-                                        <i data-lucide="plus" style="width: 14px; height: 14px; color: var(--icon-tertiary);"></i>
-                                    </div>
-                                </div>
-                            </div>
-
-                            <!-- Tab 内容: 键盘（默认隐藏） -->
-                            <div id="panelKeyboard" style="display: none; margin-top: 10px;">
-                                <style>
-                                    .vkb-row { display: flex; gap: 3px; margin-bottom: 3px; }
-                                    .vkb-row:last-child { margin-bottom: 0; }
-                                    .vkb-key { flex: 1; min-width: 0; height: 30px; display: flex; align-items: center; justify-content: center; background: var(--bg-overlay-l1); border: 1px solid var(--border-neutral-l1); border-radius: var(--radius-6); font-size: 12px; font-weight: 500; color: var(--text-default); cursor: pointer; transition: background 0.15s, border-color 0.15s; user-select: none; -webkit-user-select: none; overflow: hidden; }
-                                    .vkb-key:active { background: var(--bg-brand-popup); border-color: var(--bg-brand); }
-                                    .vkb-key--fn { background: var(--bg-overlay-l2); font-size: 10px; }
-                                    .vkb-key--sm { font-size: 9px; }
-                                    .vkb-key--wide { flex: 1.6; }
-                                    .vkb-key--xwide { flex: 2.2; }
-                                    .vkb-key--space { flex: 5.6; font-size: 10px; }
-                                    .vkb-gap { flex: 0.4; min-width: 0; }
-                                </style>
-                                <!-- 功能键行 -->
-                                <div class="vkb-row">
-                                    <button class="vkb-key vkb-key--fn vkb-key--sm">Esc</button>
-                                    <div class="vkb-gap"></div>
-                                    <button class="vkb-key vkb-key--fn vkb-key--sm">F1</button>
-                                    <button class="vkb-key vkb-key--fn vkb-key--sm">F2</button>
-                                    <button class="vkb-key vkb-key--fn vkb-key--sm">F3</button>
-                                    <button class="vkb-key vkb-key--fn vkb-key--sm">F4</button>
-                                    <div class="vkb-gap"></div>
-                                    <button class="vkb-key vkb-key--fn vkb-key--sm">F5</button>
-                                    <button class="vkb-key vkb-key--fn vkb-key--sm">F6</button>
-                                    <button class="vkb-key vkb-key--fn vkb-key--sm">F7</button>
-                                    <button class="vkb-key vkb-key--fn vkb-key--sm">F8</button>
-                                    <div class="vkb-gap"></div>
-                                    <button class="vkb-key vkb-key--fn vkb-key--sm">F9</button>
-                                    <button class="vkb-key vkb-key--fn vkb-key--sm">F10</button>
-                                    <button class="vkb-key vkb-key--fn vkb-key--sm">F11</button>
-                                    <button class="vkb-key vkb-key--fn vkb-key--sm">F12</button>
-                                </div>
-                                <!-- 数字行 -->
-                                <div class="vkb-row">
-                                    <button class="vkb-key">`</button>
-                                    <button class="vkb-key">1</button>
-                                    <button class="vkb-key">2</button>
-                                    <button class="vkb-key">3</button>
-                                    <button class="vkb-key">4</button>
-                                    <button class="vkb-key">5</button>
-                                    <button class="vkb-key">6</button>
-                                    <button class="vkb-key">7</button>
-                                    <button class="vkb-key">8</button>
-                                    <button class="vkb-key">9</button>
-                                    <button class="vkb-key">0</button>
-                                    <button class="vkb-key">-</button>
-                                    <button class="vkb-key">=</button>
-                                    <button class="vkb-key vkb-key--fn vkb-key--wide">⌫</button>
-                                </div>
-                                <!-- QWERTY 行 -->
-                                <div class="vkb-row">
-                                    <button class="vkb-key vkb-key--fn vkb-key--wide">Tab</button>
-                                    <button class="vkb-key">Q</button>
-                                    <button class="vkb-key">W</button>
-                                    <button class="vkb-key">E</button>
-                                    <button class="vkb-key">R</button>
-                                    <button class="vkb-key">T</button>
-                                    <button class="vkb-key">Y</button>
-                                    <button class="vkb-key">U</button>
-                                    <button class="vkb-key">I</button>
-                                    <button class="vkb-key">O</button>
-                                    <button class="vkb-key">P</button>
-                                    <button class="vkb-key">[</button>
-                                    <button class="vkb-key">]</button>
-                                    <button class="vkb-key">\</button>
-                                </div>
-                                <!-- ASDF 行 -->
-                                <div class="vkb-row">
-                                    <button class="vkb-key vkb-key--fn vkb-key--xwide">Caps</button>
-                                    <button class="vkb-key">A</button>
-                                    <button class="vkb-key">S</button>
-                                    <button class="vkb-key">D</button>
-                                    <button class="vkb-key">F</button>
-                                    <button class="vkb-key">G</button>
-                                    <button class="vkb-key">H</button>
-                                    <button class="vkb-key">J</button>
-                                    <button class="vkb-key">K</button>
-                                    <button class="vkb-key">L</button>
-                                    <button class="vkb-key">;</button>
-                                    <button class="vkb-key">'</button>
-                                    <button class="vkb-key vkb-key--fn vkb-key--xwide">↵</button>
-                                </div>
-                                <!-- ZXCV 行 -->
-                                <div class="vkb-row">
-                                    <button class="vkb-key vkb-key--fn vkb-key--xwide">⇧</button>
-                                    <button class="vkb-key">Z</button>
-                                    <button class="vkb-key">X</button>
-                                    <button class="vkb-key">C</button>
-                                    <button class="vkb-key">V</button>
-                                    <button class="vkb-key">B</button>
-                                    <button class="vkb-key">N</button>
-                                    <button class="vkb-key">M</button>
-                                    <button class="vkb-key">,</button>
-                                    <button class="vkb-key">.</button>
-                                    <button class="vkb-key">/</button>
-                                    <button class="vkb-key vkb-key--fn vkb-key--xwide">⇧</button>
-                                </div>
-                                <!-- 修饰键行 -->
-                                <div class="vkb-row">
-                                    <button class="vkb-key vkb-key--fn">Ctrl</button>
-                                    <button class="vkb-key vkb-key--fn">Win</button>
-                                    <button class="vkb-key vkb-key--fn">Alt</button>
-                                    <button class="vkb-key vkb-key--space">空格</button>
-                                    <button class="vkb-key vkb-key--fn">Alt</button>
-                                    <button class="vkb-key vkb-key--fn">Fn</button>
-                                    <button class="vkb-key vkb-key--fn">Menu</button>
-                                    <button class="vkb-key vkb-key--fn">Ctrl</button>
-                                </div>
-                                <!-- 方向键行 -->
-                                <div class="vkb-row" style="margin-top: 4px;">
-                                    <button class="vkb-key vkb-key--fn vkb-key--sm" style="flex: 3;">PrtSc</button>
-                                    <button class="vkb-key vkb-key--fn vkb-key--sm" style="flex: 3;">Scroll</button>
-                                    <button class="vkb-key vkb-key--fn vkb-key--sm" style="flex: 3;">Pause</button>
-                                    <div class="vkb-gap" style="flex: 1;"></div>
-                                    <button class="vkb-key vkb-key--fn">Insert</button>
-                                    <button class="vkb-key vkb-key--fn">Home</button>
-                                    <button class="vkb-key vkb-key--fn">PgUp</button>
-                                    <div class="vkb-gap"></div>
-                                    <button class="vkb-key vkb-key--fn">↑</button>
-                                </div>
-                                <div class="vkb-row">
-                                    <button class="vkb-key vkb-key--fn vkb-key--sm" style="flex: 3;">Del</button>
-                                    <button class="vkb-key vkb-key--fn vkb-key--sm" style="flex: 3;">End</button>
-                                    <button class="vkb-key vkb-key--fn vkb-key--sm" style="flex: 3;">PgDn</button>
-                                    <div class="vkb-gap" style="flex: 1;"></div>
-                                    <button class="vkb-key vkb-key--fn">←</button>
-                                    <button class="vkb-key vkb-key--fn">↓</button>
-                                    <button class="vkb-key vkb-key--fn">→</button>
-                                </div>
-                                <!-- 快捷键槽位 -->
-                                <style>
-                                    .kbd-slot { transition: background 0.15s, border-color 0.15s; }
-                                    .kbd-slot:active { background: var(--bg-brand-popup); border-color: var(--bg-brand); }
-                                    .kbd-slot.is-edit { background: var(--bg-base-default); border-color: var(--bg-brand); }
-                                </style>
-                                <div class="flex items-center justify-between" style="margin-top: 8px; margin-bottom: 4px;">
-                                    <div class="flex items-center" style="gap: 4px;">
-                                        <i data-lucide="zap" style="width: 12px; height: 12px; color: var(--icon-brand);"></i>
-                                        <span style="font-size: 10px; font-weight: 600; color: var(--text-default);">快捷键</span>
-                                    </div>
-                                    <button id="kbdEditBtn" class="flex items-center" style="height: 20px; padding: 0 6px; background: transparent; border: 1px solid var(--border-neutral-l1); border-radius: var(--radius-4); gap: 3px; font-size: 10px; color: var(--text-tertiary); cursor: pointer;">
-                                        <i data-lucide="pencil" style="width: 10px; height: 10px;"></i>
-                                        <span>编辑</span>
-                                    </button>
-                                </div>
-                                <div class="grid" style="grid-template-columns: repeat(4, 1fr); gap: 3px;">
-                                    <div class="kbd-slot flex items-center justify-center" data-slot="0" style="height: 30px; background: var(--bg-overlay-l1); border: 1px solid var(--border-neutral-l1); border-radius: var(--radius-6); font-size: 10px; font-weight: 500; color: var(--text-default); cursor: pointer;">
-                                        <span class="kbd-label">Ctrl+C</span>
-                                        <input class="kbd-input" type="text" value="Ctrl+C" style="display: none; width: 100%; height: 100%; border: none; background: transparent; text-align: center; font-size: 10px; font-weight: 500; color: var(--text-default); outline: none;">
-                                    </div>
-                                    <div class="kbd-slot flex items-center justify-center" data-slot="1" style="height: 30px; background: var(--bg-overlay-l1); border: 1px solid var(--border-neutral-l1); border-radius: var(--radius-6); font-size: 10px; font-weight: 500; color: var(--text-default); cursor: pointer;">
-                                        <span class="kbd-label">Ctrl+V</span>
-                                        <input class="kbd-input" type="text" value="Ctrl+V" style="display: none; width: 100%; height: 100%; border: none; background: transparent; text-align: center; font-size: 10px; font-weight: 500; color: var(--text-default); outline: none;">
-                                    </div>
-                                    <div class="kbd-slot flex items-center justify-center" data-slot="2" style="height: 30px; background: var(--bg-overlay-l1); border: 1px solid var(--border-neutral-l1); border-radius: var(--radius-6); font-size: 10px; font-weight: 500; color: var(--text-default); cursor: pointer;">
-                                        <span class="kbd-label">Ctrl+Z</span>
-                                        <input class="kbd-input" type="text" value="Ctrl+Z" style="display: none; width: 100%; height: 100%; border: none; background: transparent; text-align: center; font-size: 10px; font-weight: 500; color: var(--text-default); outline: none;">
-                                    </div>
-                                    <div class="kbd-slot flex items-center justify-center" data-slot="3" style="height: 30px; background: var(--bg-overlay-l1); border: 1px solid var(--border-neutral-l1); border-radius: var(--radius-6); font-size: 10px; font-weight: 500; color: var(--text-default); cursor: pointer;">
-                                        <span class="kbd-label">Alt+Tab</span>
-                                        <input class="kbd-input" type="text" value="Alt+Tab" style="display: none; width: 100%; height: 100%; border: none; background: transparent; text-align: center; font-size: 10px; font-weight: 500; color: var(--text-default); outline: none;">
-                                    </div>
-                                    <div class="kbd-slot flex items-center justify-center" data-slot="4" style="height: 30px; background: var(--bg-overlay-l1); border: 1px solid var(--border-neutral-l1); border-radius: var(--radius-6); font-size: 10px; font-weight: 500; color: var(--text-default); cursor: pointer;">
-                                        <span class="kbd-label">Win+D</span>
-                                        <input class="kbd-input" type="text" value="Win+D" style="display: none; width: 100%; height: 100%; border: none; background: transparent; text-align: center; font-size: 10px; font-weight: 500; color: var(--text-default); outline: none;">
-                                    </div>
-                                    <div class="kbd-slot flex items-center justify-center" data-slot="5" style="height: 30px; background: var(--bg-overlay-l1); border: 1px solid var(--border-neutral-l1); border-radius: var(--radius-6); font-size: 10px; font-weight: 500; color: var(--text-default); cursor: pointer;">
-                                        <span class="kbd-label">Ctrl+S</span>
-                                        <input class="kbd-input" type="text" value="Ctrl+S" style="display: none; width: 100%; height: 100%; border: none; background: transparent; text-align: center; font-size: 10px; font-weight: 500; color: var(--text-default); outline: none;">
-                                    </div>
-                                    <div class="kbd-slot flex items-center justify-center" data-slot="6" style="height: 30px; background: var(--bg-overlay-l1); border: 1px solid var(--border-neutral-l1); border-radius: var(--radius-6); font-size: 10px; font-weight: 500; color: var(--text-default); cursor: pointer;">
-                                        <span class="kbd-label">Ctrl+X</span>
-                                        <input class="kbd-input" type="text" value="Ctrl+X" style="display: none; width: 100%; height: 100%; border: none; background: transparent; text-align: center; font-size: 10px; font-weight: 500; color: var(--text-default); outline: none;">
-                                    </div>
-                                    <div class="kbd-slot flex items-center justify-center" data-slot="7" style="height: 30px; background: var(--bg-overlay-l1); border: 1px dashed var(--border-neutral-l2); border-radius: var(--radius-6); font-size: 10px; color: var(--text-tertiary); cursor: pointer;">
-                                        <span class="kbd-label"><i data-lucide="plus" style="width: 12px; height: 12px;"></i></span>
-                                        <input class="kbd-input" type="text" value="" placeholder="自定义" style="display: none; width: 100%; height: 100%; border: none; background: transparent; text-align: center; font-size: 10px; font-weight: 500; color: var(--text-default); outline: none;">
-                                    </div>
-                                </div>
-                            </div>
-                        </div>
-
-                        <!-- 4b. 快捷键面板已移至键盘 tab 内 -->
-
-                        <!-- 4c. 鼠标按键栏已移至触控板底部 -->
-
-                        <!-- 4d. 断开按钮已移至顶部更多菜单 -->
-
-                    </div><!-- /drawerContent -->
-                </div><!-- /bottomDrawer -->
-
             </div>
         </div>
     </main>
     <script>
         lucide.createIcons();
-
-        // 底部抽屉展开/收起
-        var drawerExpanded = false;
-        var drawerContent = document.getElementById('drawerContent');
-        var drawerChevron = document.getElementById('drawerChevron');
-        var drawerLabel = document.getElementById('drawerLabel');
-        var drawerHandle = document.getElementById('drawerHandle');
-        var bottomDrawer = document.getElementById('bottomDrawer');
-
-        function toggleDrawer() {
-            drawerExpanded = !drawerExpanded;
-            if (drawerExpanded) {
-                drawerContent.style.maxHeight = '680px';
-                drawerChevron.style.transform = 'rotate(180deg)';
-                drawerLabel.textContent = '点击收起';
-                bottomDrawer.style.boxShadow = '0 -4px 24px color-mix(in srgb, var(--text-default) 8%, transparent)';
-            } else {
-                drawerContent.style.maxHeight = '0';
-                drawerChevron.style.transform = 'rotate(0deg)';
-                drawerLabel.textContent = '上滑显示控制';
-                bottomDrawer.style.boxShadow = 'none';
-            }
-        }
-
-        drawerHandle.addEventListener('click', toggleDrawer);
-
-        // 麦克风/音频 Tab 切换
-        function switchTab(tab) {
-            var tabIds = ['tabVoice', 'tabKeyboard'];
-            var panelIds = ['panelVoice', 'panelKeyboard'];
-            var names = ['voice', 'keyboard'];
-            var idx = names.indexOf(tab);
-            tabIds.forEach(function(tid, i) {
-                var t = document.getElementById(tid);
-                var p = document.getElementById(panelIds[i]);
-                if (i === idx) {
-                    t.classList.add('is-active');
-                    p.style.display = 'block';
-                } else {
-                    t.classList.remove('is-active');
-                    p.style.display = 'none';
-                }
-            });
-        }
-
-        // 快捷键编辑模式
-        var kbdEditBtn = document.getElementById('kbdEditBtn');
-        var kbdSlots = document.querySelectorAll('.kbd-slot');
-        var kbdEditMode = false;
-
-        kbdEditBtn.addEventListener('click', function() {
-            kbdEditMode = !kbdEditMode;
-            kbdSlots.forEach(function(slot) {
-                var label = slot.querySelector('.kbd-label');
-                var input = slot.querySelector('.kbd-input');
-                if (kbdEditMode) {
-                    label.style.display = 'none';
-                    input.style.display = 'block';
-                    slot.classList.add('is-edit');
-                    kbdEditBtn.innerHTML = '<i data-lucide="check" style="width: 12px; height: 12px;"></i><span>完成</span>';
-                } else {
-                    label.style.display = 'block';
-                    input.style.display = 'none';
-                    slot.classList.remove('is-edit');
-                    if (input.value) {
-                        label.textContent = input.value;
-                        slot.style.borderStyle = 'solid';
-                    } else {
-                        label.innerHTML = '<i data-lucide="plus" style="width: 14px; height: 14px;"></i>';
-                        slot.style.borderStyle = 'dashed';
-                    }
-                    kbdEditBtn.innerHTML = '<i data-lucide="pencil" style="width: 12px; height: 12px;"></i><span>编辑</span>';
-                }
-            });
-            lucide.createIcons();
+    </script>
+    <script>
+        // 连接栏展开/收起
+        document.getElementById('connToggle').addEventListener('click', function() {
+            document.getElementById('connBar').classList.toggle('is-expanded');
         });
-
-        // 点击键位发送快捷键（非编辑模式）
-        kbdSlots.forEach(function(slot) {
-            slot.addEventListener('click', function() {
-                if (!kbdEditMode) {
-                    var label = slot.querySelector('.kbd-label').textContent.trim();
-                    if (label && label !== '+') {
-                        slot.style.background = 'var(--bg-brand)';
-                        slot.style.color = 'var(--text-white)';
-                        slot.style.borderColor = 'var(--bg-brand)';
-                        setTimeout(function() {
-                            slot.style.background = '';
-                            slot.style.color = '';
-                            slot.style.borderColor = '';
-                        }, 200);
-                    }
-                }
+        // 页面切换:左组激活态 + 右组上下文切换 + 视图切换
+        var viewButtons = document.querySelectorAll('[data-view]');
+        viewButtons.forEach(function(btn) {
+            btn.addEventListener('click', function() {
+                var view = this.getAttribute('data-view');
+                viewButtons.forEach(function(b) { b.classList.remove('is-active'); });
+                this.classList.add('is-active');
+                document.querySelectorAll('.mm-ctx').forEach(function(c) { c.classList.remove('is-visible'); });
+                var ctx = document.getElementById('ctx-' + view);
+                if (ctx) ctx.classList.add('is-visible');
+                // 视图切换:隐藏所有视图,显示目标视图
+                document.querySelectorAll('.mm-view, [id^="view-"]').forEach(function(v) {
+                    if (v.id && v.id.startsWith('view-')) v.style.display = 'none';
+                });
+                var targetView = document.getElementById('view-' + view);
+                if (targetView) targetView.style.display = 'flex';
             });
         });
-
-        // 更多菜单下拉
-        var moreBtn = document.getElementById('moreBtn');
-        var moreMenu = document.getElementById('moreMenu');
-
-        moreBtn.addEventListener('click', function(e) {
-            e.stopPropagation();
-            var isVisible = moreMenu.style.display !== 'none';
-            moreMenu.style.display = isVisible ? 'none' : 'block';
-        });
-
-        document.addEventListener('click', function(e) {
-            if (!moreMenu.contains(e.target) && e.target !== moreBtn) {
-                moreMenu.style.display = 'none';
-            }
-        });
-
-        moreMenu.addEventListener('click', function(e) {
-            if (e.target.closest('.mm-more-item--toggle')) {
-                e.stopPropagation();
-            } else if (e.target.closest('.mm-more-item')) {
-                moreMenu.style.display = 'none';
-            }
-        });
-
-        // 录音按钮交互（按住说话）
-        var recBtn = document.getElementById('recBtn');
-        var recBtnIcon = document.getElementById('recBtnIcon');
-        var recStatusText = document.getElementById('recStatusText');
-        var recPulse = document.getElementById('recPulse');
-        var recBars = document.getElementById('recBars');
-        var isRecording = false;
-        var recTimer = null;
-        var recSeconds = 0;
-
-        function startRec() {
-            if (isRecording) return;
-            isRecording = true;
-            recBtn.classList.add('is-recording');
-            recBtn.style.boxShadow = '0 0 0 6px color-mix(in srgb, var(--status-error-default) 25%, transparent)';
-            recBtnIcon.setAttribute('data-lucide', 'square');
-            recBtnIcon.style.width = '18px';
-            recBtnIcon.style.height = '18px';
-            recPulse.classList.add('is-active');
-            recBars.style.visibility = 'visible';
-            recBars.classList.add('is-active');
-            recSeconds = 0;
-            recStatusText.textContent = '录音中 0:00  松开停止';
-            recStatusText.style.color = 'var(--status-error-default)';
-            recTimer = setInterval(function() {
-                recSeconds++;
-                var m = Math.floor(recSeconds / 60);
-                var s = recSeconds % 60;
-                recStatusText.textContent = '录音中 ' + m + ':' + (s < 10 ? '0' + s : s) + '  松开停止';
-            }, 1000);
-            if (window.lucide) lucide.createIcons();
-        }
-
-        function stopRec() {
-            if (!isRecording) return;
-            isRecording = false;
-            recBtn.classList.remove('is-recording');
-            recBtn.style.boxShadow = '0 0 0 4px color-mix(in srgb, var(--status-error-default) 15%, transparent)';
-            recBtnIcon.setAttribute('data-lucide', 'mic');
-            recBtnIcon.style.width = '22px';
-            recBtnIcon.style.height = '22px';
-            recPulse.classList.remove('is-active');
-            recBars.style.visibility = 'hidden';
-            recBars.classList.remove('is-active');
-            recStatusText.textContent = '按住说话';
-            recStatusText.style.color = 'var(--text-tertiary)';
-            if (recTimer) { clearInterval(recTimer); recTimer = null; }
-            if (window.lucide) lucide.createIcons();
-        }
-
-        recBtn.addEventListener('mousedown', function(e) { e.preventDefault(); startRec(); });
-        recBtn.addEventListener('mouseup', stopRec);
-        recBtn.addEventListener('mouseleave', stopRec);
-        recBtn.addEventListener('touchstart', function(e) { e.preventDefault(); startRec(); }, { passive: false });
-        recBtn.addEventListener('touchend', function(e) { e.preventDefault(); stopRec(); }, { passive: false });
-        recBtn.addEventListener('touchcancel', stopRec);
     </script>
 </body>
 </html>

@@ -1,32 +1,108 @@
 {
+  "schemaVersion": "1.0",
   "skillProvenance": {
-    "skillName": "solo-design",
-    "skillVersion": "1.0.0",
-    "lane": "library_bound"
+    "name": "solo-design",
+    "version": "2026.07.22.00.00.00",
+    "version_source": "skill-release-manifest.json",
+    "release": "prompt-base-cloud-ssot-migration",
+    "schema_version": "1.0",
+    "read_status": "ok"
   },
   "project": {
-    "name": "meowmic-ui-redesign",
-    "designProjectPath": "f:/git/MeowMic/meowmic-ui-redesign",
-    "resolvedLane": "library_bound",
+    "resolvedLane": "existing_edit_add_comparison",
+    "intentProfile": {
+      "caseFamily": "existing_edit",
+      "sourceType": "existing_page",
+      "operatingMode": "free-explore"
+    },
     "selectedIntentWorkflowRead": true,
     "contextRequirementsLoaded": [
       {
-        "path": "c:/Users/62744/.trae-cn/design_libraries/dl_builtin_trae_work/metadata.json",
+        "path": "shared-runtime/runtime-boundaries/lane-runtime-contracts.md",
         "readStatus": "loaded",
         "bodyRead": true
       },
       {
-        "path": "f:/git/MeowMic/meowmic-ui-redesign/colors_and_type.css",
+        "path": "shared-runtime/agent-dispatch-runtime/lane-dispatch-index.md",
         "readStatus": "loaded",
         "bodyRead": true
       },
       {
-        "path": "f:/git/MeowMic/meowmic-ui-redesign/pages/android-connect.html",
+        "path": "shared-runtime/agent-dispatch-runtime/shared-page-rendering-kernel.md",
+        "readStatus": "loaded",
+        "bodyRead": true
+      },
+      {
+        "path": "delivery-quality/page-rendering-quality-gate.md",
+        "readStatus": "loaded",
+        "bodyRead": true
+      },
+      {
+        "path": "delivery-quality/design-artifact-validation.md",
+        "readStatus": "loaded",
+        "bodyRead": true
+      },
+      {
+        "path": "delivery-quality/delivery-evidence-contract.md",
         "readStatus": "loaded",
         "bodyRead": true
       }
     ],
-    "contextReadScope": "library-bound-page-rendering",
+    "contextReadScope": "intent-project-mutation lane + shared rendering kernel + delivery quality gates",
+    "readScopeLedger": [
+      {
+        "path": "intent-workflows/intent-project-mutation/INTENT_WORKFLOW.md",
+        "reason": "lane routing and workflow steps",
+        "ownerLane": "existing_edit_add_comparison"
+      },
+      {
+        "path": "intent-workflows/intent-project-mutation/edit-existing-project.md",
+        "reason": "existing edit sub-flow and quick path selection",
+        "ownerLane": "existing_edit_add_comparison"
+      },
+      {
+        "path": "intent-workflows/intent-project-mutation/comparison-page-contract.md",
+        "reason": "comparison page derivation rules",
+        "ownerLane": "existing_edit_add_comparison"
+      },
+      {
+        "path": "intent-workflows/intent-project-mutation/existing-edit-dispatch-contract.md",
+        "reason": "dispatch contract required fields",
+        "ownerLane": "existing_edit_add_comparison"
+      },
+      {
+        "path": "intent-workflows/intent-project-mutation/existing-edit-page-runtime.md",
+        "reason": "page runtime guide for comparison pages",
+        "ownerLane": "existing_edit_add_comparison"
+      },
+      {
+        "path": "intent-workflows/intent-project-mutation/orchestration-summary-fields.md",
+        "reason": "summary field requirements",
+        "ownerLane": "existing_edit_add_comparison"
+      }
+    ],
+    "sourcePageId": "page-android-quicklaunch-desktop",
+    "sourceHtmlSrc": "pages/android-quicklaunch-desktop.html",
+    "derivationType": "comparison-page",
+    "inPlaceEditAllowed": false,
+    "sourceProjectLaneHeritage": {
+      "designLibrary": "dl_builtin_trae_work",
+      "operatingMode": "free-explore",
+      "styleContinuityInherited": true
+    },
+    "styleContinuityAnchors": {
+      "colorSystem": "TraeWork Light tokens: --bg-base-default #FFFFFF, --bg-base-secondary #F7F7F8, --bg-overlay-l1/l2/l3, --bg-brand/--bg-brand-popup, --text-default/secondary/tertiary, --icon-brand/secondary/tertiary, --border-neutral-l1/l2, --border-brand",
+      "shapeSystem": "Radius scale: 2/4/6/8/10/12/16/20/24/32px; quick-cell icons use --radius-12; buttons use --radius-6; phone frame uses --radius-32",
+      "typographySystem": "Sans-serif default stack; body-xs at 10px for cell labels; 11px for toolbar text; 9px for connection tags",
+      "spacingSystem": "8px base gap in page content; 4px between toolbar buttons; 12px page padding; 2px grid gap",
+      "componentLanguage": "mm-icon-btn (24x24 border + icon), mm-toggle-btn (24x24 with is-active state), quick-cell (48x48 icon + 10px label), mm-conn-bar (collapsible), mm-dropdown (positioned menu), taskbar with task-app items",
+      "surfaceAndDepth": "Flat surfaces with 1px borders; phone frame uses large shadow (24px blur); dropdown uses 8px shadow; no card shadows in content",
+      "imageryAndIconography": "Lucide icons throughout (24px in cells, 14px in buttons); no photographic imagery; icon-led visual identity",
+      "interactionTone": "0.12-0.15s transitions on hover/active; scale(0.92) on cell press; collapsible conn-bar with max-height transition; 0.3s layout toggle transition"
+    },
+    "lowValueCallWatchdog": {
+      "noProgressNextAction": "dispatch sub-agent for HTML generation"
+    },
     "validationRunDiscipline": {
       "maxFullValidationRuns": 2,
       "softWarningsTriggerRepair": false,
@@ -37,103 +113,295 @@
         "style-warning-only"
       ]
     },
-    "lowValueCallWatchdog": {
-      "noProgressNextAction": "dispatch-or-readiness"
-    },
+    "dispatchPreflightManifest": [
+      {
+        "nodeId": "page-android-quicklaunch-desktop-v2",
+        "htmlSrc": "pages/android-quicklaunch-desktop-v2.html",
+        "laneContract": {
+          "resolvedLane": "existing_edit_add_comparison",
+          "packetType": "ExistingEditPagePacket",
+          "pageRuntimeGuide": "intent-workflows/intent-project-mutation/existing-edit-page-runtime.md",
+          "dispatchContract": "intent-workflows/intent-project-mutation/existing-edit-dispatch-contract.md"
+        },
+        "sharedTemplate": "shared-runtime/agent-dispatch-runtime/shared-page-rendering-kernel.md",
+        "supplementaryReads": [],
+        "allowedWritePaths": [
+          "pages/android-quicklaunch-desktop-v2.html"
+        ],
+        "forbiddenWriteRoots": [
+          "*.design",
+          "runtime-orchestration-summary.json",
+          "validation-report.json",
+          "finish-readiness-report.json"
+        ],
+        "toolPolicy": {
+          "todoWriteAllowed": false,
+          "validationScriptsAllowed": false,
+          "previewAllowed": false,
+          "helperScriptsAllowed": false,
+          "designFileWriteAllowed": false,
+          "allowedWritePaths": [
+            "pages/android-quicklaunch-desktop-v2.html"
+          ]
+        }
+      }
+    ],
+    "expectedDispatches": [
+      {
+        "nodeId": "page-android-quicklaunch-desktop-v2",
+        "packetType": "ExistingEditPagePacket",
+        "status": "completed",
+        "changedFiles": [
+          "pages/android-quicklaunch-desktop-v2.html"
+        ],
+        "toolCallLedger": {
+          "todoWriteCalls": 0,
+          "previewCalls": 0,
+          "validationScriptCalls": 0,
+          "helperScriptWrites": 0,
+          "source": "main-agent-runtime-trace",
+          "traceDigest": "subagent-completion-v2-quicklaunch"
+        }
+      }
+    ],
+    "validationHistory": [
+      {
+        "reportPath": "validation-report.json",
+        "reportHash": "9abe761cc064c6685cf86ceb6749468ec04599c2038d0ac4a77a091d475daf72",
+        "checkedAt": "2026-08-07T04:13:09.486Z",
+        "success": false,
+        "exitCode": 1,
+        "renderBlockingErrorCount": 2,
+        "repairPlanHints": [
+          "hardcoded-color-in-body",
+          "hardcoded-color-in-body",
+          "hardcoded-color-in-body",
+          "hardcoded-color-in-body"
+        ],
+        "errorSignatures": [
+          {
+            "errorClass": "artifact-readiness",
+            "normalized": "[design-file] Validation failed for .design file batch: ======================================== [FAIL] Validation failed ---------------------------------------- Found 5 issues: 1. [pages/android-touchpad-portrait-v3.html] HTML file exists but is not registered in canvas: pages/android-touchpad-portrait-v3.html exists in pages/ but has no corresponding page node in the .design file's data array. Fix: add a page node for this file to the data array 2. [data[9].devMetadata.interactions[1].domId] domId \"quick-launch-btn\" is registered in .design but not found in HTML file \"pages/android-touchpad-portrait-v2.html\". Fix: add data-dom-id=\"quick-launch-btn\" to the corresponding element in the HTML file, or remove this interaction entry if the link no longer exists. 3. [cross-version(page-android-quicklaunch-desktop)] superseded page \"page-android-quicklaunch-desktop\" (title: \"安卓 · 快捷启动桌面\") must have empty interactions (retired pages must not navigate in preview). Fix: set this page node's devMetadata.interactions to []. 4. [cross-version(page-android-touchpad-portrait-quicklaunch.interactions[1])] interaction domId \"quick-launch-btn\" targets superseded page \"page-android-quicklaunch-desktop\" — preview must not mix old and new versions. Fix: redirect targetPageId to \"page-android-quicklaunch-desktop-v2\". 5. [cross-version(page-android-touchpad-portrait-v2.interactions[1])] interaction domId \"quick-launch-btn\" targets superseded page \"page-android-quicklaunch-desktop\" — preview must not mix old and new versions. Fix: redirect targetPageId to \"page-android-quicklaunch-desktop-v2\". ========================================",
+            "signature": "b7d977e3027eddb0d89648cb92aa049ea9d05c63d3935cc935affb4d61a0c51d"
+          },
+          {
+            "errorClass": "dispatch-preflight-or-ownership",
+            "normalized": "[dispatch-changed-files] project.expectedDispatches[] is required when dispatchPreflightManifest[] exists",
+            "signature": "1863095a5236c379a633d22a8424261bfcde770ff9ab246147a2326cba87f6fd"
+          }
+        ],
+        "terminalState": null
+      },
+      {
+        "reportPath": "validation-report.json",
+        "reportHash": "63bb5660ccbcb5166933f69c1669d62fb6852e27693f7395f26090d02b664093",
+        "checkedAt": "2026-08-07T04:16:56.925Z",
+        "success": true,
+        "exitCode": 0,
+        "renderBlockingErrorCount": 0,
+        "repairPlanHints": [
+          "hardcoded-color-in-body",
+          "hardcoded-color-in-body",
+          "hardcoded-color-in-body",
+          "hardcoded-color-in-body"
+        ],
+        "errorSignatures": [],
+        "terminalState": null
+      }
+    ],
+    "validationRepairLedger": [
+      {
+        "failedReportPath": "validation-report.json",
+        "failedReportHash": "9abe761cc064c6685cf86ceb6749468ec04599c2038d0ac4a77a091d475daf72",
+        "repairWorkflowReadPath": "intent-workflows/intent-project-mutation/main-agent-repair-workflow.md",
+        "repairStartedAt": "2026-08-07T04:15:52.056Z",
+        "repairEntryStatus": "revalidated-success",
+        "ownerTriage": [
+          {
+            "owner": "sub-agent",
+            "errorClass": "hardcoded-color-in-body",
+            "affectedFiles": [
+              "pc-console-about.html"
+            ],
+            "repairScope": "targeted-token-replace",
+            "strategy": "targeted_token_replace_once"
+          },
+          {
+            "owner": "sub-agent",
+            "errorClass": "hardcoded-color-in-body",
+            "affectedFiles": [
+              "pc-console-log.html"
+            ],
+            "repairScope": "targeted-token-replace",
+            "strategy": "targeted_token_replace_once"
+          },
+          {
+            "owner": "sub-agent",
+            "errorClass": "hardcoded-color-in-body",
+            "affectedFiles": [
+              "pc-console-settings.html"
+            ],
+            "repairScope": "targeted-token-replace",
+            "strategy": "targeted_token_replace_once"
+          },
+          {
+            "owner": "sub-agent",
+            "errorClass": "hardcoded-color-in-body",
+            "affectedFiles": [
+              "pc-console.html"
+            ],
+            "repairScope": "targeted-token-replace",
+            "strategy": "targeted_token_replace_once"
+          }
+        ],
+        "repairPlanHints": [
+          {
+            "errorClass": "hardcoded-color-in-body",
+            "owner": "sub-agent",
+            "repairScope": "targeted-token-replace",
+            "strategy": "targeted_token_replace_once",
+            "affectedFiles": [
+              "pc-console-about.html"
+            ],
+            "repairReportPath": null,
+            "repairAlreadyAttempted": false,
+            "allowSourceRead": "no-full-html-read",
+            "maxValidationRuns": 2
+          },
+          {
+            "errorClass": "hardcoded-color-in-body",
+            "owner": "sub-agent",
+            "repairScope": "targeted-token-replace",
+            "strategy": "targeted_token_replace_once",
+            "affectedFiles": [
+              "pc-console-log.html"
+            ],
+            "repairReportPath": null,
+            "repairAlreadyAttempted": false,
+            "allowSourceRead": "no-full-html-read",
+            "maxValidationRuns": 2
+          },
+          {
+            "errorClass": "hardcoded-color-in-body",
+            "owner": "sub-agent",
+            "repairScope": "targeted-token-replace",
+            "strategy": "targeted_token_replace_once",
+            "affectedFiles": [
+              "pc-console-settings.html"
+            ],
+            "repairReportPath": null,
+            "repairAlreadyAttempted": false,
+            "allowSourceRead": "no-full-html-read",
+            "maxValidationRuns": 2
+          },
+          {
+            "errorClass": "hardcoded-color-in-body",
+            "owner": "sub-agent",
+            "repairScope": "targeted-token-replace",
+            "strategy": "targeted_token_replace_once",
+            "affectedFiles": [
+              "pc-console.html"
+            ],
+            "repairReportPath": null,
+            "repairAlreadyAttempted": false,
+            "allowSourceRead": "no-full-html-read",
+            "maxValidationRuns": 2
+          }
+        ],
+        "repairActions": [
+          {
+            "owner": "main-agent",
+            "errorClass": "dispatch-preflight-or-ownership",
+            "affectedFiles": [
+              "runtime-orchestration-summary.json"
+            ],
+            "action": "fill-expected-dispatches",
+            "observedFileHashes": [
+              {
+                "path": "runtime-orchestration-summary.json",
+                "hash": "b61c4ce9824c464757787cb08a963d532cb07b7554ce3c751c3e7ef94a88617b"
+              }
+            ],
+            "preEditFileHashes": [],
+            "postEditFileHashes": [],
+            "repairOwnedFields": [
+              "dispatch-preflight-or-ownership"
+            ],
+            "recordedAt": "2026-08-07T04:16:01.481Z",
+            "repairActionTableRequired": true
+          },
+          {
+            "owner": "main-agent",
+            "errorClass": "artifact-readiness",
+            "affectedFiles": [
+              "meowmic-ui-redesign.design"
+            ],
+            "action": "fix-design-interactions-and-add-missing-page-node",
+            "observedFileHashes": [
+              {
+                "path": "meowmic-ui-redesign.design",
+                "hash": "3079fe8422f43fb6a0fc7b4078f895f943f6637f2c038d33eab2dba8ceb40b6c"
+              }
+            ],
+            "preEditFileHashes": [],
+            "postEditFileHashes": [],
+            "repairOwnedFields": [
+              "artifact-readiness"
+            ],
+            "recordedAt": "2026-08-07T04:16:12.039Z",
+            "repairActionTableRequired": true
+          }
+        ],
+        "revalidationReportPath": "validation-report.json",
+        "revalidationReportHash": "63bb5660ccbcb5166933f69c1669d62fb6852e27693f7395f26090d02b664093",
+        "revalidationSuccess": true,
+        "blockedReason": null,
+        "revalidationRecordedAt": "2026-08-07T04:17:03.554Z"
+      }
+    ],
+    "repairEntryEvidence": [
+      {
+        "failedReportPath": "validation-report.json",
+        "failedReportHash": "9abe761cc064c6685cf86ceb6749468ec04599c2038d0ac4a77a091d475daf72",
+        "repairWorkflowReadPath": "intent-workflows/intent-project-mutation/main-agent-repair-workflow.md",
+        "repairStartedAt": "2026-08-07T04:15:52.056Z",
+        "ledgerIndex": 0,
+        "ownerTriageCount": 4,
+        "repairActionCount": 2,
+        "revalidationReportPath": "validation-report.json",
+        "revalidationReportHash": "63bb5660ccbcb5166933f69c1669d62fb6852e27693f7395f26090d02b664093",
+        "revalidationSuccess": true
+      }
+    ]
+  },
+  "designSource": {
     "designLibrary": {
       "name": "TRAE Work",
       "id": "dl_builtin_trae_work",
-      "operatingMode": "library-bound",
-      "tokenFidelity": "strict"
+      "version": "",
+      "scope": "built-in-global",
+      "path": "c:\\Users\\62744\\.trae-cn\\design_libraries\\dl_builtin_trae_work"
     },
-    "brandColor": "#4B3FE3",
     "iconAssets": {
-      "path": "assets/icons/dl_builtin_trae_work/",
-      "count": 671,
-      "format": "svg"
-    },
-    "expectedDispatches": [
-      {
-        "pageId": "page-android-connect",
-        "htmlSrc": "pages/android-connect.html",
-        "title": "安卓 · 连接",
-        "status": "completed"
-      },
-      {
-        "pageId": "page-android-touchpad-portrait",
-        "htmlSrc": "pages/android-touchpad-portrait.html",
-        "title": "安卓 · 触控板 竖屏",
-        "status": "completed"
-      },
-      {
-        "pageId": "page-android-touchpad-landscape",
-        "htmlSrc": "pages/android-touchpad-landscape.html",
-        "title": "安卓 · 触控板 横屏",
-        "status": "completed"
-      },
-      {
-        "pageId": "page-pc-console",
-        "htmlSrc": "pages/pc-console.html",
-        "title": "PC · 控制台",
-        "status": "completed"
-      },
-      {
-        "nodeId": "page-pc-console-settings",
-        "pageId": "page-pc-console-settings",
-        "targetPageId": "page-pc-console-settings",
-        "htmlSrc": "pages/pc-console-settings.html",
-        "status": "completed",
-        "changedFiles": [
-          "pages/pc-console-settings.html"
-        ],
-        "toolCallLedger": {
-          "source": "main-agent-runtime-trace",
-          "traceDigest": "b3a25c120ff4972bd79ac827b4a33331d2d2a679a1d649c8d6be40157619a57e",
-          "todoWriteCalls": 0,
-          "previewCalls": 0,
-          "validationScriptCalls": 0,
-          "helperScriptWrites": 0
-        },
-        "recordedAt": "2026-08-02T04:14:07.015Z",
-        "source": "record-dispatch-completion.mjs"
-      },
-      {
-        "nodeId": "page-pc-console-about",
-        "pageId": "page-pc-console-about",
-        "targetPageId": "page-pc-console-about",
-        "htmlSrc": "pages/pc-console-about.html",
-        "status": "completed",
-        "changedFiles": [
-          "pages/pc-console-about.html"
-        ],
-        "toolCallLedger": {
-          "source": "main-agent-runtime-trace",
-          "traceDigest": "229413f4c0a236f745aa3b99c0af1b534a319edd7d19002a7ad2f6eea355343b",
-          "todoWriteCalls": 0,
-          "previewCalls": 0,
-          "validationScriptCalls": 0,
-          "helperScriptWrites": 0
-        },
-        "recordedAt": "2026-08-02T04:14:07.879Z",
-        "source": "record-dispatch-completion.mjs"
-      }
-    ],
-    "dispatchPreflightManifest": [
-      {
-        "nodeId": "page-pc-console-settings",
-        "htmlSrc": "pages/pc-console-settings.html",
-        "allowedWritePaths": [
-          "pages/pc-console-settings.html"
-        ]
-      },
-      {
-        "nodeId": "page-pc-console-about",
-        "htmlSrc": "pages/pc-console-about.html",
-        "allowedWritePaths": [
-          "pages/pc-console-about.html"
-        ]
-      }
-    ],
-    "mainAgentPostDispatchMutations": []
-  }
+      "availableNames": [],
+      "totalCount": 0
+    }
+  },
+  "pages": [
+    {
+      "nodeId": "page-android-quicklaunch-desktop-v2",
+      "slug": "android-quicklaunch-desktop-v2",
+      "title": "安卓 · 快捷启动桌面 v2(自由布局)",
+      "htmlSrc": "pages/android-quicklaunch-desktop-v2.html",
+      "pageType": "task-driven",
+      "businessScenario": "Android remote control quick launch desktop with free-arrangement grid, multi-type shortcuts, and drag-to-create-page",
+      "qualityRisks": [
+        "density",
+        "mobile-frame-overflow"
+      ],
+      "derivationType": "comparison-from-source",
+      "sourcePageId": "page-android-quicklaunch-desktop",
+      "sourceHtmlSrc": "pages/android-quicklaunch-desktop.html"
+    }
+  ]
 }

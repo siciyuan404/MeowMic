@@ -659,6 +659,21 @@ async fn run_serverinfo_server(
                         }
                     })
                     .unwrap_or(0);
+                // upload body 大小上限:防止恶意/异常大请求把服务端内存耗尽
+                const MAX_UPLOAD_BODY: usize = 256 * 1024 * 1024;
+                if content_length > MAX_UPLOAD_BODY {
+                    let body = br#"{"error":"upload too large"}"#.to_vec();
+                    let _ = stream.write_all(
+                        format!(
+                            "HTTP/1.1 413 Payload Too Large\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                            body.len()
+                        )
+                        .as_bytes(),
+                    )
+                    .await;
+                    let _ = stream.write_all(&body).await;
+                    return;
+                }
                 // 继续读取直到 body 完整
                 while body_so_far.len() < content_length {
                     let mut tmp = [0u8; 4096];
@@ -963,6 +978,28 @@ async fn run_serverinfo_server(
                         }
                     }
                 }
+            } else if method == "GET" && path == "/file/hash" {
+                // 文件传输页:查询文件 SHA-256(供客户端上传后/下载前比对完整性)
+                if !check_paired(&pairing, &active_clients, query).await {
+                    ("403 Forbidden", "application/json", br#"{"error":"not paired"}"#.to_vec())
+                } else {
+                    let raw_path = extract_query_param(query, "path").unwrap_or_default();
+                    let decoded = url_decode(&raw_path);
+                    if decoded.is_empty() {
+                        ("400 Bad Request", "application/json", br#"{"error":"path required"}"#.to_vec())
+                    } else {
+                        match files::sha256_file(&decoded) {
+                            Ok(hash) => {
+                                let body = format!(r#"{{"hash":"{}"}}"#, hash);
+                                ("200 OK", "application/json", body.into_bytes())
+                            }
+                            Err(e) => {
+                                let body = format!(r#"{{"error":"{}"}}"#, e);
+                                ("400 Bad Request", "application/json", body.into_bytes())
+                            }
+                        }
+                    }
+                }
             } else if method == "GET" && path == "/file/download" {
                 // 文件传输页:下载文件
                 if !check_paired(&pairing, &active_clients, query).await {
@@ -992,8 +1029,36 @@ async fn run_serverinfo_server(
                     if decoded.is_empty() {
                         ("400 Bad Request", "application/json", br#"{"error":"path required"}"#.to_vec())
                     } else {
+                        // 客户端可带 sha256=<hex>(上传前的本地 hash);提供则写入后重算比对
+                        let client_hash = extract_query_param(query, "sha256")
+                            .map(|h| url_decode(&h).to_lowercase());
                         match files::write_file(&decoded, &body_bytes) {
-                            Ok(()) => ("200 OK", "application/json", br#"{"ok":true}"#.to_vec()),
+                            Ok(()) => {
+                                if let Some(expected) = client_hash {
+                                    match files::sha256_file(&decoded) {
+                                        Ok(actual) if actual == expected => {
+                                            let body = format!(r#"{{"ok":true,"hash":"{}"}}"#, actual);
+                                            ("200 OK", "application/json", body.into_bytes())
+                                        }
+                                        Ok(actual) => {
+                                            // hash 不匹配:删除已写入的损坏文件,避免半损坏文件残留
+                                            let _ = std::fs::remove_file(&decoded);
+                                            let body = format!(
+                                                r#"{{"error":"hash mismatch","server":"{}"}}"#,
+                                                actual
+                                            );
+                                            ("460 Hash Mismatch", "application/json", body.into_bytes())
+                                        }
+                                        Err(e) => {
+                                            let _ = std::fs::remove_file(&decoded);
+                                            let body = format!(r#"{{"error":"verify failed: {}"}}"#, e);
+                                            ("500 Internal Server Error", "application/json", body.into_bytes())
+                                        }
+                                    }
+                                } else {
+                                    ("200 OK", "application/json", br#"{"ok":true}"#.to_vec())
+                                }
+                            }
                             Err(e) => {
                                 let body = format!(r#"{{"error":"{}"}}"#, e);
                                 ("400 Bad Request", "application/json", body.into_bytes())

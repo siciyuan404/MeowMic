@@ -603,23 +603,50 @@ private fun PagerGrid(
     var gridOrigin by remember { mutableStateOf(Offset.Zero) }
     // 边缘自动翻页:记录上次翻页时间,避免抖动
     var lastEdgeScrollMs by remember { mutableStateOf(0L) }
+    // 最近一次拖动的手指全局位置(翻页动画期间没有 onDrag 事件,翻页完成后用它重算落点)
+    var lastGlobalPos by remember { mutableStateOf(Offset.Zero) }
     val scope = androidx.compose.runtime.rememberCoroutineScope()
+
+    // 命中检测:优先匹配格子(仅有效内容页),其次"新建页面"占位区。
+    // 读取的都是 State 对象/稳定引用,闭包捕获后仍取最新值,可安全在 pointerInput 内使用。
+    fun hitTest(globalPos: Offset): Triple<Int, Int, Int>? {
+        val hitKey = cellBounds.entries.firstOrNull { (k, r) ->
+            if (!r.contains(globalPos)) return@firstOrNull false
+            // 仅接受有效内容页(末页是"新建页面"占位,无 cell;防陈旧条目误命中)
+            val p = k.substringBefore(':').toIntOrNull() ?: return@firstOrNull false
+            p < pagerState.pageCount - 1
+        }?.key
+        if (hitKey != null) {
+            val parts = hitKey.split(":")
+            return Triple(parts[0].toInt(), parts[1].toInt(), parts[2].toInt())
+        }
+        if (newPageBounds?.contains(globalPos) == true) return Triple(-1, 1, 1) // page=-1 标记"新建页面"
+        return null
+    }
 
     Box(
         modifier = Modifier
             .fillMaxSize()
             .onGloballyPositioned { gridOrigin = it.positionInRoot() }
-            // 长按拖动排序(锁定时禁用);长按前不消费事件,不影响 Pager 横向滑动
-            .pointerInput(locked) {
+            // 长按拖动排序(锁定时禁用);长按前不消费事件,不影响 Pager 横向滑动。
+            // key 必须包含 quickItems:列表变化(增删/移动)后重启手势块,保证 lambda
+            // 内捕获最新列表 —— 否则新增/移动过的格子会拖不动或拖错(陈旧捕获)
+            .pointerInput(locked, quickItems) {
                 if (locked) return@pointerInput
                 detectDragGesturesAfterLongPress(
                     onDragStart = { offset ->
                         val globalPos = offset + gridOrigin
-                        val hitKey = cellBounds.entries.firstOrNull { it.value.contains(globalPos) }?.key
-                        if (hitKey != null) {
-                            val parts = hitKey.split(":")
-                            val (hp, hc, hr) = Triple(parts[0].toInt(), parts[1].toInt(), parts[2].toInt())
-                            val item = quickItems.firstOrNull { it.page == hp && it.col == hc && it.row == hr }
+                        lastGlobalPos = globalPos
+                        // 清理陈旧格子条目:页面数缩减后,已销毁页面的 Rect 仍残留在此 map 中
+                        val maxValidPage = pagerState.pageCount - 2
+                        cellBounds.keys
+                            .filter { (it.substringBefore(':').toIntOrNull() ?: -1) > maxValidPage }
+                            .forEach { cellBounds.remove(it) }
+                        val t = hitTest(globalPos)
+                        if (t != null && t.first >= 0) {
+                            val item = quickItems.firstOrNull {
+                                it.page == t.first && it.col == t.second && it.row == t.third
+                            }
                             if (item != null) {
                                 draggingItemId = item.id
                                 dragOffset = Offset.Zero
@@ -632,14 +659,9 @@ private fun PagerGrid(
                         // 累加偏移量,让图标跟随手指移动
                         dragOffset += dragAmount
                         val globalPos = change.position + gridOrigin
+                        lastGlobalPos = globalPos
                         // 命中检测:优先匹配格子,其次匹配"新建页面"占位区
-                        val hitKey = cellBounds.entries.firstOrNull { it.value.contains(globalPos) }?.key
-                        dropTarget = if (hitKey != null) {
-                            val parts = hitKey.split(":")
-                            Triple(parts[0].toInt(), parts[1].toInt(), parts[2].toInt())
-                        } else if (newPageBounds?.contains(globalPos) == true) {
-                            Triple(-1, 1, 1) // page=-1 标记"新建页面"
-                        } else null
+                        dropTarget = hitTest(globalPos)
                         // 边缘自动翻页(拖到左右边缘 12% 区域时翻页,500ms 防抖)
                         val w = this.size.width.toFloat()
                         val now = System.currentTimeMillis()
@@ -647,34 +669,48 @@ private fun PagerGrid(
                             val cur = pagerState.currentPage
                             if (change.position.x > w * 0.88f && cur < pagerState.pageCount - 1) {
                                 lastEdgeScrollMs = now
-                                scope.launch { pagerState.animateScrollToPage(cur + 1) }
+                                scope.launch {
+                                    pagerState.animateScrollToPage(cur + 1)
+                                    // 翻页动画期间手指可能停在边缘不动(没有 onDrag 事件),
+                                    // 翻页完成后用手指最后位置重算落点,避免 dropTarget 停留在旧页
+                                    dropTarget = hitTest(lastGlobalPos)
+                                }
                             } else if (change.position.x < w * 0.12f && cur > 0) {
                                 lastEdgeScrollMs = now
-                                scope.launch { pagerState.animateScrollToPage(cur - 1) }
+                                scope.launch {
+                                    pagerState.animateScrollToPage(cur - 1)
+                                    dropTarget = hitTest(lastGlobalPos)
+                                }
                             }
                         }
                     },
                     onDragEnd = {
-                        val target = dropTarget
                         val id = draggingItemId
-                        if (id != null && target != null) {
-                            val (page, col, row) = target
-                            if (page == -1) {
-                                // 拖到"新建页面"占位区 → 在新页面 (maxPage+1) 放置
-                                val newPageIdx = (quickItems.maxOfOrNull { it.page } ?: -1) + 1
-                                onMove(id, newPageIdx, 1, 1)
-                            } else {
-                                onMove(id, page, col, row)
+                        if (id != null) {
+                            // 松手瞬间用手指位置现场命中,不依赖累计的 dropTarget
+                            // (翻页动画期间 dropTarget 可能停留在翻页前的旧页格子上)
+                            val target = hitTest(lastGlobalPos)
+                            if (target != null) {
+                                val (page, col, row) = target
+                                if (page == -1) {
+                                    // 拖到"新建页面"占位区 → 在新页面 (maxPage+1) 放置
+                                    val newPageIdx = (quickItems.maxOfOrNull { it.page } ?: -1) + 1
+                                    onMove(id, newPageIdx, 1, 1)
+                                } else {
+                                    onMove(id, page, col, row)
+                                }
                             }
                         }
                         draggingItemId = null
                         dropTarget = null
                         dragOffset = Offset.Zero
+                        lastGlobalPos = Offset.Zero
                     },
                     onDragCancel = {
                         draggingItemId = null
                         dropTarget = null
                         dragOffset = Offset.Zero
+                        lastGlobalPos = Offset.Zero
                     },
                 )
             }
