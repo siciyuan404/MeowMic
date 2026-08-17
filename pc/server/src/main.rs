@@ -30,6 +30,7 @@ mod windows;
 mod screen;
 mod encoder;
 mod files;
+mod clipboard;
 mod video;
 
 #[derive(Parser, Debug)]
@@ -259,6 +260,9 @@ async fn run_server(bind: &str, port: u16, output_device: Option<&str>) -> Resul
     let active_clients: Arc<RwLock<HashSet<String>>> = Arc::new(RwLock::new(HashSet::new()));
     let active_for_http = active_clients.clone();
     let active_for_events = active_clients.clone();
+
+    // 剪贴板同步:后台线程轮询系统剪贴板,变化时加入历史(供手机端查看/编辑)
+    clipboard::spawn_poller();
 
     tokio::spawn(async move {
         run_serverinfo_server(stats_for_info, serverinfo_name, serverinfo_pairing, apps_lib, active_for_http, serverinfo_addr).await;
@@ -1124,6 +1128,73 @@ async fn run_serverinfo_server(
                             }
                         }
                     }
+                }
+            } else if method == "GET" && path == "/clipboard/list" {
+                // 剪贴板同步:历史列表(新的在前)
+                if !check_paired(&pairing, &active_clients, query).await {
+                    ("403 Forbidden", "application/json", br#"{"error":"not paired"}"#.to_vec())
+                } else {
+                    let entries = clipboard::list();
+                    let body = serde_json::json!({ "entries": entries }).to_string();
+                    ("200 OK", "application/json", body.into_bytes())
+                }
+            } else if method == "POST" && path == "/clipboard/set" {
+                // 剪贴板同步:设为 PC 当前剪贴板(body = 纯文本)
+                if !check_paired(&pairing, &active_clients, query).await {
+                    ("403 Forbidden", "application/json", br#"{"error":"not paired"}"#.to_vec())
+                } else {
+                    let text = String::from_utf8_lossy(&body_bytes).to_string();
+                    if clipboard::set_current(&text) {
+                        ("200 OK", "application/json", br#"{"ok":true}"#.to_vec())
+                    } else {
+                        ("400 Bad Request", "application/json", br#"{"error":"set clipboard failed"}"#.to_vec())
+                    }
+                }
+            } else if method == "POST" && path == "/clipboard/update" {
+                // 剪贴板同步:编辑历史条目(body = JSON {id, text}),编辑后同步设为当前剪贴板
+                if !check_paired(&pairing, &active_clients, query).await {
+                    ("403 Forbidden", "application/json", br#"{"error":"not paired"}"#.to_vec())
+                } else {
+                    let parsed = serde_json::from_slice::<serde_json::Value>(&body_bytes).ok();
+                    let id = parsed.as_ref().and_then(|v| v.get("id")).and_then(|v| v.as_u64());
+                    let text = parsed
+                        .as_ref()
+                        .and_then(|v| v.get("text"))
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string());
+                    match (id, text) {
+                        (Some(id), Some(text)) => {
+                            if clipboard::update_entry(id, &text) {
+                                ("200 OK", "application/json", br#"{"ok":true}"#.to_vec())
+                            } else {
+                                ("400 Bad Request", "application/json", br#"{"error":"entry not found"}"#.to_vec())
+                            }
+                        }
+                        _ => ("400 Bad Request", "application/json", br#"{"error":"id and text required"}"#.to_vec()),
+                    }
+                }
+            } else if method == "POST" && path == "/clipboard/delete" {
+                // 剪贴板同步:删除历史条目(query: id)
+                if !check_paired(&pairing, &active_clients, query).await {
+                    ("403 Forbidden", "application/json", br#"{"error":"not paired"}"#.to_vec())
+                } else {
+                    let id = extract_query_param(query, "id").and_then(|s| s.parse::<u64>().ok());
+                    match id {
+                        Some(id) => {
+                            let ok = clipboard::delete_entry(id);
+                            let body = serde_json::json!({ "ok": ok }).to_string();
+                            ("200 OK", "application/json", body.into_bytes())
+                        }
+                        None => ("400 Bad Request", "application/json", br#"{"error":"id required"}"#.to_vec()),
+                    }
+                }
+            } else if method == "POST" && path == "/clipboard/clear" {
+                // 剪贴板同步:清空历史
+                if !check_paired(&pairing, &active_clients, query).await {
+                    ("403 Forbidden", "application/json", br#"{"error":"not paired"}"#.to_vec())
+                } else {
+                    clipboard::clear();
+                    ("200 OK", "application/json", br#"{"ok":true}"#.to_vec())
                 }
             } else {
                 (

@@ -664,6 +664,14 @@ fun TouchpadScreen(
                 buttonSize = btnSize,
                 iconSize = icSize,
             )
+            ToggleButtonSmall(
+                icon = Icons.Default.ContentPaste,
+                contentDescription = "剪贴板",
+                isOn = false,
+                onClick = { onNavigate("clipboard") },
+                buttonSize = btnSize,
+                iconSize = icSize,
+            )
 
             Spacer(Modifier.weight(1f))
 

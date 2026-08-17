@@ -1122,6 +1122,149 @@ object LauncherRepository {
             }
         }
 
+    // ================================================================
+    // 剪贴板同步(clipboard)端点
+    // ================================================================
+
+    /** 剪贴板历史条目(PC 端维护,新的在前) */
+    data class ClipboardEntry(
+        val id: Long,
+        val text: String,
+        val updatedAt: Long,
+    )
+
+    /** 拉取 PC 剪贴板历史列表 */
+    suspend fun listClipboard(serverAddr: String, pubkey: String): List<ClipboardEntry>? =
+        withContext(Dispatchers.IO) {
+            val url = "${httpBaseUrl(serverAddr)}/clipboard/list?pubkey=${encodeParam(pubkey)}"
+            try {
+                val conn = (URL(url).openConnection() as HttpURLConnection).apply {
+                    connectTimeout = CONNECT_TIMEOUT_MS
+                    readTimeout = READ_TIMEOUT_MS
+                    useCaches = false
+                }
+                try {
+                    if (conn.responseCode == 200) {
+                        val body = conn.inputStream.bufferedReader().use { it.readText() }
+                        val arr = JSONObject(body).optJSONArray("entries") ?: return@withContext emptyList()
+                        List(arr.length()) { i ->
+                            val o = arr.getJSONObject(i)
+                            ClipboardEntry(
+                                id = o.optLong("id"),
+                                text = o.optString("text"),
+                                updatedAt = o.optLong("updated_at"),
+                            )
+                        }
+                    } else {
+                        Log.w(TAG, "listClipboard HTTP ${conn.responseCode}")
+                        null
+                    }
+                } finally {
+                    conn.disconnect()
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "listClipboard 失败: ${e.message}")
+                null
+            }
+        }
+
+    /** 把文本设为 PC 当前剪贴板(body = 纯文本) */
+    suspend fun setClipboard(serverAddr: String, text: String, pubkey: String): Boolean =
+        withContext(Dispatchers.IO) {
+            val url = "${httpBaseUrl(serverAddr)}/clipboard/set?pubkey=${encodeParam(pubkey)}"
+            try {
+                val body = text.toByteArray(Charsets.UTF_8)
+                val conn = (URL(url).openConnection() as HttpURLConnection).apply {
+                    connectTimeout = CONNECT_TIMEOUT_MS
+                    readTimeout = READ_TIMEOUT_MS
+                    requestMethod = "POST"
+                    doOutput = true
+                    useCaches = false
+                    setFixedLengthStreamingMode(body.size)
+                }
+                try {
+                    conn.outputStream.use { it.write(body) }
+                    conn.responseCode == 200
+                } finally {
+                    conn.disconnect()
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "setClipboard 失败: ${e.message}")
+                false
+            }
+        }
+
+    /** 编辑 PC 剪贴板历史条目(编辑后该条目置顶并成为 PC 当前剪贴板) */
+    suspend fun updateClipboardEntry(serverAddr: String, id: Long, text: String, pubkey: String): Boolean =
+        withContext(Dispatchers.IO) {
+            val url = "${httpBaseUrl(serverAddr)}/clipboard/update?pubkey=${encodeParam(pubkey)}"
+            try {
+                val body = JSONObject().put("id", id).put("text", text).toString()
+                    .toByteArray(Charsets.UTF_8)
+                val conn = (URL(url).openConnection() as HttpURLConnection).apply {
+                    connectTimeout = CONNECT_TIMEOUT_MS
+                    readTimeout = READ_TIMEOUT_MS
+                    requestMethod = "POST"
+                    doOutput = true
+                    useCaches = false
+                    setFixedLengthStreamingMode(body.size)
+                }
+                try {
+                    conn.outputStream.use { it.write(body) }
+                    conn.responseCode == 200
+                } finally {
+                    conn.disconnect()
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "updateClipboardEntry 失败: ${e.message}")
+                false
+            }
+        }
+
+    /** 删除 PC 剪贴板历史条目 */
+    suspend fun deleteClipboardEntry(serverAddr: String, id: Long, pubkey: String): Boolean =
+        withContext(Dispatchers.IO) {
+            val url = "${httpBaseUrl(serverAddr)}/clipboard/delete?id=$id&pubkey=${encodeParam(pubkey)}"
+            try {
+                val conn = (URL(url).openConnection() as HttpURLConnection).apply {
+                    connectTimeout = CONNECT_TIMEOUT_MS
+                    readTimeout = READ_TIMEOUT_MS
+                    requestMethod = "POST"
+                    setFixedLengthStreamingMode(0)
+                }
+                try {
+                    conn.responseCode == 200
+                } finally {
+                    conn.disconnect()
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "deleteClipboardEntry 失败: ${e.message}")
+                false
+            }
+        }
+
+    /** 清空 PC 剪贴板历史 */
+    suspend fun clearClipboard(serverAddr: String, pubkey: String): Boolean =
+        withContext(Dispatchers.IO) {
+            val url = "${httpBaseUrl(serverAddr)}/clipboard/clear?pubkey=${encodeParam(pubkey)}"
+            try {
+                val conn = (URL(url).openConnection() as HttpURLConnection).apply {
+                    connectTimeout = CONNECT_TIMEOUT_MS
+                    readTimeout = READ_TIMEOUT_MS
+                    requestMethod = "POST"
+                    setFixedLengthStreamingMode(0)
+                }
+                try {
+                    conn.responseCode == 200
+                } finally {
+                    conn.disconnect()
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "clearClipboard 失败: ${e.message}")
+                false
+            }
+        }
+
     private const val SCREEN_READ_TIMEOUT_MS = 8000
     private const val FILE_READ_TIMEOUT_MS = 30000
 }

@@ -12,6 +12,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
+import com.meowmic.client.ui.ClipboardScreen
 import com.meowmic.client.ui.ConnectScreen
 import com.meowmic.client.ui.FilesScreen
 import com.meowmic.client.ui.LauncherScreen
@@ -91,6 +92,14 @@ class MainActivity : ComponentActivity() {
                         }
                         composable("files") {
                             FilesScreen(
+                                vm = vm,
+                                onBack = { navController.popBackStack("touchpad", inclusive = false) },
+                                onDisconnect = { doDisconnect() },
+                                onNavigate = { view -> navigateTo(view) },
+                            )
+                        }
+                        composable("clipboard") {
+                            ClipboardScreen(
                                 vm = vm,
                                 onBack = { navController.popBackStack("touchpad", inclusive = false) },
                                 onDisconnect = { doDisconnect() },
