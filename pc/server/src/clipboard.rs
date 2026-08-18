@@ -48,7 +48,7 @@ const CF_UNICODETEXT_FMT: u32 = 13;
 
 #[cfg(windows)]
 fn read_text_raw() -> Option<String> {
-    use windows::Win32::Foundation::HWND;
+    use windows::Win32::Foundation::{HGLOBAL, HWND};
     use windows::Win32::System::DataExchange::{CloseClipboard, GetClipboardData, OpenClipboard};
     use windows::Win32::System::Memory::{GlobalLock, GlobalSize, GlobalUnlock};
 
@@ -60,7 +60,7 @@ fn read_text_raw() -> Option<String> {
         let result = (|| -> Option<String> {
             // GetClipboardData 返回 Result<HANDLE>:无文本格式(可能是图片/文件等)时为 Err
             let handle = GetClipboardData(CF_UNICODETEXT_FMT).ok()?;
-            let hglobal = windows::Win32::System::Memory::HGLOBAL(handle.0);
+            let hglobal = HGLOBAL(handle.0);
             let ptr = GlobalLock(hglobal) as *const u16;
             if ptr.is_null() {
                 return None;
