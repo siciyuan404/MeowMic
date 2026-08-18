@@ -789,6 +789,29 @@ fun TouchpadScreen(
 
     // ── PC→手机 音频(手机充当电脑喇叭):开关 + 声道选择 ──
     @Composable
+    fun SpeakerChannelChip(label: String, channel: Int, current: Int, onClick: () -> Unit) {
+        val selected = channel == current
+        Box(
+            modifier = Modifier
+                .clip(RoundedCornerShape(10.dp))
+                .background(
+                    if (selected) MaterialTheme.colorScheme.primary
+                    else MaterialTheme.colorScheme.surface,
+                )
+                .clickable(onClick = onClick)
+                .padding(horizontal = 9.dp, vertical = 3.dp),
+        ) {
+            Text(
+                label,
+                fontSize = 10.sp,
+                fontWeight = FontWeight.Medium,
+                color = if (selected) MaterialTheme.colorScheme.onPrimary
+                else MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+
+    @Composable
     fun SpeakerBar() {
         val speakerEnabled by vm.speakerEnabled.collectAsState()
         val speakerChannel by vm.speakerChannel.collectAsState()
@@ -820,29 +843,6 @@ fun TouchpadScreen(
                 SpeakerChannelChip("右", 1, speakerChannel) { vm.setSpeakerChannel(1) }
                 SpeakerChannelChip("混", 2, speakerChannel) { vm.setSpeakerChannel(2) }
             }
-        }
-    }
-
-    @Composable
-    fun SpeakerChannelChip(label: String, channel: Int, current: Int, onClick: () -> Unit) {
-        val selected = channel == current
-        Box(
-            modifier = Modifier
-                .clip(RoundedCornerShape(10.dp))
-                .background(
-                    if (selected) MaterialTheme.colorScheme.primary
-                    else MaterialTheme.colorScheme.surface,
-                )
-                .clickable(onClick = onClick)
-                .padding(horizontal = 9.dp, vertical = 3.dp),
-        ) {
-            Text(
-                label,
-                fontSize = 10.sp,
-                fontWeight = FontWeight.Medium,
-                color = if (selected) MaterialTheme.colorScheme.onPrimary
-                else MaterialTheme.colorScheme.onSurfaceVariant,
-            )
         }
     }
 
