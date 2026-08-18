@@ -49,6 +49,31 @@ fn detect_local_ipv4() -> Option<std::net::Ipv4Addr> {
     }
 }
 
+/// 清洗 DNS 标签:仅保留 ASCII 字母数字、`-`、`_`,其余字符替换为 `-`,
+/// 并截断到 63 字节(DNS 标签上限)。清洗后为空则回退到 `fallback`。
+///
+/// 原因:mdns-sd 0.10.5 的 `write_name` 按字节切片判断结尾 `.`(`&name[len()-1..]`),
+/// 若名字以多字节 UTF-8 字符(如中文主机名以「木」结尾)结尾,
+/// 会在 mDNS daemon 线程 panic(`start byte index ... is not a char boundary`)
+/// 并 abort 整个服务进程(0xc0000409)。DNS 主机名/实例名本应只用 ASCII 标签。
+fn sanitize_dns_label(name: &str, fallback: &str) -> String {
+    let cleaned: String = name
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    if cleaned.is_empty() {
+        fallback.to_string()
+    } else {
+        cleaned.chars().take(63).collect()
+    }
+}
+
 /// mDNS 广播器(服务端用)
 ///
 /// 持有 `ServiceDaemon` 句柄,Drop 时自动注销服务。
@@ -80,18 +105,20 @@ impl MdnsAdvertiser {
             .map_err(|e| DiscoveryError::Daemon(e.to_string()))?;
         let daemon = Arc::new(daemon);
 
-        let instance = instance_name
-            .filter(|s| !s.is_empty())
-            .unwrap_or(DEFAULT_INSTANCE_NAME);
-        let host = host_name
-            .filter(|s| !s.is_empty())
-            .unwrap_or("meowmic-host");
+        let instance = sanitize_dns_label(
+            instance_name.filter(|s| !s.is_empty()).unwrap_or(DEFAULT_INSTANCE_NAME),
+            DEFAULT_INSTANCE_NAME,
+        );
+        let host = sanitize_dns_label(
+            host_name.filter(|s| !s.is_empty()).unwrap_or("meowmic-host"),
+            "meowmic-host",
+        );
 
         // TXT 记录:文档明确支持 &[(&str, &str)] 格式
         let mut properties: Vec<(&str, &str)> = vec![
             ("v", PROTOCOL_VERSION),
             // 把 name 也放进 TXT,便于客户端 UI 直接显示
-            ("name", instance),
+            ("name", instance.as_str()),
         ];
         // 服务端身份公钥(配对启用时提供),客户端据此识别"同一台 PC"
         if let Some(pk) = server_pubkey_b64.filter(|s| !s.is_empty()) {
@@ -109,8 +136,8 @@ impl MdnsAdvertiser {
         let ty_domain = format!("{}local.", SERVICE_TYPE);
         let info = ServiceInfo::new(
             &ty_domain,
-            instance,
-            host,
+            &instance,
+            &host,
             &addr_str,
             port,
             properties.as_slice(),
