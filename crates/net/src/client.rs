@@ -450,6 +450,35 @@ impl Client {
     pub fn video_peer(&self) -> SocketAddr {
         self.peer.video
     }
+
+    /// 请求服务端开始 PC→手机 音频推流(UDP push 模式)
+    ///
+    /// 服务端用 WASAPI loopback 抓取系统混音,按 `channel` 提取单声道,
+    /// Opus 编码后 UDP 推送到本地 `audio_sock` 绑定的端口。
+    /// `channel`: 0=左声道, 1=右声道, 2=立体声混合
+    pub async fn start_audio_stream(&self, channel: u8) -> Result<(), NetError> {
+        let client_audio_port = self
+            .audio_sock
+            .local_addr()
+            .map(|a| a.port())
+            .unwrap_or(0);
+        self.send_control(ControlMessage::StartAudioStream {
+            channel,
+            client_audio_port,
+        })
+        .await
+    }
+
+    /// 请求服务端停止 PC→手机 音频推流
+    pub async fn stop_audio_stream(&self) -> Result<(), NetError> {
+        self.send_control(ControlMessage::StopAudioStream).await
+    }
+
+    /// 获取音频 UDP socket 引用
+    /// (同时用于发送手机→PC 音频与接收 PC→手机 音频推流)
+    pub fn audio_sock(&self) -> &Arc<UdpSocket> {
+        &self.audio_sock
+    }
 }
 
 async fn run_control_recv(

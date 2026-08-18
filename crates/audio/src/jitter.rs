@@ -9,10 +9,12 @@
 //! 适用场景:
 //! - PCM 直通模式:PLC 输出静音(已比无缓冲的断续好)
 //! - Opus 模式(未来启用):PLC 输出 Opus 外推,效果更佳
+//!
+//! 复用方:PC 服务端播放手机麦克风、Android 端播放 PC 系统声音(手机当喇叭)。
 
 use std::collections::BTreeMap;
 
-use meowmic_audio::{AudioDecoder, AudioError};
+use crate::{AudioDecoder, AudioError};
 
 /// pop 操作的返回结果
 #[derive(Debug)]
@@ -151,7 +153,7 @@ impl AudioJitterBuffer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use meowmic_audio::{AudioConfig, AudioDecoder, AudioError};
+    use crate::{AudioConfig, AudioDecoder, AudioError};
 
     /// 测试用 mock 解码器(不依赖 libopus,聚焦 jitter buffer 逻辑验证)
     struct MockDecoder;

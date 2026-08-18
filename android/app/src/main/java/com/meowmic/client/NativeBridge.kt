@@ -293,4 +293,23 @@ object NativeBridge {
 
     /** 停止视频推流 */
     external fun nativeStopVideo()
+
+    // ============ PC→手机 音频(手机当喇叭) ============
+
+    /**
+     * 请求服务端开始 PC→手机 音频推流(手机充当电脑喇叭)
+     * @param channel 0=左声道, 1=右声道, 2=立体声混合
+     * @return true 成功启动接收循环;false 未连接或发送失败
+     */
+    external fun nativeStartAudioStream(channel: Int): Boolean
+
+    /**
+     * 从 jitter buffer 取出一帧解码后的 PCM(非阻塞)
+     * @param pcm i16 PCM 数组,长度必须 >= 960
+     * @return 实际样本数;0 表示尚无可用帧
+     */
+    external fun nativePollAudioFrame(pcm: ShortArray): Int
+
+    /** 停止 PC→手机 音频推流(停止接收并通知服务端) */
+    external fun nativeStopAudioStream()
 }

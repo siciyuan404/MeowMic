@@ -35,10 +35,13 @@ use log::LevelFilter;
 use once_cell::sync::OnceCell;
 use tokio::runtime::Runtime;
 
-use meowmic_audio::{AudioConfig, AudioEncoder, make_encoder};
+use meowmic_audio::{
+    AudioConfig, AudioDecoder, AudioEncoder, AudioJitterBuffer, PopResult, make_decoder,
+    make_encoder,
+};
 use meowmic_net::pairing::ClientPairingState;
 use meowmic_net::{Client, ClientEvent};
-use meowmic_protocol::TouchEventType;
+use meowmic_protocol::{AudioPacket, TouchEventType};
 
 /// base64 标准编码引擎
 const B64: base64::engine::general_purpose::GeneralPurpose = base64::engine::general_purpose::STANDARD;
@@ -72,6 +75,7 @@ static PENDING_PAIRING: OnceLock<Mutex<Option<PendingPairing>>> = OnceLock::new(
 static STATE_DIR: OnceCell<PathBuf> = OnceCell::new();
 static LOGGER_INIT: OnceCell<()> = OnceCell::new();
 static VIDEO_RX: OnceLock<Mutex<Option<VideoReceiver>>> = OnceLock::new();
+static AUDIO_RX: OnceLock<Mutex<Option<AudioReceiver>>> = OnceLock::new();
 
 fn init_logger() {
     LOGGER_INIT.get_or_init(|| {
@@ -337,8 +341,90 @@ impl Drop for VideoReceiver {
     }
 }
 
+/// PC→手机 音频接收器:接收服务端推流的 Opus 包 → jitter buffer → PCM
+///
+/// 服务端在收到 `StartAudioStream` 后用 WASAPI loopback 抓取系统混音,
+/// Opus 编码后 UDP 推送到客户端 `audio_sock` 绑定的端口。
+/// Kotlin 通过 `nativePollAudioFrame` 按 20ms 节拍取出 PCM 播放。
+pub struct AudioReceiver {
+    jitter: Arc<Mutex<AudioJitterBuffer>>,
+    decoder: Arc<Mutex<Box<dyn AudioDecoder>>>,
+    handle: Option<tokio::task::JoinHandle<()>>,
+}
+
+impl AudioReceiver {
+    /// 启动接收循环(必须在 tokio runtime 上下文中调用)
+    fn start(client: Arc<Client>, cfg: AudioConfig) -> Self {
+        let jitter = Arc::new(Mutex::new(AudioJitterBuffer::new(3, 10)));
+        let decoder = Arc::new(Mutex::new(make_decoder(&cfg)));
+
+        let audio_sock = client.audio_sock().clone();
+        let jitter_clone = jitter.clone();
+        let handle = tokio::spawn(async move {
+            let mut buf = vec![0u8; 1500];
+            loop {
+                match audio_sock.recv_from(&mut buf).await {
+                    Ok((n, _peer_addr)) => {
+                        let mut cur: &[u8] = &buf[..n];
+                        match AudioPacket::decode(&mut cur) {
+                            Ok(pkt) => {
+                                let mut j = lock_or_recover(&jitter_clone);
+                                j.push(pkt.header.seq, pkt.opus.to_vec());
+                            }
+                            Err(_) => {}
+                        }
+                    }
+                    Err(e) => {
+                        log::warn!("PC→手机 音频 UDP 接收错误: {}", e);
+                    }
+                }
+            }
+        });
+
+        Self {
+            jitter,
+            decoder,
+            handle: Some(handle),
+        }
+    }
+
+    /// 取出并解码一帧 PCM (非阻塞),返回样本数(0 = 尚无可用帧)
+    fn poll_frame(&self, pcm_out: &mut [i16]) -> usize {
+        let mut j = lock_or_recover(&self.jitter);
+        let mut dec = lock_or_recover(&self.decoder);
+        if !j.is_ready() {
+            return 0;
+        }
+        match j.pop(&mut **dec, pcm_out) {
+            PopResult::Decoded(n) => n,
+            PopResult::Error(e) => {
+                log::warn!("PC 音频解码失败: {}", e);
+                0
+            }
+            PopResult::NotStarted => 0,
+        }
+    }
+
+    /// 停止接收
+    fn stop(&mut self) {
+        if let Some(h) = self.handle.take() {
+            h.abort();
+        }
+    }
+}
+
+impl Drop for AudioReceiver {
+    fn drop(&mut self) {
+        self.stop();
+    }
+}
+
 fn video_rx() -> &'static Mutex<Option<VideoReceiver>> {
     VIDEO_RX.get_or_init(|| Mutex::new(None))
+}
+
+fn audio_rx() -> &'static Mutex<Option<AudioReceiver>> {
+    AUDIO_RX.get_or_init(|| Mutex::new(None))
 }
 
 fn pending_pairing() -> &'static Mutex<Option<PendingPairing>> {
@@ -1332,6 +1418,112 @@ pub extern "system" fn Java_com_meowmic_client_NativeBridge_nativeSetMuteSpeaker
             JNI_FALSE
         }
     }
+}
+
+/// Java: boolean nativeStartAudioStream(int channel)
+///
+/// 请求服务端开始 PC→手机 音频推流(手机充当电脑喇叭)。
+/// `channel`: 0=左声道, 1=右声道, 2=立体声混合
+#[no_mangle]
+pub extern "system" fn Java_com_meowmic_client_NativeBridge_nativeStartAudioStream(
+    _env: JNIEnv,
+    _class: JClass,
+    channel: jint,
+) -> jboolean {
+    // 短暂持锁,提取所需引用,避免 block_on 期间长时间持锁
+    let (client, rt_handle, audio_cfg) = {
+        let guard = state().lock().unwrap();
+        let Some(s) = guard.as_ref() else {
+            log::warn!("nativeStartAudioStream 失败: state 未初始化(未连接?)");
+            return JNI_FALSE;
+        };
+        (s.client.clone(), s.rt.handle().clone(), s.audio_cfg)
+    };
+
+    if !client.is_connected() {
+        log::warn!("nativeStartAudioStream 失败: TCP 控制连接已断开");
+        return JNI_FALSE;
+    }
+
+    log::info!("nativeStartAudioStream: 发送 StartAudioStream channel={}", channel);
+    match rt_handle.block_on(client.start_audio_stream(channel as u8)) {
+        Ok(()) => {
+            // 启动音频接收循环(在 runtime 上下文内,tokio::spawn 安全)
+            let rx = rt_handle.block_on(async { AudioReceiver::start(client, audio_cfg) });
+            let mut audio_guard = lock_or_recover(audio_rx());
+            if let Some(old) = audio_guard.as_mut() {
+                old.stop();
+            }
+            *audio_guard = Some(rx);
+            JNI_TRUE
+        }
+        Err(e) => {
+            log::warn!("nativeStartAudioStream: start_audio_stream 失败: {}", e);
+            JNI_FALSE
+        }
+    }
+}
+
+/// Java: int nativePollAudioFrame(short[] pcm)
+///
+/// 从 jitter buffer 取出一帧(960 采样 @48kHz)并解码写入 pcm,
+/// 返回实际样本数;0 表示尚无可用帧(未就绪/停止)。
+#[no_mangle]
+pub extern "system" fn Java_com_meowmic_client_NativeBridge_nativePollAudioFrame(
+    env: JNIEnv,
+    _class: JClass,
+    pcm_array: jshortArray,
+) -> jint {
+    let audio_guard = lock_or_recover(audio_rx());
+    let Some(rx) = audio_guard.as_ref() else {
+        return 0;
+    };
+
+    let pcm_array: JShortArray = unsafe { JPrimitiveArray::from_raw(pcm_array) };
+    let pcm_len = match env.get_array_length(&pcm_array) {
+        Ok(n) => n as usize,
+        Err(_) => return 0,
+    };
+    if pcm_len < 960 {
+        return 0;
+    }
+
+    let mut pcm = vec![0i16; pcm_len];
+    let n = rx.poll_frame(&mut pcm);
+    if n == 0 {
+        return 0;
+    }
+    if let Err(e) = env.set_short_array_region(&pcm_array, 0, &pcm[..n]) {
+        log::warn!("写入 PCM 到 Java 数组失败: {}", e);
+        return 0;
+    }
+    n as jint
+}
+
+/// Java: void nativeStopAudioStream()
+///
+/// 停止接收循环,并通知服务端停止 PC→手机 音频推流
+#[no_mangle]
+pub extern "system" fn Java_com_meowmic_client_NativeBridge_nativeStopAudioStream(
+    _env: JNIEnv,
+    _class: JClass,
+) {
+    log::info!("nativeStopAudioStream");
+    {
+        let mut audio_guard = lock_or_recover(audio_rx());
+        if let Some(old) = audio_guard.as_mut() {
+            old.stop();
+        }
+        *audio_guard = None;
+    }
+    let (client, rt_handle) = {
+        let guard = state().lock().unwrap();
+        match guard.as_ref() {
+            Some(s) => (s.client.clone(), s.rt.handle().clone()),
+            None => return,
+        }
+    };
+    let _ = rt_handle.block_on(client.stop_audio_stream());
 }
 
 /// Java: boolean nativeSendKey(int keyCode, boolean isDown)

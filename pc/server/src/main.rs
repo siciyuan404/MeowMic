@@ -23,7 +23,7 @@ use meowmic_net::{MdnsAdvertiser, NetError, PairingManager, PortLayout, Server, 
 
 mod touch_inject;
 mod audio_play;
-mod audio_jitter;
+mod audio_streamer;
 mod stats;
 mod apps;
 mod windows;
@@ -184,7 +184,7 @@ async fn run_server(bind: &str, port: u16, output_device: Option<&str>) -> Resul
     let audio_cfg_for_jitter = audio_cfg;
     let stats_for_jitter = stats.clone();
     tokio::spawn(async move {
-        let mut jitter = audio_jitter::AudioJitterBuffer::new(3, 10); // 60ms 延迟,200ms 上限
+        let mut jitter = meowmic_audio::AudioJitterBuffer::new(3, 10); // 60ms 延迟,200ms 上限
         let mut decoder = meowmic_audio::make_decoder(&audio_cfg_for_jitter);
         let mut pcm = vec![0i16; audio_cfg_for_jitter.samples_per_frame() * 2];
         let mut interval = tokio::time::interval(std::time::Duration::from_millis(
@@ -193,7 +193,7 @@ async fn run_server(bind: &str, port: u16, output_device: Option<&str>) -> Resul
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         // 统计日志(每 10s 打印一次)
         let mut stats_interval = tokio::time::interval(std::time::Duration::from_secs(10));
-        let mut last_stats = audio_jitter::JitterStats::default();
+        let mut last_stats = meowmic_audio::JitterStats::default();
         loop {
             tokio::select! {
                 Some((seq, ts_ns, opus)) = audio_pkt_rx.recv() => {
@@ -205,13 +205,13 @@ async fn run_server(bind: &str, port: u16, output_device: Option<&str>) -> Resul
                 _ = interval.tick() => {
                     if jitter.is_ready() {
                         match jitter.pop(&mut *decoder, &mut pcm) {
-                            audio_jitter::PopResult::Decoded(n) => {
+                            meowmic_audio::PopResult::Decoded(n) => {
                                 audio_player_for_jitter.play(&pcm[..n]).await;
                             }
-                            audio_jitter::PopResult::Error(e) => {
+                            meowmic_audio::PopResult::Error(e) => {
                                 tracing::warn!("音频解码失败: {}", e);
                             }
-                            audio_jitter::PopResult::NotStarted => {}
+                            meowmic_audio::PopResult::NotStarted => {}
                         }
                     }
                 }
@@ -298,6 +298,10 @@ async fn run_server(bind: &str, port: u16, output_device: Option<&str>) -> Resul
     // VideoStreamer 持有者:StartVideo 时创建,StopVideo 时停止
     let streamer_slot: Arc<Mutex<Option<video::VideoStreamer>>> = Arc::new(Mutex::new(None));
 
+    // PC→手机 音频推流器(WASAPI loopback 抓取系统声音,推给手机当喇叭)
+    // 采集线程常驻:StartAudioStream 加入目标,StopAudioStream/断线移除
+    let mut audio_streamer = audio_streamer::AudioStreamer::new();
+
     while let Some(event) = event_rx.recv().await {
         match event {
             ServerEvent::ClientConnected {
@@ -343,6 +347,8 @@ async fn run_server(bind: &str, port: u16, output_device: Option<&str>) -> Resul
             ServerEvent::ClientDisconnected { client_id, .. } => {
                 info!("✗ 客户端断开 id={}", client_id);
                 stats.lock().await.record_disconnect();
+                // 若该客户端在接收 PC 声音推流,一并移除
+                audio_streamer.remove(client_id);
             }
             ServerEvent::SetMuteSpeaker { client_id, muted } => {
                 audio_player.set_muted(muted);
@@ -390,6 +396,17 @@ async fn run_server(bind: &str, port: u16, output_device: Option<&str>) -> Resul
                     s.stop();
                     info!("✓ 视频推流已停止");
                 }
+            }
+            ServerEvent::StartAudioStream { client_id, peer, channel } => {
+                info!(
+                    "▶ 音频推流请求: id={} peer={} channel={} (0=左 1=右 2=混合)",
+                    client_id, peer, channel
+                );
+                audio_streamer.add(client_id, peer, channel);
+            }
+            ServerEvent::StopAudioStream { client_id } => {
+                info!("■ 停止音频推流: id={}", client_id);
+                audio_streamer.remove(client_id);
             }
             ServerEvent::VideoStats {
                 client_id, received_frames, lost_frames, recovered_frames, rtt_ms,
@@ -1436,7 +1453,7 @@ struct JitterStatsDelta {
 }
 
 impl JitterStatsDelta {
-    fn from(cur: &audio_jitter::JitterStats, last: &audio_jitter::JitterStats) -> Self {
+    fn from(cur: &meowmic_audio::JitterStats, last: &meowmic_audio::JitterStats) -> Self {
         Self {
             received: cur.received.saturating_sub(last.received),
             lost: cur.lost.saturating_sub(last.lost),

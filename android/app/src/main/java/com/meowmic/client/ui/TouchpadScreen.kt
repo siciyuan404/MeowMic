@@ -787,6 +787,65 @@ fun TouchpadScreen(
         }
     }
 
+    // ── PC→手机 音频(手机充当电脑喇叭):开关 + 声道选择 ──
+    @Composable
+    fun SpeakerBar() {
+        val speakerEnabled by vm.speakerEnabled.collectAsState()
+        val speakerChannel by vm.speakerChannel.collectAsState()
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(8.dp))
+                .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f))
+                .padding(horizontal = 8.dp, vertical = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            ToggleButtonSmall(
+                icon = if (speakerEnabled) Icons.Default.Headphones else Icons.Default.HeadsetOff,
+                contentDescription = if (speakerEnabled) "关闭 PC 声音(手机喇叭)" else "开启 PC 声音(手机喇叭)",
+                isOn = speakerEnabled,
+                onClick = { vm.setSpeakerEnabled(!speakerEnabled) },
+                buttonSize = 26.dp,
+                iconSize = 15.dp,
+            )
+            Text(
+                text = if (speakerEnabled) "手机喇叭已开启" else "手机喇叭",
+                fontSize = 11.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.weight(1f),
+            )
+            if (speakerEnabled) {
+                SpeakerChannelChip("左", 0, speakerChannel) { vm.setSpeakerChannel(0) }
+                SpeakerChannelChip("右", 1, speakerChannel) { vm.setSpeakerChannel(1) }
+                SpeakerChannelChip("混", 2, speakerChannel) { vm.setSpeakerChannel(2) }
+            }
+        }
+    }
+
+    @Composable
+    fun SpeakerChannelChip(label: String, channel: Int, current: Int, onClick: () -> Unit) {
+        val selected = channel == current
+        Box(
+            modifier = Modifier
+                .clip(RoundedCornerShape(10.dp))
+                .background(
+                    if (selected) MaterialTheme.colorScheme.primary
+                    else MaterialTheme.colorScheme.surface,
+                )
+                .clickable(onClick = onClick)
+                .padding(horizontal = 9.dp, vertical = 3.dp),
+        ) {
+            Text(
+                label,
+                fontSize = 10.sp,
+                fontWeight = FontWeight.Medium,
+                color = if (selected) MaterialTheme.colorScheme.onPrimary
+                else MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+
     // ── 触控区域(虚线边框占位风格,底部含鼠标按键栏) ──
     @Composable
     fun TouchArea(modifier: Modifier) {
@@ -1896,6 +1955,8 @@ fun TouchpadScreen(
             Column(modifier = Modifier.weight(1f)) {
                 ActionBar()
                 Spacer(Modifier.height(6.dp))
+                SpeakerBar()
+                Spacer(Modifier.height(6.dp))
                 TouchArea(modifier = Modifier.weight(1f).fillMaxWidth())
             }
             // 右侧面板:仅 voice/keyboard 时显示(touch 时触控区域占满)
@@ -1913,6 +1974,7 @@ fun TouchpadScreen(
         Column(modifier = Modifier.fillMaxSize().padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             ConnBar()
             ActionBar()
+            SpeakerBar()
             // 主区域:根据顶栏图标切换触控面板 / 语音面板 / 键盘面板
             when (currentView) {
                 "touch" -> TouchArea(modifier = Modifier.weight(1f).fillMaxWidth())

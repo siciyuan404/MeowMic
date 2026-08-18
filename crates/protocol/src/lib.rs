@@ -14,6 +14,11 @@ use thiserror::Error;
 /// 协议魔数,用于快速识别 MeowMic 包
 pub const MAGIC: u16 = 0x4D4D; // "MM"
 
+/// PC→手机 音频推流的声道选择(StartAudioStream.channel)
+pub const CHANNEL_LEFT: u8 = 0;
+pub const CHANNEL_RIGHT: u8 = 1;
+pub const CHANNEL_STEREO: u8 = 2;
+
 /// 解析错误
 #[derive(Debug, Error)]
 pub enum ProtocolError {
@@ -582,6 +587,17 @@ pub enum ControlMessage {
     Ping,
     Pong,
     Bye,
+    /// 客户端请求开始 PC→手机 音频推流(手机充当电脑喇叭)
+    ///
+    /// 服务端用 WASAPI loopback 抓取系统混音,按 `channel` 提取单声道,
+    /// Opus 编码后 UDP 推送到 `client_audio_port`。
+    /// `channel`: 0=左声道, 1=右声道, 2=立体声混合
+    StartAudioStream {
+        channel: u8,
+        client_audio_port: u16,
+    },
+    /// 客户端请求停止 PC→手机 音频推流
+    StopAudioStream,
 }
 
 /// 控制消息长度前缀编码(4 字节 u32 LE + payload)

@@ -94,6 +94,17 @@ pub enum ServerEvent {
     },
     /// 客户端请求停止视频推流
     StopVideo { client_id: u32 },
+    /// 客户端请求开始 PC→手机 音频推流(手机充当电脑喇叭)
+    ///
+    /// `peer`:客户端 audio UDP 接收地址(peer.ip() + client_audio_port)
+    /// `channel`: 0=左声道, 1=右声道, 2=立体声混合
+    StartAudioStream {
+        client_id: u32,
+        peer: SocketAddr,
+        channel: u8,
+    },
+    /// 客户端请求停止 PC→手机 音频推流
+    StopAudioStream { client_id: u32 },
     /// 客户端上报视频统计(用于自适应码率)
     VideoStats {
         client_id: u32,
@@ -610,6 +621,24 @@ async fn handle_control_msg(
         ControlMessage::StopVideo => {
             let _ = event_tx
                 .send(ServerEvent::StopVideo { client_id: *client_id })
+                .await;
+            None
+        }
+        ControlMessage::StartAudioStream { channel, client_audio_port } => {
+            // 客户端 audio UDP 接收地址 = TCP 对端 IP + 客户端绑定的 audio UDP 端口
+            let audio_peer = SocketAddr::new(peer.ip(), *client_audio_port);
+            let _ = event_tx
+                .send(ServerEvent::StartAudioStream {
+                    client_id: *client_id,
+                    peer: audio_peer,
+                    channel: *channel,
+                })
+                .await;
+            None
+        }
+        ControlMessage::StopAudioStream => {
+            let _ = event_tx
+                .send(ServerEvent::StopAudioStream { client_id: *client_id })
                 .await;
             None
         }

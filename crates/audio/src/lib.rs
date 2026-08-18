@@ -7,6 +7,10 @@
 
 use thiserror::Error;
 
+mod jitter;
+
+pub use jitter::{AudioJitterBuffer, JitterStats, PopResult};
+
 #[derive(Debug, Error)]
 pub enum AudioError {
     #[error("Opus 错误: {0}")]

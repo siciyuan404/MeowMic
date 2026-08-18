@@ -222,6 +222,16 @@ class MeowMicViewModel : ViewModel() {
     private val _muteSpeaker = MutableStateFlow(false)
     val muteSpeaker: StateFlow<Boolean> = _muteSpeaker.asStateFlow()
 
+    // PC→手机 音频(手机充当电脑喇叭)
+    private val _speakerEnabled = MutableStateFlow(false)
+    val speakerEnabled: StateFlow<Boolean> = _speakerEnabled.asStateFlow()
+
+    // 声道:0=左 1=右 2=立体声混合
+    private val _speakerChannel = MutableStateFlow(0)
+    val speakerChannel: StateFlow<Int> = _speakerChannel.asStateFlow()
+
+    private var speakerPlayer: SpeakerPlayer? = null
+
     // 操作反馈音效开关(对齐设计稿"提示音"语义:真实播放音效,非 Toast)
     private val _soundFeedback = MutableStateFlow(false)
     val soundFeedback: StateFlow<Boolean> = _soundFeedback.asStateFlow()
@@ -773,6 +783,75 @@ class MeowMicViewModel : ViewModel() {
     }
 
     /**
+     * 开启/关闭 PC→手机 音频(手机充当电脑喇叭)
+     *
+     * 开启时在 IO 线程请求服务端开始推流(nativeStartAudioStream 内部 block_on),
+     * 成功后初始化 AudioTrack 并启动播放线程。
+     */
+    fun setSpeakerEnabled(enabled: Boolean) {
+        if (_speakerEnabled.value == enabled) return
+        if (enabled) {
+            viewModelScope.launch(Dispatchers.IO) {
+                try {
+                    val ok = NativeBridge.nativeStartAudioStream(_speakerChannel.value)
+                    // 防止在 IO 协程等待 native 期间用户已断开连接,导致误启动播放
+                    if (_connectionState.value !is ConnectionState.Connected) return@launch
+                    if (ok) {
+                        val player = SpeakerPlayer()
+                        if (player.init()) {
+                            speakerPlayer = player
+                            player.start()
+                            _speakerEnabled.value = true
+                        } else {
+                            NativeBridge.nativeStopAudioStream()
+                            Log.w(TAG, "SpeakerPlayer 初始化失败")
+                        }
+                    } else {
+                        Log.w(TAG, "nativeStartAudioStream 失败(未连接?)")
+                    }
+                } catch (e: UnsatisfiedLinkError) {
+                    Log.w(TAG, "nativeStartAudioStream 失败: ${e.message}")
+                }
+            }
+        } else {
+            speakerPlayer?.release()
+            speakerPlayer = null
+            _speakerEnabled.value = false
+            viewModelScope.launch(Dispatchers.IO) {
+                try {
+                    NativeBridge.nativeStopAudioStream()
+                } catch (e: UnsatisfiedLinkError) {
+                    Log.w(TAG, "nativeStopAudioStream 失败: ${e.message}")
+                }
+            }
+        }
+    }
+
+    /**
+     * 切换声道(0=左 1=右 2=立体声混合)。
+     * 若正在播放,需要重启推流以应用新的声道。
+     */
+    fun setSpeakerChannel(channel: Int) {
+        if (_speakerChannel.value == channel) return
+        _speakerChannel.value = channel
+        if (!_speakerEnabled.value) return
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                NativeBridge.nativeStopAudioStream()
+                val ok = NativeBridge.nativeStartAudioStream(channel)
+                if (!ok) {
+                    speakerPlayer?.release()
+                    speakerPlayer = null
+                    _speakerEnabled.value = false
+                    Log.w(TAG, "切换声道失败:nativeStartAudioStream 未成功")
+                }
+            } catch (e: UnsatisfiedLinkError) {
+                Log.w(TAG, "切换声道失败: ${e.message}")
+            }
+        }
+    }
+
+    /**
      * 设置操作反馈音效开关。开启后,鼠标按键、快捷键、录音等操作会播放短促音效。
      * 持久化到 SharedPreferences,重启后保留。
      */
@@ -1251,6 +1330,15 @@ class MeowMicViewModel : ViewModel() {
     fun disconnect() {
         cancelRecording()
         audioInputManager.stopMusicPlayback()
+        // 停止 PC→手机 音频推流
+        speakerPlayer?.release()
+        speakerPlayer = null
+        _speakerEnabled.value = false
+        try {
+            if (NativeBridge.isLoaded()) NativeBridge.nativeStopAudioStream()
+        } catch (e: UnsatisfiedLinkError) {
+            Log.w(TAG, "nativeStopAudioStream 失败: ${e.message}")
+        }
         audioCapture?.release()
         audioCapture = null
         touchHandler?.reset()
