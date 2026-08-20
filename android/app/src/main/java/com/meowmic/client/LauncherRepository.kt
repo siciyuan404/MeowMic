@@ -839,6 +839,10 @@ object LauncherRepository {
         val items: List<FileEntry>,
     )
 
+    /** 流式播放 URL(PC 视频文件,配合 ExoPlayer;服务端 /file/stream 支持 HTTP Range,可拖动进度) */
+    fun streamUrl(serverAddr: String, path: String, pubkey: String): String =
+        "${httpBaseUrl(serverAddr)}/file/stream?path=${encodeParam(path)}&pubkey=${encodeParam(pubkey)}"
+
     /** 列出目录下所有文件 */
     suspend fun listFiles(serverAddr: String, path: String, pubkey: String): FileListing? =
         withContext(Dispatchers.IO) {

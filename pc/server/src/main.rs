@@ -710,6 +710,55 @@ async fn run_serverinfo_server(
             };
             let body_str = String::from_utf8_lossy(&body_bytes).to_string();
 
+            // 视频流式播放:支持 HTTP Range 请求(206 Partial Content),分块流式返回文件内容,
+            // 供手机端 ExoPlayer 直接播放 PC 视频文件(进度条 seek 也走这里)。
+            // 与 /file/download 的区别:不整文件读入内存,支持断点续传语义。
+            if (method == "GET" || method == "HEAD") && path == "/file/stream" {
+                if !check_paired(&pairing, &active_clients, query).await {
+                    let body = br#"{"error":"not paired"}"#.to_vec();
+                    let _ = stream
+                        .write_all(format!(
+                            "HTTP/1.1 403 Forbidden\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                            body.len()
+                        ).as_bytes())
+                        .await;
+                    let _ = stream.write_all(&body).await;
+                } else {
+                    let raw_path = extract_query_param(query, "path").unwrap_or_default();
+                    let decoded = url_decode(&raw_path);
+                    if decoded.is_empty() {
+                        let body = br#"{"error":"path required"}"#.to_vec();
+                        let _ = stream
+                            .write_all(format!(
+                                "HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                                body.len()
+                            ).as_bytes())
+                            .await;
+                        let _ = stream.write_all(&body).await;
+                    } else {
+                        // 解析 Range 头(可能存在,如 "bytes=500-")
+                        let range_header = req
+                            .lines()
+                            .skip(1)
+                            .find_map(|line| {
+                                let l = line.trim();
+                                if l.to_ascii_lowercase().starts_with("range:") {
+                                    Some(l[6..].trim().to_string())
+                                } else {
+                                    None
+                                }
+                            });
+                        let _ = stream_video_file(
+                            &mut stream,
+                            &decoded,
+                            range_header.as_deref(),
+                            method == "HEAD",
+                        ).await;
+                    }
+                }
+                return; // 已自行写响应,跳过通用响应器
+            }
+
             // (status, content_type, body)
             let (status, content_type, body): (&str, &str, Vec<u8>) = if method == "GET" && path == "/serverinfo" {
                 let (connected, uptime) = stats.lock().await.snapshot_info();
@@ -1259,6 +1308,97 @@ async fn check_paired(
         // 未启用配对:仅允许活跃连接中的公钥访问(比一律禁止更友好)
         None => active_clients.read().await.contains(&client_pk),
     }
+}
+
+/// 以 HTTP Range 语义流式返回文件内容(供 /file/stream 视频播放使用)。
+///
+/// - 带可满足的 `Range` 头:206 Partial Content + Content-Range
+/// - 无 Range 头:200 OK 全量
+/// - HEAD 请求:只写响应头,不写 body
+/// 文件按 64KB 分块流式写出,不整文件载入内存,支持大视频文件。
+async fn stream_video_file(
+    stream: &mut tokio::net::TcpStream,
+    path: &str,
+    range_header: Option<&str>,
+    head_only: bool,
+) -> std::io::Result<()> {
+    use tokio::io::AsyncSeekExt;
+
+    let metadata = match tokio::fs::metadata(path).await {
+        Ok(m) => m,
+        Err(e) => {
+            let body = format!(r#"{{"error":"{}"}}"#, e);
+            let _ = stream
+                .write_all(format!(
+                    "HTTP/1.1 404 Not Found\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                ).as_bytes())
+                .await;
+            let _ = stream.write_all(body.as_bytes()).await;
+            return Ok(());
+        }
+    };
+    if !metadata.is_file() {
+        let body = br#"{"error":"not a file"}"#.to_vec();
+        let _ = stream
+            .write_all(format!(
+                "HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            ).as_bytes())
+            .await;
+        let _ = stream.write_all(&body).await;
+        return Ok(());
+    }
+
+    let file_size = metadata.len();
+    // 空文件:无内容可播,返回空 body(避免 Range 计算越界)
+    if file_size == 0 {
+        let _ = stream
+            .write_all(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nAccept-Ranges: bytes\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                    .as_bytes(),
+            )
+            .await;
+        return Ok(());
+    }
+
+    let ranged = range_header.and_then(|r| files::parse_range(r, file_size));
+    let (status, start, end, content_range) = match ranged {
+        Some((s, e)) => (
+            "206 Partial Content",
+            s,
+            e,
+            format!("\r\nContent-Range: bytes {}-{}/{}", s, e, file_size),
+        ),
+        None => ("200 OK", 0u64, file_size - 1, String::new()),
+    };
+    let len = end - start + 1;
+
+    let _ = stream
+        .write_all(format!(
+            "HTTP/1.1 {}\r\nContent-Type: application/octet-stream\r\nAccept-Ranges: bytes\r\nContent-Length: {}{}\r\nConnection: close\r\n\r\n",
+            status, len, content_range
+        ).as_bytes())
+        .await;
+
+    if head_only || len == 0 {
+        return Ok(());
+    }
+
+    let mut file = tokio::fs::File::open(path).await?;
+    file.seek(std::io::SeekFrom::Start(start)).await?;
+    let mut remaining = len;
+    let mut buf = [0u8; 64 * 1024];
+    while remaining > 0 {
+        let want = remaining.min(buf.len() as u64) as usize;
+        let n = file.read(&mut buf[..want]).await?;
+        if n == 0 {
+            break;
+        }
+        stream.write_all(&buf[..n]).await?;
+        remaining -= n as u64;
+    }
+    Ok(())
 }
 
 /// HTTP /pairing 服务:监听 127.0.0.1:port,供 PC 控制台查询/管理配对状态

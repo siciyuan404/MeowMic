@@ -106,5 +106,9 @@ dependencies {
 
     implementation("androidx.navigation:navigation-compose:2.7.7")
 
+    // 视频流式播放(手机直接播 PC 上的视频文件,HTTP Range + ExoPlayer)
+    implementation("androidx.media3:media3-exoplayer:1.3.1")
+    implementation("androidx.media3:media3-ui:1.3.1")
+
     debugImplementation("androidx.compose.ui:ui-tooling")
 }

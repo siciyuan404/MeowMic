@@ -41,6 +41,7 @@ import kotlinx.coroutines.withContext
  * 数据流:
  * - GET  /file/list      列出目录
  * - GET  /file/download   下载文件
+ * - GET  /file/stream    流式播放视频(Range 请求,配合 ExoPlayer)
  * - POST /file/upload     上传文件
  * - POST /file/mkdir      新建目录
  * - POST /file/delete     删除
@@ -85,6 +86,8 @@ fun FilesScreen(
     var transferStatus by remember { mutableStateOf<String?>(null) }
     // 传输失败后的重试动作(仅可重试错误设置;确定性错误为 null 不显示按钮)
     var pendingRetry by remember { mutableStateOf<(() -> Unit)?>(null) }
+    // 待播放的视频文件路径(null=不显示播放器)
+    var playVideoPath by remember { mutableStateOf<String?>(null) }
 
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -328,6 +331,19 @@ fun FilesScreen(
             text = {
                 Column(modifier = Modifier.fillMaxWidth()) {
                     val path = selectedPath!!
+                    if (isVideoFile(path)) {
+                        TextButton(
+                            onClick = {
+                                showActions = false
+                                playVideoPath = path
+                            },
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
+                            Icon(Icons.Default.PlayArrow, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Spacer(Modifier.width(8.dp))
+                            Text("播放视频")
+                        }
+                    }
                     TextButton(
                         onClick = {
                             showActions = false
@@ -417,6 +433,16 @@ fun FilesScreen(
                 ) { Text("确认") }
             },
             dismissButton = { TextButton(onClick = { showRenameDialog = false; renameTo = "" }) { Text("取消") } },
+        )
+    }
+
+    // 视频播放器(流式播放 PC 视频文件)
+    playVideoPath?.let { vp ->
+        VideoPlayerDialog(
+            serverAddr = addr,
+            path = vp,
+            pubkey = vm.clientPubkeyB64(),
+            onDismiss = { playVideoPath = null },
         )
     }
 }
@@ -669,6 +695,16 @@ private fun fileIcon(entry: LauncherRepository.FileEntry): androidx.compose.ui.g
         else -> Icons.Default.InsertDriveFile
     }
 }
+
+/** 常见视频扩展名(播放按钮仅在视频文件上显示) */
+private val VIDEO_EXTENSIONS = setOf(
+    "mp4", "mkv", "avi", "mov", "wmv", "webm", "m4v", "flv",
+    "ts", "mpg", "mpeg", "3gp", "rm", "rmvb", "vob", "m2ts", "divx",
+)
+
+/** 是否视频文件(按扩展名判断) */
+private fun isVideoFile(name: String): Boolean =
+    name.substringAfterLast('.', "").lowercase() in VIDEO_EXTENSIONS
 
 // ── 上传/下载实现(挂起函数,在协程中调用) ──
 

@@ -6,6 +6,7 @@
 //! 端点(挂在 base_port+4 的 serverinfo 服务上,复用配对鉴权):
 //! - GET  /file/list?path=<path>&pubkey=<b64>           返回目录 JSON(含所有文件类型)
 //! - GET  /file/download?path=<path>&pubkey=<b64>       返回文件字节流
+//! - GET  /file/stream?path=<path>&pubkey=<b64>         流式返回(HTTP Range,视频播放用)
 //! - POST /file/upload?path=<path>&pubkey=<b64>         上传 body 字节流写入指定路径
 //! - POST /file/mkdir?path=<path>&pubkey=<b64>          创建目录
 //! - POST /file/delete?path=<path>&pubkey=<b64>         删除文件或目录(递归)
@@ -161,6 +162,46 @@ pub fn write_file(path: &str, data: &[u8]) -> std::io::Result<()> {
         }
     }
     std::fs::write(p, data)
+}
+
+/// 解析 HTTP Range 头(`bytes=start-end` / `bytes=start-` / `bytes=-suffix`)。
+///
+/// 返回满足的闭区间 (start, end)(end 已钳制到 file_size-1)。
+/// 不满足(空文件/越界/语法错误)返回 None,调用方按 200 全量处理或拒绝。
+pub fn parse_range(range: &str, file_size: u64) -> Option<(u64, u64)> {
+    if file_size == 0 {
+        return None;
+    }
+    let spec = range.trim().strip_prefix("bytes=")?;
+    let (a, b) = spec.split_once('-')?;
+    match (a.is_empty(), b.is_empty()) {
+        // bytes=500-1000
+        (false, false) => {
+            let s: u64 = a.trim().parse().ok()?;
+            let e: u64 = b.trim().parse().ok()?;
+            if s > e || s >= file_size {
+                return None;
+            }
+            Some((s, e.min(file_size - 1)))
+        }
+        // bytes=500-
+        (false, true) => {
+            let s: u64 = a.trim().parse().ok()?;
+            if s >= file_size {
+                return None;
+            }
+            Some((s, file_size - 1))
+        }
+        // bytes=-500(最后 500 字节)
+        (true, false) => {
+            let n: u64 = b.trim().parse().ok()?;
+            if n == 0 {
+                return None;
+            }
+            Some((file_size.saturating_sub(n), file_size - 1))
+        }
+        (true, true) => None,
+    }
 }
 
 /// 计算文件 SHA-256(流式读取,hex 小写返回)
