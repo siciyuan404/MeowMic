@@ -1598,6 +1598,29 @@
                     </button>
                 </div>
                 <p class="mm-field-hint" style="margin-top:10px;">安装后:Win+P 选"扩展",把虚拟屏拖到想要的位置。手机 App 连接成功后即显示该扩展屏画面(触控板保留相对位移鼠标控制)。</p>
+
+                <!-- 驱动管理:枚举/创建/卸载/移除 -->
+                <div style="margin-top:16px;padding-top:14px;border-top:1px solid var(--mm-border, rgba(128,128,128,.2));">
+                    <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;">
+                        <span style="font-weight:600;font-size:13px;display:flex;align-items:center;gap:6px;">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:15px;height:15px;"><path d="M18 3a3 3 0 0 0-3 3v12a3 3 0 0 0 3 3 3 3 0 0 0 3-3 3 3 0 0 0-3-3H6a3 3 0 0 0-3 3 3 3 0 0 0 3 3 3 3 0 0 0 3-3V6a3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3h12a3 3 0 0 0 3-3 3 3 0 0 0-3-3z"/></svg>
+                            驱动管理
+                        </span>
+                        <div style="display:flex;gap:8px;">
+                            <button class="mm-btn mm-btn-secondary mm-btn-sm" type="button" onclick="loadDriverList()">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36L21 8"/><path d="M21 3v5h-5"/></svg>
+                                <span>刷新驱动</span>
+                            </button>
+                            <button class="mm-btn mm-btn-secondary mm-btn-sm" type="button" onclick="createVirtualDevice()">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="4" width="20" height="12" rx="2"/><path d="M12 16v4"/><path d="M8 20h8"/></svg>
+                                <span>创建虚拟屏设备</span>
+                            </button>
+                        </div>
+                    </div>
+                    <div id="driverStatus" class="mm-field-hint" style="margin-top:8px;">点击「刷新驱动」查看已安装的显示驱动与虚拟屏设备。</div>
+                    <div id="driverList" style="margin-top:8px;display:flex;flex-direction:column;gap:6px;"></div>
+                    <div id="deviceList" style="margin-top:10px;display:flex;flex-direction:column;gap:6px;"></div>
+                </div>
             </section>
         </div>
 
@@ -2160,6 +2183,124 @@
                 console.log('install_extend_display:', msg);
             } catch(e) {
                 showError('驱动安装未完成: ' + String(e));
+            }
+        }
+
+        // ============ 驱动管理 ============
+        function escHtml(s) {
+            return String(s == null ? '' : s)
+                .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+        }
+
+        async function loadDriverList() {
+            const Tauri = window.__TAURI__;
+            const stEl = document.getElementById('driverStatus');
+            const dlEl = document.getElementById('driverList');
+            const dvEl = document.getElementById('deviceList');
+            stEl.textContent = '读取中...';
+            dlEl.innerHTML = '';
+            dvEl.innerHTML = '';
+            try {
+                const st = await Tauri.invoke('list_display_drivers');
+                // 状态行:我们的驱动装没装
+                stEl.innerHTML = st.our_driver_installed
+                    ? '<span style="color:var(--mm-accent, #3b82f6);font-weight:600;">✔ MeowMic 虚拟屏驱动已安装</span>'
+                    : '<span style="color:var(--mm-danger, #ef4444);font-weight:600;">✖ 未检测到 MeowMic 虚拟屏驱动(安装可能未成功,可点「安装虚拟屏驱动」重试)</span>';
+                // 驱动包列表
+                if (st.drivers && st.drivers.length) {
+                    dlEl.innerHTML = '<div class="mm-field-hint" style="font-weight:600;">显示驱动包</div>';
+                    st.drivers.forEach(d => {
+                        const row = document.createElement('div');
+                        row.style.cssText = 'display:flex;align-items:center;justify-content:space-between;gap:8px;padding:8px 10px;border:1px solid var(--mm-border, rgba(128,128,128,.2));border-radius:8px;';
+                        row.innerHTML =
+                            '<div style="min-width:0;">'
+                            + '<div style="font-size:13px;font-weight:600;display:flex;align-items:center;gap:6px;flex-wrap:wrap;">'
+                            + escHtml(d.original_name)
+                            + (d.is_ours ? '<span style="font-size:11px;padding:1px 6px;border-radius:999px;background:var(--mm-accent, #3b82f6);color:#fff;">MeowMic</span>' : '')
+                            + '</div>'
+                            + '<div class="mm-field-hint">' + escHtml(d.provider) + ' · ' + escHtml(d.version) + ' · ' + escHtml(d.published_name) + ' · ' + escHtml(d.class_name) + '</div>'
+                            + '</div>';
+                        const btn = document.createElement('button');
+                        btn.className = 'mm-btn mm-btn-secondary mm-btn-sm';
+                        btn.type = 'button';
+                        btn.style.cssText = 'flex:0 0 auto;';
+                        btn.innerHTML = '<span>卸载</span>';
+                        btn.onclick = () => removeDriver(d.published_name, d.original_name);
+                        row.appendChild(btn);
+                        dlEl.appendChild(row);
+                    });
+                }
+                // 设备列表
+                if (st.devices && st.devices.length) {
+                    dvEl.innerHTML = '<div class="mm-field-hint" style="font-weight:600;">显示适配器设备</div>';
+                    st.devices.forEach(v => {
+                        const ok = v.status === 'Started';
+                        const row = document.createElement('div');
+                        row.style.cssText = 'display:flex;align-items:center;justify-content:space-between;gap:8px;padding:8px 10px;border:1px solid var(--mm-border, rgba(128,128,128,.2));border-radius:8px;';
+                        row.innerHTML =
+                            '<div style="min-width:0;">'
+                            + '<div style="font-size:13px;font-weight:600;">' + escHtml(v.description) + '</div>'
+                            + '<div class="mm-field-hint">' + escHtml(v.instance_id) + ' · 状态: ' + escHtml(v.status) + '</div>'
+                            + '</div>';
+                        const badge = document.createElement('span');
+                        badge.style.cssText = 'flex:0 0 auto;font-size:11px;padding:2px 8px;border-radius:999px;'
+                            + (ok ? 'background:rgba(34,197,94,.15);color:#16a34a;' : 'background:rgba(239,68,68,.15);color:#ef4444;');
+                        badge.textContent = ok ? '运行中' : '未启动';
+                        row.appendChild(badge);
+                        const btn = document.createElement('button');
+                        btn.className = 'mm-btn mm-btn-secondary mm-btn-sm';
+                        btn.type = 'button';
+                        btn.style.cssText = 'flex:0 0 auto;';
+                        btn.innerHTML = '<span>移除</span>';
+                        btn.onclick = () => removeDevice(v.instance_id, v.description);
+                        row.appendChild(btn);
+                        dvEl.appendChild(row);
+                    });
+                }
+                if ((!st.drivers || !st.drivers.length) && (!st.devices || !st.devices.length)) {
+                    dlEl.innerHTML = '<span class="mm-field-hint">无显示类驱动包/设备</span>';
+                }
+            } catch(e) {
+                stEl.innerHTML = '<span class="mm-field-hint">读取失败: ' + escHtml(e) + '</span>';
+            }
+        }
+
+        async function createVirtualDevice() {
+            const Tauri = window.__TAURI__;
+            showToast('正在请求管理员权限创建虚拟屏设备...');
+            try {
+                const msg = await Tauri.invoke('create_virtual_display_device');
+                showToast(msg || '已请求创建设备');
+                setTimeout(loadDriverList, 1200);
+            } catch(e) {
+                showError('创建设备未完成: ' + String(e));
+            }
+        }
+
+        async function removeDriver(publishedName, origName) {
+            const Tauri = window.__TAURI__;
+            if (!confirm('确定卸载驱动包 ' + origName + ' (' + publishedName + ')?\n卸载后对应虚拟屏将不可用。')) return;
+            showToast('正在请求管理员权限卸载驱动...');
+            try {
+                const msg = await Tauri.invoke('remove_display_driver', { published_name: publishedName });
+                showToast(msg || '已请求卸载');
+                setTimeout(loadDriverList, 1200);
+            } catch(e) {
+                showError('卸载未完成: ' + String(e));
+            }
+        }
+
+        async function removeDevice(instanceId, desc) {
+            const Tauri = window.__TAURI__;
+            if (!confirm('确定移除设备 ' + desc + ' (' + instanceId + ')?')) return;
+            showToast('正在请求管理员权限移除设备...');
+            try {
+                const msg = await Tauri.invoke('remove_virtual_device', { instance_id: instanceId });
+                showToast(msg || '已请求移除');
+                setTimeout(loadDriverList, 1200);
+            } catch(e) {
+                showError('移除未完成: ' + String(e));
             }
         }
 

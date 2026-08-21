@@ -1210,6 +1210,217 @@ fn install_extend_display() -> Result<String, String> {
     }
 }
 
+// ============ 驱动管理(扩展屏) ============
+// 用 pnputil 对显示类驱动包与虚拟显示设备做枚举/创建/卸载/移除,
+// 让"装没装上、装了哪些、设备建没建"从黑盒变成可见可操作。
+
+#[derive(Clone, Serialize)]
+struct DriverPackageInfo {
+    /// 发布名(oem42.inf),卸载时的句柄
+    published_name: String,
+    /// 原始 INF 名(myappsvirtualdisplay.inf 等)
+    original_name: String,
+    provider: String,
+    class_name: String,
+    version: String,
+    /// 是否为本项目分发的虚拟屏驱动(VirtualDisplayDriver)
+    is_ours: bool,
+}
+
+#[derive(Clone, Serialize)]
+struct VirtualDeviceInfo {
+    instance_id: String,
+    description: String,
+    status: String,
+}
+
+#[derive(Serialize)]
+struct DriverManagerStatus {
+    drivers: Vec<DriverPackageInfo>,
+    devices: Vec<VirtualDeviceInfo>,
+    our_driver_installed: bool,
+}
+
+/// 解析 pnputil 的 "Key:  Value" 分段输出为记录列表(空行分段)
+#[cfg(target_os = "windows")]
+fn parse_pnputil_records(output: &str) -> Vec<Vec<(String, String)>> {
+    let mut records = Vec::new();
+    let mut cur: Vec<(String, String)> = Vec::new();
+    for line in output.lines() {
+        if line.trim().is_empty() {
+            if !cur.is_empty() {
+                records.push(std::mem::take(&mut cur));
+            }
+            continue;
+        }
+        if let Some(idx) = line.find(':') {
+            cur.push((line[..idx].trim().to_string(), line[idx + 1..].trim().to_string()));
+        }
+    }
+    if !cur.is_empty() {
+        records.push(cur);
+    }
+    records
+}
+
+#[cfg(target_os = "windows")]
+fn record_field(rec: &[(String, String)], key: &str) -> String {
+    rec.iter()
+        .find(|(k, _)| k == key)
+        .map(|(_, v)| v.clone())
+        .unwrap_or_default()
+}
+
+/// 列出显示相关驱动包与虚拟显示设备(只读,无需提权)。
+/// 过滤规则:Display/Monitor 类,或 INF 名含 virtualdisplay/idddisplay。
+#[tauri::command]
+fn list_display_drivers() -> Result<DriverManagerStatus, String> {
+    #[cfg(target_os = "windows")]
+    {
+        let mut cmd = Command::new("pnputil");
+        cmd.args(["/enum-drivers"]);
+        hide_console_window(&mut cmd);
+        let out = cmd.output().map_err(|e| format!("pnputil 执行失败: {}", e))?;
+        let text = String::from_utf8_lossy(&out.stdout) + String::from_utf8_lossy(&out.stderr);
+        let mut drivers: Vec<DriverPackageInfo> = Vec::new();
+        for rec in parse_pnputil_records(&text) {
+            let class_name = record_field(&rec, "Class Name");
+            let original = record_field(&rec, "Original Name");
+            let lower = original.to_lowercase();
+            let is_display = class_name.eq_ignore_ascii_case("Display")
+                || class_name.eq_ignore_ascii_case("Monitor")
+                || lower.contains("virtualdisplay")
+                || lower.contains("idddisplay");
+            if !is_display {
+                continue;
+            }
+            // our 判定:itsmattkc/VirtualDisplayDriver-Rust 的 INF 为 VirtualDisplayDriver.inf;
+            // GameViewer 的 myappsvirtualdisplay.inf 不含连写 "virtualdisplaydriver",不会误判。
+            let is_ours = lower.contains("virtualdisplaydriver");
+            drivers.push(DriverPackageInfo {
+                published_name: record_field(&rec, "Published Name"),
+                original_name: original,
+                provider: record_field(&rec, "Provider Name"),
+                version: record_field(&rec, "Driver Version"),
+                class_name,
+                is_ours,
+            });
+        }
+
+        let mut cmd = Command::new("pnputil");
+        cmd.args(["/enum-devices", "/class", "Display"]);
+        hide_console_window(&mut cmd);
+        let out2 = cmd.output().map_err(|e| format!("pnputil 执行失败: {}", e))?;
+        let text2 = String::from_utf8_lossy(&out2.stdout) + String::from_utf8_lossy(&out2.stderr);
+        let mut devices = Vec::new();
+        for rec in parse_pnputil_records(&text2) {
+            devices.push(VirtualDeviceInfo {
+                instance_id: record_field(&rec, "Instance ID"),
+                description: record_field(&rec, "Device Description"),
+                status: record_field(&rec, "Status"),
+            });
+        }
+
+        let our_driver_installed = drivers.iter().any(|d| d.is_ours);
+        Ok(DriverManagerStatus {
+            drivers,
+            devices,
+            our_driver_installed,
+        })
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        Ok(DriverManagerStatus {
+            drivers: vec![],
+            devices: vec![],
+            our_driver_installed: false,
+        })
+    }
+}
+
+/// 以管理员权限运行一段 PowerShell 脚本(UAC 弹窗,等待结束)。
+/// 写临时 .ps1 再 -File 运行,避免引号嵌套转义问题。
+#[cfg(target_os = "windows")]
+fn run_elevated_ps(script: &str) -> Result<String, String> {
+    let dir = env::temp_dir().join("meowmic-elev");
+    fs::create_dir_all(&dir).map_err(|e| format!("创建临时目录失败: {}", e))?;
+    let file = dir.join("elev.ps1");
+    fs::write(&file, script).map_err(|e| format!("写临时脚本失败: {}", e))?;
+    let ps_cmd = format!(
+        "Start-Process -FilePath 'powershell' -Verb RunAs -Wait -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-File','{}'",
+        file.to_string_lossy()
+    );
+    let mut cmd = Command::new("powershell");
+    cmd.args(["-NoProfile", "-Command", &ps_cmd]);
+    hide_console_window(&mut cmd);
+    let output = cmd.output().map_err(|e| format!("启动 PowerShell 失败: {}", e))?;
+    if output.status.success() {
+        Ok("已执行".into())
+    } else {
+        Err("用户取消了 UAC 授权或执行失败".into())
+    }
+}
+
+/// 创建虚拟显示器设备(驱动已装但设备未建时使用;提权)。
+/// 依次尝试常见硬件 ID,成功的那个即驱动声明的 ID。
+#[tauri::command]
+fn create_virtual_display_device() -> Result<String, String> {
+    #[cfg(target_os = "windows")]
+    {
+        let script = r#"
+foreach($id in @('Root\VirtualDisplay','Root\IddVirtualDisplay')){
+    pnputil /add-device $id
+    if($LASTEXITCODE -eq 0){ break }
+}
+pnputil /scan-devices
+"#;
+        run_elevated_ps(script)?;
+        Ok("已请求创建虚拟显示器设备,请点「刷新驱动」查看设备列表。".into())
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        Ok("非 Windows 平台不支持".into())
+    }
+}
+
+/// 卸载驱动包(提权)。published_name 形如 oem42.inf,来自 list_display_drivers。
+#[tauri::command]
+fn remove_display_driver(published_name: String) -> Result<String, String> {
+    #[cfg(target_os = "windows")]
+    {
+        let name = published_name.trim().to_lowercase();
+        if !name.ends_with(".inf") || name.contains("..") || name.contains('/') || name.contains('\\') {
+            return Err("非法的驱动包名".into());
+        }
+        let script = format!("pnputil /delete-driver {} /uninstall /force", name);
+        run_elevated_ps(&script)?;
+        Ok(format!("已请求卸载驱动包 {},请点「刷新驱动」确认。", name))
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        Ok("非 Windows 平台不支持".into())
+    }
+}
+
+/// 移除虚拟显示设备(提权)。instance_id 形如 ROOT\DISPLAY\0001,来自 list_display_drivers。
+#[tauri::command]
+fn remove_virtual_device(instance_id: String) -> Result<String, String> {
+    #[cfg(target_os = "windows")]
+    {
+        let id = instance_id.trim().to_uppercase();
+        if !id.starts_with("ROOT\\") || id.contains('\'') {
+            return Err("非法的设备实例 ID".into());
+        }
+        let script = format!("pnputil /remove-device '{}'", instance_id.trim());
+        run_elevated_ps(&script)?;
+        Ok(format!("已请求移除设备 {},请点「刷新驱动」确认。", instance_id.trim()))
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        Ok("非 Windows 平台不支持".into())
+    }
+}
+
 pub fn run() {
 
     let config = load_config();
@@ -1325,6 +1536,10 @@ pub fn run() {
             get_local_ips,
             check_extend_display,
             install_extend_display,
+            list_display_drivers,
+            create_virtual_display_device,
+            remove_display_driver,
+            remove_virtual_device,
             set_launch_at_login_cmd,
             set_minimize_to_tray,
             quit_app,
