@@ -36,11 +36,11 @@ mod dxgi_capturer {
 
     /// 枚举本机所有显示器(虚拟桌面坐标,支持负坐标显示器在左侧排布)
     fn enumerate_monitors() -> Vec<MonitorInfo> {
-        use windows::Win32::Foundation::{BOOL, HDC, LPARAM, RECT};
+        use windows::Win32::Foundation::{BOOL, LPARAM, RECT};
         use windows::Win32::Graphics::Gdi::{
-            GetMonitorInfoW, HMONITOR, MONITORINFO, MONITORINFOF_PRIMARY,
+            EnumDisplayMonitors, GetMonitorInfoW, HDC, HMONITOR, MONITORINFO,
         };
-        use windows::Win32::UI::WindowsAndMessaging::EnumDisplayMonitors;
+        use windows::Win32::UI::WindowsAndMessaging::MONITORINFOF_PRIMARY;
 
         unsafe extern "system" fn enum_proc(
             hmonitor: HMONITOR,
@@ -70,7 +70,7 @@ mod dxgi_capturer {
         unsafe {
             EnumDisplayMonitors(
                 None,
-                std::ptr::null(),
+                None,
                 Some(enum_proc),
                 LPARAM(&mut list as *mut Vec<MonitorInfo> as isize),
             );
