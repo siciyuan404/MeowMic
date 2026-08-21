@@ -1058,6 +1058,158 @@ fn fix_firewall_rule() -> Result<String, String> {
     }
 }
 
+// ============ 扩展屏(手机充当第二显示器)============
+
+/// 单台显示器信息(用于扩展屏检测)
+#[derive(Debug, Serialize, Clone)]
+pub struct ExtendDisplayInfo {
+    pub index: u32,
+    pub is_primary: bool,
+    pub width: u32,
+    pub height: u32,
+    pub x: i32,
+    pub y: i32,
+}
+
+/// 扩展屏检测结果
+#[derive(Debug, Serialize, Clone)]
+pub struct ExtendDisplayStatus {
+    pub displays: Vec<ExtendDisplayInfo>,
+    /// 显示器数量(含主屏)
+    pub count: usize,
+    /// 是否存在非主屏(可作为扩展屏推流目标)
+    pub has_secondary: bool,
+}
+
+#[cfg(target_os = "windows")]
+fn enumerate_displays() -> Vec<ExtendDisplayInfo> {
+    use windows::Win32::Foundation::{BOOL, LPARAM, RECT};
+    use windows::Win32::Graphics::Gdi::{
+        EnumDisplayMonitors, GetMonitorInfoW, HDC, HMONITOR, MONITORINFO,
+    };
+    use windows::Win32::UI::WindowsAndMessaging::MONITORINFOF_PRIMARY;
+
+    unsafe extern "system" fn enum_proc(
+        hmonitor: HMONITOR,
+        _hdc: HDC,
+        _clip: *mut RECT,
+        data: LPARAM,
+    ) -> BOOL {
+        unsafe {
+            let list = &mut *(data.0 as *mut Vec<ExtendDisplayInfo>);
+            let mut info: MONITORINFO = std::mem::zeroed();
+            info.cbSize = std::mem::size_of::<MONITORINFO>() as u32;
+            if GetMonitorInfoW(hmonitor, &mut info).as_bool() {
+                let r = info.rcMonitor;
+                list.push(ExtendDisplayInfo {
+                    index: list.len() as u32,
+                    is_primary: info.dwFlags & MONITORINFOF_PRIMARY != 0,
+                    width: (r.right - r.left).max(0) as u32,
+                    height: (r.bottom - r.top).max(0) as u32,
+                    x: r.left,
+                    y: r.top,
+                });
+            }
+        }
+        BOOL(1)
+    }
+
+    let mut list: Vec<ExtendDisplayInfo> = Vec::new();
+    unsafe {
+        EnumDisplayMonitors(
+            None,
+            None,
+            Some(enum_proc),
+            LPARAM(&mut list as *mut Vec<ExtendDisplayInfo> as isize),
+        );
+    }
+    list
+}
+
+/// 检测当前显示器,识别主屏与可用的扩展屏(虚拟第二显示器)
+/// 用于前端判断"驱动是否已装好、目标屏是否已就绪"。
+#[tauri::command]
+fn check_extend_display() -> Result<ExtendDisplayStatus, String> {
+    #[cfg(target_os = "windows")]
+    {
+        let displays = enumerate_displays();
+        let count = displays.len();
+        let has_secondary = displays.iter().any(|d| !d.is_primary);
+        Ok(ExtendDisplayStatus {
+            displays,
+            count,
+            has_secondary,
+        })
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        Ok(ExtendDisplayStatus {
+            displays: vec![],
+            count: 0,
+            has_secondary: false,
+        })
+    }
+}
+
+/// 定位随包发布的 install-idd.ps1(优先 exe 旁/resources,再回退开发目录)
+#[cfg(target_os = "windows")]
+fn find_install_script() -> Result<PathBuf, String> {
+    let mut candidates: Vec<PathBuf> = Vec::new();
+    if let Some(d) = env::current_exe().ok().and_then(|p| p.parent().map(|d| d.to_path_buf())) {
+        for n in ["install-idd.ps1", "resources/install-idd.ps1", "bin/install-idd.ps1"] {
+            candidates.push(d.join(n));
+        }
+    }
+    if let Ok(cwd) = env::current_dir() {
+        candidates.push(cwd.join("tools").join("extend-display").join("install-idd.ps1"));
+        candidates.push(cwd.join("..").join("..").join("tools").join("extend-display").join("install-idd.ps1"));
+    }
+    for c in &candidates {
+        if c.exists() {
+            return Ok(c.clone());
+        }
+    }
+    Err("找不到 install-idd.ps1,请确认控制台已含该脚本(打包随 bin/* 发布)".into())
+}
+
+/// 安装虚拟屏驱动:通过 UAC 提权运行 install-idd.ps1(下载并 pnputil 注册开源 IDD 驱动)。
+/// 提权窗口会弹出,用户需在管理员 PowerShell 中按提示完成"创建虚拟显示器设备"。
+#[tauri::command]
+fn install_extend_display() -> Result<String, String> {
+    #[cfg(target_os = "windows")]
+    {
+        let ps1 = find_install_script()?;
+        let ps1_str = ps1.to_string_lossy().to_string();
+
+        // 用 PowerShell Start-Process -Verb RunAs 提权(弹 UAC),以 -File 方式运行安装脚本。
+        // 脚本自身带 #requires -RunAsAdministrator 与管理员校验,未授权则直接退出。
+        let ps_cmd = format!(
+            "Start-Process -FilePath 'powershell' -Verb RunAs -Wait -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-File','{}'",
+            ps1_str
+        );
+        let mut cmd = Command::new("powershell");
+        cmd.args(["-NoProfile", "-Command", &ps_cmd]);
+        hide_console_window(&mut cmd);
+        let output = cmd.output().map_err(|e| format!("启动 PowerShell 失败: {}", e))?;
+
+        if output.status.success() {
+            Ok("已在管理员 PowerShell 中启动驱动安装。请按窗口提示完成「创建虚拟显示器设备」后再点「检测」并改用「扩展」模式。".into())
+        } else {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            let msg = if stderr.trim().is_empty() {
+                "用户取消了 UAC 授权,驱动未安装".to_string()
+            } else {
+                format!("安装失败: {}", stderr)
+            };
+            Err(msg)
+        }
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        Ok("非 Windows 平台无需安装虚拟屏驱动".into())
+    }
+}
+
 pub fn run() {
 
     let config = load_config();
@@ -1171,6 +1323,8 @@ pub fn run() {
             check_firewall_rule,
             fix_firewall_rule,
             get_local_ips,
+            check_extend_display,
+            install_extend_display,
             set_launch_at_login_cmd,
             set_minimize_to_tray,
             quit_app,

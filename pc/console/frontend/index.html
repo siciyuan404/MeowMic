@@ -1574,6 +1574,31 @@
                     </div>
                 </div>
             </section>
+
+            <!-- 扩展屏(手机充当第二显示器) -->
+            <section class="mm-card mm-settings-card" style="margin-top:16px;">
+                <div class="mm-section-title">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="4" width="20" height="14" rx="2"/><line x1="8" x2="16" y1="21" y2="21"/><line x1="12" x2="12" y1="18" y2="21"/></svg>
+                    <span>扩展屏</span>
+                </div>
+                <p class="mm-field-hint" style="margin-bottom:12px;">让手机充当电脑的第二显示器:需先安装虚拟显示器驱动并将显示模式设为"扩展",MeowMic 服务端会自动把该虚拟屏画面推到手机。</p>
+                <div class="mm-field">
+                    <div id="extendStatus" class="mm-extend-status">
+                        <span class="mm-field-hint">尚未检测。点击"检测屏幕"查看本机显示器。</span>
+                    </div>
+                </div>
+                <div style="display:flex;flex-wrap:wrap;gap:8px;margin-top:4px;">
+                    <button class="mm-btn mm-btn-brand mm-btn-sm" type="button" onclick="loadExtendDisplayStatus()">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/><line x1="11" x2="11" y1="8" y2="14"/><line x1="8" x2="14" y1="11" y2="11"/></svg>
+                        <span>检测屏幕</span>
+                    </button>
+                    <button class="mm-btn mm-btn-secondary mm-btn-sm" type="button" onclick="installExtendDisplay()">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14.5 9.5 10 14l-2.5-2.5L2 15"/><path d="M2 2l20 9-20 9 4-9z"/></svg>
+                        <span>安装虚拟屏驱动</span>
+                    </button>
+                </div>
+                <p class="mm-field-hint" style="margin-top:10px;">安装后:Win+P 选"扩展",把虚拟屏拖到想要的位置。手机 App 连接成功后即显示该扩展屏画面(触控板保留相对位移鼠标控制)。</p>
+            </section>
         </div>
 
         <!-- ===== Page: 关于 ===== -->
@@ -2098,6 +2123,44 @@
             document.getElementById('rdFps').value = '30';
             document.getElementById('rdBitrate').value = '8';
             showToast('已恢复远程桌面默认设置(需重启服务生效)');
+        }
+
+        // ============ 扩展屏 ============
+        async function loadExtendDisplayStatus() {
+            const Tauri = window.__TAURI__;
+            const el = document.getElementById('extendStatus');
+            el.textContent = '检测中...';
+            try {
+                const st = await Tauri.invoke('check_extend_display');
+                if (!st || !st.displays || st.count === 0) {
+                    el.innerHTML = '<span class="mm-field-hint">未检测到显示器</span>';
+                    return;
+                }
+                const list = st.displays.map((d, i) =>
+                    '<div style="display:flex;align-items:center;gap:6px;">'
+                    + '<span style="flex:0 0 14px;">' + (d.is_primary ? '●' : '○') + '</span>'
+                    + '<span>显示器 ' + (i + 1) + (d.is_primary ? ' (主屏)' : ' (扩展屏)')
+                    + ' — ' + d.width + '×' + d.height + '</span></div>'
+                ).join('');
+                const hint = st.has_secondary
+                    ? '<div style="margin-top:6px;color:var(--mm-accent, #3b82f6);font-weight:600;">✔ 已有第二块屏幕,可直接作扩展屏推流</div>'
+                    : '<div style="margin-top:6px;">仅检测到主屏。点击「安装虚拟屏驱动」并完成设备创建后,再点「检测」确认。</div>';
+                el.innerHTML = list + hint;
+            } catch(e) {
+                el.innerHTML = '<span class="mm-field-hint">检测失败: ' + String(e) + '</span>';
+            }
+        }
+
+        async function installExtendDisplay() {
+            const Tauri = window.__TAURI__;
+            showToast('正在请求管理员权限...');
+            try {
+                const msg = await Tauri.invoke('install_extend_display');
+                showToast('驱动安装已启动,请在管理员窗口中完成设备创建');
+                console.log('install_extend_display:', msg);
+            } catch(e) {
+                showError('驱动安装未完成: ' + String(e));
+            }
         }
 
         // ============ Service ============
