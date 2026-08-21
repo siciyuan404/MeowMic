@@ -32,15 +32,14 @@ impl AudioPlayer {
                 .ok_or_else(|| anyhow::anyhow!("无可用音频输出设备"))?
         };
 
-        let supported = device
+        // 声道:优先精确匹配 cfg.channels,否则退化到设备原生(输出设备基本为立体声)。
+        // 采样率:改用设备默认输出配置的采样率(Windows 共享模式下即混音格式,如 44.1kHz),
+        // 而非强制 cfg.sample_rate(48000);否则用 48k 初始化混音格式为 44.1k 的 WASAPI
+        // 客户端会返回 AUDCLNT_E_UNSUPPORTED_FORMAT,导致启动失败(exit code 1)。
+        let selected = device
             .supported_output_configs()?
-            .find(|c| {
-                c.channels() == u16::from(cfg.channels)
-                    && (c.min_sample_rate().0..=c.max_sample_rate().0)
-                        .contains(&cfg.sample_rate)
-            })
+            .find(|c| c.channels() == u16::from(cfg.channels))
             .or_else(|| {
-                // 找不到精确匹配,退化为任意配置
                 device
                     .supported_output_configs()
                     .ok()
@@ -48,9 +47,20 @@ impl AudioPlayer {
             })
             .ok_or_else(|| anyhow::anyhow!("无匹配音频配置"))?;
 
+        // 采样率优先取设备默认(即混音格式);若取不到则改用所选配置 min/max 范围内收敛后的值
+        let sample_rate = device
+            .default_output_config()
+            .ok()
+            .map(|c| c.sample_rate())
+            .unwrap_or_else(|| {
+                let min = selected.min_sample_rate().0;
+                let max = selected.max_sample_rate().0;
+                cpal::SampleRate(cfg.sample_rate.clamp(min, max))
+            });
+
         let stream_cfg = cpal::StreamConfig {
-            channels: supported.channels(),
-            sample_rate: cpal::SampleRate(cfg.sample_rate),
+            channels: selected.channels(),
+            sample_rate,
             buffer_size: cpal::BufferSize::Default,
         };
 
