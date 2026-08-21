@@ -1,4 +1,4 @@
-#requires -RunAsAdministrator
+﻿#requires -RunAsAdministrator
 <#
     MeowMic 扩展屏 - 虚拟第二显示器驱动安装脚本
     =============================================
@@ -90,20 +90,60 @@ if ($LASTEXITCODE -ne 0) {
     Write-Host "pnputil 驱动安装失败($LASTEXITCODE)。可手动到设备管理器 -> 添加过时硬件 -> 手动选择该 inf。" -ForegroundColor Yellow
 }
 
+# --- 4.5 自动创建虚拟显示器设备 ---
+# 硬件 ID 因驱动而异(如 Root\VirtualDisplay / Root\IddVirtualDisplay),
+# 优先从 INF 中提取,再回退到常见候选,逐个 pnputil 尝试。
+$autoCreated = $false
+$createdHwid = $null
+try {
+    $infText = Get-Content -Raw $inf.FullName
+} catch {
+    $infText = ""
+}
+$candidates = @()
+$candidates += [regex]::Matches($infText, '(Root\\[A-Za-z0-9_]+)') | ForEach-Object { $_.Groups[1].Value }
+$candidates += 'Root\VirtualDisplay', 'Root\IddVirtualDisplay'
+$candidates = @($candidates | Where-Object { $_ } | Select-Object -Unique)
+
+Write-Step "自动创建设备(候选硬件 ID: $($candidates -join ', '))..."
+foreach ($hwid in $candidates) {
+    Write-Host "  尝试: $hwid"
+    & pnputil /add-device "$hwid" 2>&1 | Out-Null
+    if ($LASTEXITCODE -eq 0) {
+        $autoCreated = $true
+        $createdHwid = $hwid
+        break
+    }
+}
+if ($autoCreated) {
+    Write-Ok "虚拟显示器设备已创建 ($createdHwid)。"
+    # 触发即插即用重新扫描,确保 Windows 枚举出新屏
+    & pnputil /scan-devices 2>&1 | Out-Null
+    Write-Ok "已重新扫描设备。"
+} else {
+    Write-Host "自动创建设备未完成。请用下方手动方式创建虚拟显示器设备:" -ForegroundColor Yellow
+}
+
 # --- 5. 提示下一步:新建虚拟显示器设备 ---
 Write-Step "完成"
 Write-Host ""
 Write-Host "============================================================" -ForegroundColor Green
-Write-Host " 驱动包已安装。还需创建一块虚拟显示器设备。" -ForegroundColor Green
-Write-Host ""
-Write-Host " 方式 A(PowerShell 便捷版,若本机有 devcon.exe):" -ForegroundColor Yellow
-Write-Host "    devcon.exe install $($inf.Name) Root\VirtualDisplay" -ForegroundColor Yellow
-Write-Host ""
-Write-Host " 方式 B(设备管理器手动):" -ForegroundColor Yellow
-Write-Host "    Win+R -> 'hdwwiz' 打开'添加硬件向导'
+if ($autoCreated) {
+    Write-Host " 虚拟显示器设备已自动创建!" -ForegroundColor Green
+    Write-Host " 下一步:Win+P 选择'扩展',或在 设置->系统->显示 中把虚拟屏排列到想要的位置。" -ForegroundColor Green
+    Write-Host " 若不生效,可重启一次 Windows 后再看显示设置。" -ForegroundColor Green
+} else {
+    Write-Host " 驱动包已安装,但需手动创建一块虚拟显示器设备。" -ForegroundColor Green
+    Write-Host ""
+    Write-Host " 方式 A(PowerShell 便捷版,若本机有 devcon.exe):" -ForegroundColor Yellow
+    Write-Host "    devcon.exe install $($inf.Name) $($candidates[0])" -ForegroundColor Yellow
+    Write-Host ""
+    Write-Host " 方式 B(设备管理器手动):" -ForegroundColor Yellow
+    Write-Host "    Win+R -> 'hdwwiz' 打开'添加硬件向导'
         1) 选择 '安装我手动从列表选择的硬件(高级)'
         2) 厂商选对应名称,型号选'虚拟显示器/Indirect Display'
         3) 下一步安装即可" -ForegroundColor Yellow
+}
 Write-Host ""
 Write-Host " 安装后:Win+P 选择'扩展',或在 设置->系统->显示 中把虚拟屏排列到你想要的位置。" -ForegroundColor Green
 Write-Host " MeowMic 服务端会自动枚举并从该屏裁剪推流到手机端。" -ForegroundColor Green
