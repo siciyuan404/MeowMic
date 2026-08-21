@@ -19,6 +19,158 @@ mod dxgi_capturer {
         static SCALE_LAST: std::cell::Cell<std::time::Duration> = std::cell::Cell::new(std::time::Duration::ZERO);
     }
 
+    // ── 拓展屏模式:多显示器目标屏选择 ──
+    // 手机充当电脑的第二块(扩展)显示器时,Windows 需借助间接显示驱动(IDD)
+    // 挂出一块虚拟显示器。采集时从"整个桌面(虚拟桌面并集)"中裁剪出该目标屏区域,
+    // 再缩放编码推流,鼠标仍为相对位移注入,不受影响。
+
+    /// 单个显示器在虚拟桌面坐标系下的矩形
+    #[derive(Clone, Copy, Debug)]
+    struct MonitorInfo {
+        x: i32,
+        y: i32,
+        w: u32,
+        h: u32,
+        is_primary: bool,
+    }
+
+    /// 枚举本机所有显示器(虚拟桌面坐标,支持负坐标显示器在左侧排布)
+    fn enumerate_monitors() -> Vec<MonitorInfo> {
+        use windows::Win32::Foundation::{BOOL, HDC, LPARAM, RECT};
+        use windows::Win32::Graphics::Gdi::{
+            GetMonitorInfoW, HMONITOR, MONITORINFO, MONITORINFOF_PRIMARY,
+        };
+        use windows::Win32::UI::WindowsAndMessaging::EnumDisplayMonitors;
+
+        unsafe extern "system" fn enum_proc(
+            hmonitor: HMONITOR,
+            _hdc: HDC,
+            _clip: *mut RECT,
+            data: LPARAM,
+        ) -> BOOL {
+            unsafe {
+                let list = &mut *(data.0 as *mut Vec<MonitorInfo>);
+                let mut info: MONITORINFO = std::mem::zeroed();
+                info.cbSize = std::mem::size_of::<MONITORINFO>() as u32;
+                if GetMonitorInfoW(hmonitor, &mut info).as_bool() {
+                    let r = info.rcMonitor;
+                    list.push(MonitorInfo {
+                        x: r.left,
+                        y: r.top,
+                        w: (r.right - r.left).max(0) as u32,
+                        h: (r.bottom - r.top).max(0) as u32,
+                        is_primary: info.dwFlags & MONITORINFOF_PRIMARY != 0,
+                    });
+                }
+            }
+            BOOL(1)
+        }
+
+        let mut list: Vec<MonitorInfo> = Vec::new();
+        unsafe {
+            EnumDisplayMonitors(
+                None,
+                std::ptr::null(),
+                Some(enum_proc),
+                LPARAM(&mut list as *mut Vec<MonitorInfo> as isize),
+            );
+        }
+        list
+    }
+
+    /// 目标屏选择策略
+    ///
+    /// `MEOWMIC_EXTEND_DISPLAY` 环境变量:
+    /// - `primary`:始终用主屏(即旧镜像行为)
+    /// - `virtual`(默认):优先非主屏(第二块扩展/虚拟屏),无第二屏则回退主屏(向后兼容镜像)
+    fn select_target(monitors: &[MonitorInfo]) -> Option<MonitorInfo> {
+        let mode = std::env::var("MEOWMIC_EXTEND_DISPLAY").unwrap_or_else(|_| "virtual".into());
+        match mode.as_str() {
+            "primary" => monitors.iter().copied().find(|m| m.is_primary),
+            _ => monitors
+                .iter()
+                .copied()
+                .find(|m| !m.is_primary)
+                .or_else(|| monitors.iter().copied().find(|m| m.is_primary)),
+        }
+    }
+
+    /// 计算目标屏在整个桌面(虚拟桌面并集)内的裁剪矩形 (x, y, width, height)
+    fn target_rect() -> Option<(i32, i32, u32, u32)> {
+        let monitors = enumerate_monitors();
+        if monitors.is_empty() {
+            return None;
+        }
+        let min_x = monitors.iter().map(|m| m.x).min()?;
+        let min_y = monitors.iter().map(|m| m.y).min()?;
+        let target = select_target(&monitors)?;
+        let rx = target.x - min_x;
+        let ry = target.y - min_y;
+        Some((rx, ry, target.w, target.h))
+    }
+
+    static TARGET: OnceLock<Mutex<Option<(i32, i32, u32, u32)>>> = OnceLock::new();
+    /// 目标屏矩形(缓存,首次调用枚举一次;多显示器布局变化需重启服务端生效)
+    fn target_rect_cached() -> Option<(i32, i32, u32, u32)> {
+        let cache = TARGET.get_or_init(|| Mutex::new(None));
+        let mut guard = cache.lock().ok()?;
+        if guard.is_none() {
+            *guard = target_rect();
+        }
+        *guard
+    }
+
+    /// 从整屏 BGRA 帧裁剪出目标屏区域(越界自动收敛;整屏即目标时不拷贝)
+    fn crop_to_target(frame: &AcquiredFrame, rect: (i32, i32, u32, u32)) -> AcquiredFrame {
+        let (rx, ry, rw, rh) = rect;
+        let fw = frame.width as i32;
+        let fh = frame.height as i32;
+        let rw = (rw.min(fw.max(0) as u32)).min(fw as u32) as i32;
+        let rh = (rh.min(fh.max(0) as u32)).min(fh as u32) as i32;
+        let rx = rx.clamp(0, (fw - rw).max(0));
+        let ry = ry.clamp(0, (fh - rh).max(0));
+        if rw <= 0 || rh <= 0 {
+            return frame.clone();
+        }
+        if rx == 0 && ry == 0 && rw == fw && rh == fh {
+            return frame.clone();
+        }
+        let rwu = rw as usize;
+        let rhu = rh as usize;
+        let fwu = fw as usize;
+        let mut out = vec![0u8; rwu * rhu * 4];
+        let row_bytes = rwu * 4;
+        for y in 0..rhu {
+            let src_off = ((ry as usize + y) * fwu + rx as usize) * 4;
+            let dst_off = y * row_bytes;
+            out[dst_off..dst_off + row_bytes]
+                .copy_from_slice(&frame.pixels[src_off..src_off + row_bytes]);
+        }
+        AcquiredFrame {
+            pixels: out,
+            width: rw as u32,
+            height: rh as u32,
+        }
+    }
+    /// 返回目标屏分辨率(若已在解析目标屏矩形时失败,回退主屏分辨率)
+    pub fn target_resolution() -> (u32, u32) {
+        target_rect_cached()
+            .map(|(_, _, w, h)| (w, h))
+            .unwrap_or_else(primary_resolution)
+    }
+
+    /// 主屏分辨率(GetSystemMetrics)
+    fn primary_resolution() -> (u32, u32) {
+        use windows::Win32::UI::WindowsAndMessaging::{
+            GetSystemMetrics, SM_CXSCREEN, SM_CYSCREEN,
+        };
+        unsafe {
+            let w = GetSystemMetrics(SM_CXSCREEN).max(0) as u32;
+            let h = GetSystemMetrics(SM_CYSCREEN).max(0) as u32;
+            (w, h)
+        }
+    }
+
     /// 采集到的一帧(BGRA 像素)
     #[derive(Clone)]
     struct AcquiredFrame {
@@ -83,6 +235,13 @@ mod dxgi_capturer {
             match self.acquire_frame() {
                 Some(frame) => {
                     let t_acquire = t0.elapsed();
+                    // 拓展屏模式:先裁剪出目标(虚拟扩展)显示器区域,再走分辨率限制/缩放
+                    // 无剪裁需求(整屏即目标)时为零拷贝。
+                    let frame = if let Some(rect) = target_rect_cached() {
+                        crop_to_target(&frame, rect)
+                    } else {
+                        frame
+                    };
                     // 分辨率规整:从环境变量读取上限(由 PC 控制台远程桌面设置注入)
                     // 默认 1024x768:画质换流畅度,远程桌面场景对帧率敏感度高于分辨率
                     // 0 表示不限制(用屏幕原始分辨率,但编码器可能拒绝超大分辨率)
@@ -393,14 +552,7 @@ mod dxgi_capturer {
     }
 
     pub fn screen_resolution() -> (u32, u32) {
-        use windows::Win32::UI::WindowsAndMessaging::{
-            GetSystemMetrics, SM_CXSCREEN, SM_CYSCREEN,
-        };
-        unsafe {
-            let w = GetSystemMetrics(SM_CXSCREEN).max(0) as u32;
-            let h = GetSystemMetrics(SM_CYSCREEN).max(0) as u32;
-            (w, h)
-        }
+        target_resolution()
     }
 }
 
